@@ -26,9 +26,10 @@ M0 完成并验收全绿；下一步 = 新会话执行 M1 数据层（TODO.md �
 
 ### 环境事实
 
-- 本机 python3.12 在 ~/.local/bin/python3.12（系统 python3 是 3.9，勿用）
-- LibreOffice 未安装（M4 前需装：brew install --cask libreoffice）
-- Node 24 / npm 11
+- 本机 python3.12 在 ~/.local/bin/python3.12（uv 安装，系统 python3 是 3.9，勿用）
+- LibreOffice 26.8.0.3 已装（brew cask，soffice 在 /opt/homebrew/bin/soffice），health 检测绿
+- Node 24 / npm 11；brew 6.0.21
+- 陷阱：外部同步曾覆盖 AGENTS.md 陷阱表（P11 行在 M0 提交中丢失，已补回）——改 AGENTS.md 后提交前建议 git diff 确认
 
 ### 变更原则（首次定下，后续仅在变更时追加变更项）
 

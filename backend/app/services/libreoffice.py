@@ -54,8 +54,8 @@ def check_libreoffice() -> dict[str, object]:
             text=True,
             timeout=settings.soffice_timeout_seconds,
         )
-        # 输出形如 "LibreOffice 24.8.2.1 ..."
-        version = result.stdout.strip().split()[-1] if result.returncode == 0 else None
+        # 输出形如 "LibreOffice 26.8.0.3 bce0998..."，版本号取第 2 个词（末词是 commit hash）
+        version = result.stdout.strip().split()[1] if result.returncode == 0 else None
     except (subprocess.TimeoutExpired, OSError):
         version = None
     return {"available": version is not None, "path": path, "version": version, "hint": None}
