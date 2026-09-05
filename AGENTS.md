@@ -37,7 +37,7 @@
 
 ### 后端
 
-- Python 3.11+ / FastAPI / uvicorn，**只绑 127.0.0.1**（见陷阱 P10）
+- Python 3.11+（本机用 ~/.local/bin/python3.12 建 venv）/ FastAPI / uvicorn，**只绑 127.0.0.1:8740**（见陷阱 P10/P11）
 - python-docx + lxml：OOXML 解析与替换生成
 - LibreOffice headless 常驻进程（看门狗 + 超时回收 + 转换缓存）
 - PyMuPDF：PDF 文本坐标提取、区域高度测量

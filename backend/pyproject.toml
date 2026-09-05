@@ -1,0 +1,40 @@
+[project]
+name = "resume-assistant-backend"
+version = "0.1.0"
+description = "本地简历编辑器后端——简历内容资产管理器"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "python-docx>=1.1",
+    "lxml>=5.0",
+    "pymupdf>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+# 第三方库暂无类型存根，逐库放开
+[[tool.mypy.overrides]]
+module = ["docx", "fitz"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

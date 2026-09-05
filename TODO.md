@@ -5,7 +5,7 @@
 
 ## 里程碑 1 — 风险先行验证（最小可用版本）
 
-- [ ] M0 项目骨架：FastAPI 服务（绑 127.0.0.1）+ Vue 3 双栏布局壳 + 一键启动脚本 + LibreOffice 启动检测引导 + .gitignore + 错误码表
+- [x] M0 项目骨架：FastAPI 服务（绑 127.0.0.1:8740，P11）+ Vue 3 双栏布局壳 + 一键启动脚本（端口预检查）+ LibreOffice 启动检测引导 + .gitignore + 错误码表 ✅ 2026-09-05（ruff/mypy/pytest 2绿 + eslint/vue-tsc/vitest 5绿 + 浏览器冒烟 6/6）
 - [ ] M1 数据层：SQLite schema 六表（blocks/tags/block_tags/templates/regions/versions/bindings）+ data/ 目录 + 存储 API + pytest 单测
 - [ ] M3a 模板上传与校验（.docx 白名单/损坏加密报错/时间戳区分同名）+ 占位符解析（run 合并）+ 模板状态机（解析中/待校对/可用）
 - [ ] M4 渲染管线：soffice 常驻集成 + DOCX→PDF + PyMuPDF 坐标提取 + DOCX 元素↔渲染位置匹配 + 转换缓存
