@@ -1,5 +1,36 @@
 # STATE.md — 会话状态摘要（累积写入，不新建）
 
+## 2026-09-07 · M1 数据层会话（完结）
+
+### 一句话快照
+
+M1 完成待用户验收；下一步 = 新会话执行 M3a 模板上传与校验（TODO.md 顶部，M2/M3 可并行但建议先 M3a 打通里程碑 1 风险链）。
+
+### 本次完成
+
+- SQLite 七表 schema（WAL + 外键强制）：backend/app/models/{schema,entities,db}.py
+- repository 六模块：repositories/{blocks,tags,templates,regions,versions,bindings}.py（纯存储层，无 REST 路由——块路由随 M2、模板随 M3）
+- 软删除 D11 原子落地：soft_delete_block 置 deleted_at + 同事务绑定置 missing（异常整体回滚有测试）
+- create_app 启动即幂等建库（data/app.db）；config 增 db_path
+- 验证：ruff ✓ / mypy 21 文件 ✓ / pytest 32 绿 / 启动建库 WAL 冒烟 ✓
+
+### 接口契约（数据层，M2+ service 层直接消费）
+
+- 事务边界：repository 函数不自行 commit；一个 `get_conn()` with 块 = 一个事务（异常统一回滚）
+- 调用范式：`with get_conn() as conn: blocks.create_block(conn, name, content, category)`
+- 时间戳：`db.utcnow()` → ISO-8601 定长 TEXT（字典序=时间序），UTC 存储
+- 状态枚举在 core/constants.py：REGION_TYPES(9) / TEMPLATE_STATUSES(parsing/pending_review/ready) / REGION_REVIEW_STATUSES / BINDING_STATUSES(active/missing)；schema 无 CHECK，应用层校验（ValueError）
+- UNIQUE：tags.name / templates.sha256 / versions(template_id,name) / bindings(version_id,region_id)
+- 删除策略：模板/版本/区域/标签物理删+CASCADE；块只软删除，bindings.block_id RESTRICT（物理删被引用块报 IntegrityError）
+- anchor/bbox 存 JSON 文本：create 时收 dict 自动 dumps；实体读回为 str，解析归 service 层
+
+### 用户偏好（本次新明确）
+
+- 三假设拍板：①绑定 1:1（UNIQUE(version_id,region_id)）②版本归属模板（M10 换装=新模板下建同名版本+复制迁移绑定）③模板落盘名 {id}_{原文件名}
+- M1 只做存储层不做路由：REST 路由随 M2（块）/M3（模板）建
+
+### 变更原则（本次无变更，沿用首次定稿）
+
 ## 2026-09-05 · M0 项目骨架会话（完结）
 
 ### 一句话快照

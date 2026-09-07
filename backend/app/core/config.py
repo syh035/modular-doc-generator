@@ -12,10 +12,12 @@ class Settings:
     port: int = 8740
 
     # 目录
-    backend_root: Path = Path(__file__).resolve().parent.parent
+    # config.py 在 backend/app/core/ 下，三层 parent 才到 backend/（M0 少算一层致 data 落错位）
+    backend_root: Path = Path(__file__).resolve().parents[2]
     project_root: Path = backend_root.parent
     data_dir: Path = project_root / "data"
     templates_dir: Path = data_dir / "templates"
+    db_path: Path = data_dir / "app.db"
 
     # 溢出分级阈值（D4：超出区域原高度 50% 为界，开发期实测校准）
     overflow_threshold: float = 0.5

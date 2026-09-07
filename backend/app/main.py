@@ -5,10 +5,13 @@ from fastapi import FastAPI
 from app.api.health import router as health_router
 from app.core.config import settings
 from app.core.errors import AppError, app_error_handler
+from app.models.db import get_conn, init_db
 
 
 def create_app() -> FastAPI:
     settings.ensure_dirs()
+    with get_conn() as conn:  # 建表幂等：启动即初始化 schema
+        init_db(conn)
     app = FastAPI(title="简历助手 backend")
     app.include_router(health_router)
     app.add_exception_handler(AppError, app_error_handler)  # type: ignore[arg-type]

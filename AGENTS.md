@@ -112,6 +112,8 @@
 | P10 | 服务绑 0.0.0.0 把隐私数据暴露到局域网 | 铁律：只绑 127.0.0.1 |
 | P11 | 本机常见端口（8000 等）可能被其他服务占用，uvicorn 绑定失败但脚本静默继续 | 后端固定用 8740；dev.sh 启动前 lsof 预检查端口，占用即报错退出 |
 | P12 | `soffice --version` 输出为 "LibreOffice 26.8.0.3 <commit-hash>"，取末词会拿到 hash 而非版本号 | 版本号取输出第 2 个词（services/libreoffice.py） |
+| P13 | config.py 位于 `backend/app/core/`，锚定 backend/ 需三层 parent；M0 少算一层致运行时数据落 `backend/data/`，且 `.gitignore` 无锚定 `data/` 模式把错位目录也忽略，git status 无法暴露（M1 发现并修复） | 路径锚定用 `Path(__file__).resolve().parents[N]` 并注释层级；数据目录位置以 `data/app.db` 实际落盘验证为准 |
+| P14 | 外部同步工具会静默回滚/覆盖工作区文件（两次实锤：AGENTS.md 陷阱表被覆盖、M1 的 ruff 修复被回滚） | 改完文件尽快 git 提交；提交前 `git diff` 复核关键修改是否仍在；发现"修过的问题又出现"先怀疑同步回滚 |
 
 ## 完成判据
 
