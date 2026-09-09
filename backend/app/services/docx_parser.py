@@ -11,8 +11,10 @@
 """
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from io import BytesIO
+from typing import cast
 
 from docx import Document
 from lxml import etree
@@ -33,6 +35,46 @@ class ParsedRegion:
     order_index: int  # 文档流出现顺序（D7 迁移匹配依据）
 
 
+def iter_flow_paragraphs(data: bytes) -> Iterator[tuple[dict[str, object], str]]:
+    """按文档流顺序枚举 DOCX 全部正文段落（含表格单元格与嵌套表格）。
+
+    每项 yield (anchor, 合并 run 后的段落全文)。anchor 编码与
+    parse_placeholders 完全一致（P3，重放规则见其文档字符串）——
+    M4 渲染位置匹配以此遍历为单一事实源，保证锚点与解析同源。
+    """
+    body = Document(BytesIO(data)).element.body
+
+    def paragraph_text(p: etree._Element) -> str:
+        # 只拼直接子 w:r 的 w:t 文本（P1 合并 run；D6 天然排除文本框内文字）
+        return "".join(t.text or "" for t in p.findall(f"{_W}r/{_W}t"))
+
+    def scan_table(tbl: etree._Element, path: list[int]) -> Iterator[tuple[dict[str, object], str]]:
+        for row_idx, tr in enumerate(tbl.findall(f"{_W}tr")):
+            for cell_idx, tc in enumerate(tr.findall(f"{_W}tc")):
+                # 单元格内段落与嵌套表格各自独立计数（path 重放的依据）
+                para_idx = 0
+                nested_idx = 0
+                for child in tc.iterchildren():
+                    if child.tag == f"{_W}p":
+                        yield (
+                            {
+                                "kind": "cell_p",
+                                "path": [*path, row_idx, cell_idx, para_idx],
+                            },
+                            paragraph_text(child),
+                        )
+                        para_idx += 1
+                    elif child.tag == f"{_W}tbl":
+                        yield from scan_table(child, [*path, row_idx, cell_idx, nested_idx])
+                        nested_idx += 1
+
+    for block_idx, child in enumerate(body.iterchildren()):
+        if child.tag == f"{_W}p":
+            yield {"kind": "p", "path": [block_idx]}, paragraph_text(child)
+        elif child.tag == f"{_W}tbl":
+            yield from scan_table(child, [block_idx])
+
+
 def parse_placeholders(data: bytes) -> list[ParsedRegion]:
     """解析 DOCX bytes，按文档流顺序返回全部占位符区域。
 
@@ -42,46 +84,20 @@ def parse_placeholders(data: bytes) -> list[ParsedRegion]:
       w:tbl → 第 row 个 w:tr → 第 cell 个 w:tc → 格内第 para 个直接子 w:p
     - 嵌套表格：每深入一层表格追加三元组 (tbl, row, cell)，末位仍是 para
     """
-    body = Document(BytesIO(data)).element.body
     regions: list[ParsedRegion] = []
     order = 0
-
-    def scan_paragraph(p: etree._Element, path: list[int]) -> None:
-        nonlocal order
-        # 只拼直接子 w:r 的 w:t 文本（P1 合并 run；D6 天然排除文本框内文字）
-        text = "".join(t.text or "" for t in p.findall(f"{_W}r/{_W}t"))
+    for anchor, text in iter_flow_paragraphs(data):
         for m in _PLACEHOLDER_RE.finditer(text):
             regions.append(
                 ParsedRegion(
                     placeholder=m.group(0),
                     label=m.group(1),
                     anchor={
-                        "kind": "p" if len(path) == 1 else "cell_p",
-                        "path": list(path),
+                        "kind": anchor["kind"],
+                        "path": list(cast("list[int]", anchor["path"])),
                     },
                     order_index=order,
                 )
             )
             order += 1
-
-    def scan_table(tbl: etree._Element, path: list[int]) -> None:
-        for row_idx, tr in enumerate(tbl.findall(f"{_W}tr")):
-            for cell_idx, tc in enumerate(tr.findall(f"{_W}tc")):
-                # 单元格内段落与嵌套表格各自独立计数（path 重放的依据）
-                para_idx = 0
-                nested_idx = 0
-                for child in tc.iterchildren():
-                    if child.tag == f"{_W}p":
-                        scan_paragraph(child, [*path, row_idx, cell_idx, para_idx])
-                        para_idx += 1
-                    elif child.tag == f"{_W}tbl":
-                        scan_table(child, [*path, row_idx, cell_idx, nested_idx])
-                        nested_idx += 1
-
-    for block_idx, child in enumerate(body.iterchildren()):
-        if child.tag == f"{_W}p":
-            scan_paragraph(child, [block_idx])
-        elif child.tag == f"{_W}tbl":
-            scan_table(child, [block_idx])
-
     return regions

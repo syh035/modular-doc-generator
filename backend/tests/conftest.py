@@ -22,8 +22,13 @@ def conn() -> Iterator[sqlite3.Connection]:
 
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    """隔离 API 环境：DB 与模板目录指向 tmp_path，应用工厂重新实例化。"""
+    """隔离 API 环境：DB / 模板 / 渲染目录指向 tmp_path，应用工厂重新实例化。"""
     monkeypatch.setattr(settings, "db_path", tmp_path / "app.db")
     monkeypatch.setattr(settings, "templates_dir", tmp_path / "templates")
+    monkeypatch.setattr(settings, "render_cache_dir", tmp_path / "render_cache")
+    monkeypatch.setattr(settings, "lo_profile_dir", tmp_path / "lo_profile")
+    monkeypatch.setattr(settings, "fontconfig_dir", tmp_path / "fontconfig")
+    # manager 单例捕获旧 settings，逐测试重置强制按新目录重建
+    monkeypatch.setattr("app.services.libreoffice._manager", None)
     with TestClient(create_app()) as c:
         yield c

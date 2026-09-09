@@ -1,5 +1,40 @@
 # STATE.md — 会话状态摘要（累积写入，不新建）
 
+## 2026-09-09 · M4 渲染管线会话（代码+自验完成，待用户手动验收）
+
+### 一句话快照
+
+M4 完成待验收；下一步 = 用户 curl 验收 → AI 代提交 → 新会话执行 M5a 预览只读（TODO.md 顶部，pdfjs 渲染 + 区域覆盖层）。
+
+### 本次完成
+
+- services/libreoffice.py：LibreOfficeManager——`soffice --convert-to` 子进程模式（UNO 常驻在本机挂起不可用，P16）+ `-env:UserInstallation` 独立 profile（规避单实例锁）+ 进程级序列化锁 + 超时杀进程组 + profile 清理 + sha256 内容寻址转换缓存（data/render_cache/）
+- services/pdf_geometry.py：PyMuPDF 行提取（页序×内容流序）+ 归一化（连字展开/软连字符剔除/空白剔除）+ 文档流段落↔PDF 行顺序对齐（折行并集 bbox、LOOKAHEAD 跳页眉页脚污染行、未匹配保持 None）
+- services/render_service.py：编排（转换→几何→bbox 落库，幂等；已有 bbox 不覆盖，留 M5b 校对维护）；全局渲染锁防并发重复落库
+- api/templates.py：GET /api/templates/{id}/preview（FileResponse 直出管线 PDF，单管线铁律）
+- docx_parser 增 iter_flow_paragraphs：文档流全序枚举，解析与几何匹配同源（锚点单一事实源）；config 增 render_cache_dir / lo_profile_dir
+- 验证：ruff ✓ / mypy 26 文件（app，历史门禁口径）✓ / pytest 85 绿（新增 21：LO 管理 5 含真实集成 + 几何 9 + API 预览 4 含端到端 + flow 3）/ 真机冒烟 ✓（首转 15.5s 冷启动 → 缓存 0.026s、bbox 落库、二次产物逐字节一致）
+- 修复：test_pdf_geometry 误访问 RegionGeometry.y1/x0（无此属性，改 bbox 下标）；test_docx_parser 嵌套表格期望漏算 python-docx 自动补的尾空段（P15）
+- 验收期追加修复（P17/P18，详见陷阱表与下方字体事实）：① LO fontconfig 无主配置致中文渲染空白 → `FONTCONFIG_FILE` 注入 + data/fontconfig/ 自产配置；② 真 CJK 字体下内容流行序乱 → `_visual_rows` 视觉行聚类；③ 清空 render_cache 坏产物。P14 同步回滚在本模块 4 次实锤（含单独吞 _run_soffice 的 env 块），重要修改必须 inspect 级验证后尽快提交
+
+### 接口契约（M5a/M9 直接消费）
+
+- GET /api/templates/{id}/preview → 200 application/pdf（管线产物本体）；TEMPLATE_NOT_FOUND(404)；LIBREOFFICE_UNAVAILABLE(503)；RENDER_FAILED(500)；RENDER_TIMEOUT(504)
+- **LO 字体事实（M4 验收实锤）**：docx run 无 rFonts（python-docx 默认模板行为）→ CJK 回退到 Linux Libertine G（无中文字形）→ **中文渲染空白但文本可提取**；显式 eastAsia 任意字体（含 mac 没有的宋体/等线/微软雅黑）→ LO 正确替换到系统 CJK 字体，渲染正常。真实 Word 模板样式表必带 eastAsia，不受影响；python-docx 造测试/演示文档必须显式设 eastAsia（含 run.font.name + rFonts eastAsia 双设置）。**验证 PDF 必须查墨迹（渲染像素），文本提取通过≠字形渲染正常**
+- regions.bbox 落库结构：`{page(0基), x0, y0, x1, y1}`，PDF 点、原点左上、round 2 位；bbox=null=渲染未匹配（M5b 校对人工兜底），前端覆盖层按 null 画虚线框
+- LibreOfficeManager.convert(docx_path) → Path（data/render_cache/{sha256}.pdf）；get_manager() 单例；M9 导出复用同一 manager 与缓存
+- iter_flow_paragraphs(data: bytes) → Iterator[(anchor, 段落全文)]，anchor 编码与 parse_placeholders 完全一致（含空段落全序枚举）
+- align_flow_to_lines(flow, pdf_lines) → {path 元组: RegionGeometry(page, bbox, line_count)}；空段/未匹配段不出现在结果
+- 性能口径：D12「预览刷新 ≤1s」以缓存路径达成（0.026s）；首次渲染冷启动 ~15s（LO profile 冷启动+转换），属一次性成本，M5a 前端需加载进度反馈（D12 超基线给进度）
+
+### 用户偏好（本次新增）
+
+- 手动测试步骤给纯命令版本（zsh 粘贴带 # 的块会错乱）；人工验证通过后由 AI 代为 git 提交
+- **trae-preview 浏览器控制台粘贴长命令会被损坏**（嵌套引号文本被替换成历史命令，M4 验收实锤两次：422/404 JSON 落成 .pdf 引发"PDF 损坏"误报）——后续手动验收步骤要么单条短命令、要么先落脚本文件让用户 `bash xx.sh` 执行，并让用户优先用系统终端
+- 教训：curl -o 不校验 HTTP 状态码，错误 JSON 会静默存成目标文件；后续验收命令加 `head -c4 | grep %PDF` 魔数校验再打开
+
+### 变更原则（本次无变更，沿用既有）
+
 ## 2026-09-09 · M3a 模板上传与解析会话（完结，用户验收通过）
 
 ### 一句话快照

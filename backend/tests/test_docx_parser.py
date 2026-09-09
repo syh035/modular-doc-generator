@@ -5,7 +5,7 @@ from io import BytesIO
 from docx import Document
 from lxml import etree
 
-from app.services.docx_parser import parse_placeholders
+from app.services.docx_parser import iter_flow_paragraphs, parse_placeholders
 
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _V_NS = "urn:schemas-microsoft-com:vml"
@@ -163,3 +163,52 @@ def test_malformed_braces_not_matched() -> None:
     labels = [r.label for r in regions]
     assert "" not in labels
     assert "}" not in labels
+
+
+# ---- iter_flow_paragraphs（M4 匹配数据源，与解析同源）----
+
+
+def test_flow_enumerates_all_paragraphs_in_order() -> None:
+    """文档流全序枚举：无占位符段落也在列，顺序 = 解析顺序。"""
+    doc = Document()
+    doc.add_paragraph("标题")
+    doc.add_paragraph("电话：{{手机号}}")
+    doc.add_paragraph("")
+    table = doc.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "{{教育}}"
+    table.cell(0, 1).text = "格内普通段"
+    doc.add_paragraph("结尾")
+
+    flow = list(iter_flow_paragraphs(docx_bytes(doc)))
+    texts = [t for _, t in flow]
+    assert texts == ["标题", "电话：{{手机号}}", "", "{{教育}}", "格内普通段", "结尾"]
+    kinds = [a["kind"] for a, _ in flow]
+    assert kinds == ["p", "p", "p", "cell_p", "cell_p", "p"]
+
+
+def test_flow_anchors_match_parse_placeholders() -> None:
+    """锚点一致性：占位符区域的 anchor 必能在文档流枚举中找到同 path 同文本。"""
+    doc = build_table_doc()
+    data = docx_bytes(doc)
+    flow = list(iter_flow_paragraphs(data))
+    for region in parse_placeholders(data):
+        path = region.anchor["path"]
+        matches = [
+            t
+            for a, t in flow
+            if a["path"] == path and a["kind"] == region.anchor["kind"]
+        ]
+        assert len(matches) == 1
+        assert region.placeholder in matches[0]
+
+
+def test_flow_nested_table_paths() -> None:
+    """嵌套表格路径编码：外层段 → 嵌套段 → 尾空段（OOXML 要求 tc 以 p 结尾，
+    python-docx 的 add_table 会自动补尾部空段，占外层 cell 的 para_idx=1）。"""
+    flow = list(iter_flow_paragraphs(docx_bytes(build_nested_table_doc())))
+    assert [a["kind"] for a, _ in flow] == ["cell_p", "cell_p", "cell_p"]
+    assert [t for _, t in flow] == ["外层", "{{嵌套}}", ""]
+    nested_path = flow[1][0]["path"]
+    assert isinstance(nested_path, list)
+    assert len(nested_path) == 7  # [tbl,row,cell, nested_tbl,row,cell, para]
+    assert flow[2][0]["path"] == [0, 0, 0, 1]  # 尾空段：外层 cell 第 2 个段落

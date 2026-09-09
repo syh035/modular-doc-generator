@@ -1,17 +1,18 @@
-"""API 入口：/api/templates（上传 / 列表 / 详情 / 区域列表）。"""
+"""API 入口：/api/templates（上传 / 列表 / 详情 / 区域列表 / 预览 PDF）。"""
 
 import json
 import sqlite3
 from typing import Annotated
 
 from fastapi import APIRouter, File, UploadFile
+from fastapi.responses import FileResponse
 
 from app.core.errors import TEMPLATE_NOT_FOUND, AppError
 from app.models.db import get_conn
 from app.models.entities import Region, Template
 from app.models.repositories import regions as regions_repo
 from app.models.repositories import templates as templates_repo
-from app.services import template_service
+from app.services import render_service, template_service
 
 router = APIRouter(prefix="/api")
 
@@ -96,3 +97,14 @@ def list_regions(template_id: int) -> dict[str, object]:
             "template_id": tpl.id,
             "regions": [_region_dict(r) for r in regions_repo.list_regions(conn, tpl.id)],
         }
+
+
+@router.get("/templates/{template_id}/preview")
+def get_preview(template_id: int) -> FileResponse:
+    """模板预览 PDF（单管线铁律：预览即管线产物，P2）。
+
+    首次调用触发 LibreOffice 转换并计算区域 bbox（同步完成，10 页内
+    模板远低于 D12 解析基线的量级）；后续调用命中转换缓存。
+    """
+    pdf_path = render_service.ensure_template_preview(template_id)
+    return FileResponse(pdf_path, media_type="application/pdf")

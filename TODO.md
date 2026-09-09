@@ -46,3 +46,5 @@
 
 - [ ] 产品命名（D13，用户定，影响 README/窗口标题）
 - [ ] 建议：将 PRD 副本纳入项目目录（原件在 ~/Desktop，有丢失风险）——待用户拍板
+- [ ] 技术债：tests/ 未纳入 mypy 门禁（M1/M3a 存量 ~66 个类型标注错误：no-untyped-def/union-attr/Document 误当类型），待专门清理后门禁扩为 `mypy app tests`
+- [ ] 技术债：FastAPI 路径/参数校验错误（422）仍是默认 `{"detail":[...]}` 结构，不符合统一错误结构范式 `{"error":{"code","message"}}`（M4 验收时实锤）；建议加 RequestValidationError handler，可随 M5a 一并处理

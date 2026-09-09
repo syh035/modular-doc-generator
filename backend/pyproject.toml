@@ -32,9 +32,9 @@ python_version = "3.11"
 warn_unused_ignores = true
 warn_redundant_casts = true
 disallow_untyped_defs = true
-# 第三方库暂无类型存根，逐库放开
+# 第三方库暂无类型存根，逐库放开（pymupdf 自带 py.typed 无需登记）
 [[tool.mypy.overrides]]
-module = ["docx", "fitz", "lxml"]
+module = ["docx", "lxml"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -39,7 +39,7 @@
 
 - Python 3.11+（本机用 ~/.local/bin/python3.12 建 venv）/ FastAPI / uvicorn，**只绑 127.0.0.1:8740**（见陷阱 P10/P11）
 - python-docx + lxml：OOXML 解析与替换生成
-- LibreOffice headless 常驻进程（看门狗 + 超时回收 + 转换缓存）
+- LibreOffice headless `--convert-to` 子进程转换（独立 profile + 超时杀组 + sha256 转换缓存；UNO 常驻不可用，见 P16）
 - PyMuPDF：PDF 文本坐标提取、区域高度测量
 - SQLite（WAL 模式）；测试 pytest
 
@@ -114,6 +114,10 @@
 | P12 | `soffice --version` 输出为 "LibreOffice 26.8.0.3 <commit-hash>"，取末词会拿到 hash 而非版本号 | 版本号取输出第 2 个词（services/libreoffice.py） |
 | P13 | config.py 位于 `backend/app/core/`，锚定 backend/ 需三层 parent；M0 少算一层致运行时数据落 `backend/data/`，且 `.gitignore` 无锚定 `data/` 模式把错位目录也忽略，git status 无法暴露（M1 发现并修复） | 路径锚定用 `Path(__file__).resolve().parents[N]` 并注释层级；数据目录位置以 `data/app.db` 实际落盘验证为准 |
 | P14 | 外部同步工具会静默回滚/覆盖工作区文件（两次实锤：AGENTS.md 陷阱表被覆盖、M1 的 ruff 修复被回滚） | 改完文件尽快 git 提交；提交前 `git diff` 复核关键修改是否仍在；发现"修过的问题又出现"先怀疑同步回滚 |
+| P15 | python-docx `cell.add_table()` 会在单元格尾部自动补一个空 `w:p`（OOXML 要求 `w:tc` 以段落结尾）——嵌套表格的文档流枚举会比直觉多一个空段 | 构造嵌套表格测试/校对预期时把尾空段算上；空段在几何匹配中天然跳过，但占 anchor 的 para_idx |
+| P16 | LO UNO 常驻监听在本机环境挂起不可用（进程僵住 0 CPU，实测 M4）；且 soffice 默认共享 profile 有单实例锁 | 用 `--convert-to` 子进程 + `-env:UserInstallation` 独立 profile + 超时杀进程组 + sha256 内容寻址缓存（P8 的"常驻进程"方案以此修正落地，见 services/libreoffice.py） |
+| P17 | homebrew cask 版 LO 用自带 fontconfig 枚举字体，但 app bundle 内**无主 fonts.conf** → 系统字体（含全部 CJK）不可见 → 中文回退到无字形的 Linux Libertine G 渲染**空白**（文本仍可提取！）；显式指定字体名也没用（解析不到） | soffice 子进程设 `FONTCONFIG_FILE` 指向自产配置（扫 /System/Library/Fonts 等，见 libreoffice.py `_ensure_fontconfig`）；验证 PDF 必须逐字符查渲染墨迹，**文本提取通过 ≠ 字形渲染正常**；fontconfig 冷缓存首次转换可能耗时数分钟（扫全系统字体），属一次性成本 |
+| P18 | P17 修复后（真 CJK 字体生效），LO 写 PDF 内容流会把同一视觉行拆成乱序片段（「张/三的/简历」顺序错乱、同行 y 基线抖动 104.9~107.0），内容流序 ≠ 阅读序——几何对齐全数失配 | 块序仍可靠（= 文档流序）；块内按 y 重叠（≥50%）聚类成视觉行、行内按 x 排序（pdf_geometry.py `_visual_rows`）；不要假设内容流顺序即阅读顺序 |
 
 ## 完成判据
 
