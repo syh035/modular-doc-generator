@@ -1,5 +1,33 @@
 # STATE.md — 会话状态摘要（累积写入，不新建）
 
+## 2026-09-09 · M5a 预览只读会话（代码+自验完成，待用户手动验收）
+
+### 一句话快照
+
+M5a 完成待验收；下一步 = 用户浏览器手动验收 → AI 代提交 → 新会话执行 M6a 绑定与替换引擎（TODO.md 顶部）。
+
+### 本次完成
+
+- 前端 pdfjs 预览：`src/pdf/viewer.ts`（worker 走 Vite URL 导入、`openDocument` 返回 `{document, destroy}` 句柄——pdfjs 6.x destroy 在 loadingTask 上、data 先 slice 拷贝防 detach、`preparePage` 一次 viewport 供 canvas 绘制与覆盖层同源、dpr 高清渲染）
+- 覆盖层几何：`src/pdf/geometry.ts` 纯函数——`bboxToOverlayRect`（后端 bbox 原点左上 → pdfjs 用户空间左下：y_user = viewBox[3] − y，再 convertToViewportPoint，任意 rotation 正确）；`overlayKind` 三态（M5a 无绑定数据恒黄/虚线，'bound' 分支留 M6a）
+- 状态：`src/stores/preview.ts`——模板列表 + selectTemplate 状态机 idle→loading→ready|error；**取数顺序：PDF 先行**（首次触发 LO 转换与 bbox 落库），详情随后取到的 regions 已带 bbox；P7 一次选择共用一个序号（PDF/blob/详情三段手工 isCurrent 检查，非 sequencedFetch 逐请求加一）
+- 组件：TemplatePreview.vue（空态/加载态含 D12 首转提示/error/页容器 fit-width 自适应 ResizeObserver/黄色覆盖层/未定位区域虚线徽标列表+图例统计）；TopBar.vue 模板下拉（挂载即 loadTemplates，上传按钮仍 disabled 属模板管理 UI 后续模块）
+- 后端技术债清理：RequestValidationError handler → 422 统一 `{"error":{"code":"VALIDATION_ERROR","message":"请求参数校验失败：…"}}`（backend/app/core/errors.py + main.py 注册 + 测试）
+- **验收期修复（P19/P20）**：MCP 浏览器内核 < Chromium 136，pdfjs-dist 6.3.289 的 `Map.getOrInsertComputed` 不存在 → `page.render` 抛错、canvas 空白（DOM/覆盖层正常，极具迷惑性）。降级锁定 `pdfjs-dist@5.4.149`（exact，最后一个不用该 API 的版本；5.4 与 6.x 渲染 API 同构，代码零改动）；依赖变更后必须重启 vite dev server（旧预构建缓存不失效，报错堆栈指向 `pdfjs-dist.js` 可辨认）
+- 验证：后端 ruff ✓ / mypy 26 文件 ✓ / pytest 86 绿（新增 422 一条）；前端 eslint ✓ / vue-tsc ✓ / vitest 26 绿（新增 21：geometry 6 + store 7 + TemplatePreview 5 + TopBar 3）；MCP 浏览器端到端 8/8 PASS（canvas 墨迹 2468 非白像素/中文截图可见/覆盖框对齐「手机号」「教育经历」/P7 竞态/缓存秒开/无阻断错误）
+
+### 接口契约（M6a/M5b 直接消费）
+
+- 前端取数三 API：`listTemplates()/fetchTemplate(id)/previewUrl(id)`（src/api/templates.ts）；`fetchBlob/sequencedFetchBlob`（src/api/client.ts）
+- 覆盖层换算契约：`bboxToOverlayRect(bbox, viewport.viewBox)`——viewport 必须与 canvas 绘制同源（preparePage 返回的实例）
+- jsdom 测试事实：`new Response(jsdom的Blob)` 会静默字符串化为 `[object Blob]`（13 字节）；二进制 stub 必须用 `ArrayBuffer` 构造 Response
+- pdfjs-dist 事实（**锁定 5.4.149**，P19）：RenderParameters 用 `canvas` 参数（5.4 起已支持，canvasContext 仅为兼容保留）；PageViewport 无 convertToViewportRectangle（用 convertToViewportPoint）；PDFDocumentProxy 无 destroy（在 loadingTask 上，openDocument 返回 `{document, destroy}` 句柄）；升级 pdfjs 前先 grep `getOrInsert` 确认内核兼容性
+- 422 契约：所有 FastAPI 参数校验错误 → `{"error":{"code":"VALIDATION_ERROR","message":"请求参数校验失败：[...]"}}`
+
+### 用户偏好（本次无新增，沿用）
+
+### 变更原则（本次无变更，沿用既有）
+
 ## 2026-09-09 · M4 渲染管线会话（代码+自验完成，待用户手动验收）
 
 ### 一句话快照

@@ -141,6 +141,15 @@ def test_template_not_found_404(client: TestClient) -> None:
         assert resp.json()["error"]["code"] == "TEMPLATE_NOT_FOUND"
 
 
+def test_path_param_invalid_422_unified_error(client: TestClient) -> None:
+    """路径参数非整数：422 也走统一错误结构（技术债，M5a 清理）。"""
+    resp = client.get("/api/templates/abc")
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+    assert "请求参数校验失败" in body["error"]["message"]
+
+
 # ---- 预览 PDF（M4）----
 
 

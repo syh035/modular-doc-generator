@@ -5,6 +5,7 @@
 """
 
 from fastapi import Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 # ---- 错误码表 ----
@@ -37,4 +38,13 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"code": exc.code, "message": exc.message}},
+    )
+
+
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """路径/参数校验错误（422）也统一为 {"error":{code,message}} 范式（AGENTS.md）。"""
+    message = f"请求参数校验失败：{exc.errors()}"
+    return JSONResponse(
+        status_code=422,
+        content={"error": {"code": VALIDATION_ERROR, "message": message}},
     )

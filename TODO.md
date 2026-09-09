@@ -8,8 +8,8 @@
 - [x] M0 项目骨架：FastAPI 服务（绑 127.0.0.1:8740，P11）+ Vue 3 双栏布局壳 + 一键启动脚本（端口预检查）+ LibreOffice 启动检测引导 + .gitignore + 错误码表 ✅ 2026-09-05（ruff/mypy/pytest 2绿 + eslint/vue-tsc/vitest 5绿 + 浏览器冒烟 6/6）
 - [x] M1 数据层：SQLite schema 七表（blocks/tags/block_tags/templates/regions/versions/bindings）+ data/ 目录 + 存储 API + pytest 单测 ✅ 2026-09-07（ruff/mypy 21文件/pytest 32绿 + 启动建库 WAL 冒烟；三假设经用户确认：绑定1:1 / 版本归属模板 / 落盘名{id}_{原名}）
 - [x] M3a 模板上传与校验（.docx 白名单/损坏加密报错/时间戳区分同名）+ 占位符解析（run 合并）+ 模板状态机（解析中/待校对/可用） ✅ 2026-09-09（ruff/mypy 24文件/pytest 64绿 + 用户 curl 手动验收 8/8：跨run合并/409重复/双400/列表/详情/404/落盘；四假设确认：同sha256拒绝/占位符type=custom/无占位符也进待校对/纯后端验收）
-- [ ] M4 渲染管线：soffice 常驻集成 + DOCX→PDF + PyMuPDF 坐标提取 + DOCX 元素↔渲染位置匹配 + 转换缓存
-- [ ] M5a 预览（只读）：pdfjs 渲染 + 区域覆盖层（绿=已绑定/黄=待校对/虚线=未识别）
+- [x] M4 渲染管线：soffice 常驻集成 + DOCX→PDF + PyMuPDF 坐标提取 + DOCX 元素↔渲染位置匹配 + 转换缓存 ✅ 2026-09-09（ruff/mypy 26文件/pytest 85绿含LO真实集成 + 用户验收通过：中文渲染/坐标对齐/缓存0.026s；修复P17字体/P18行序，提交bebafd7）
+- [x] M5a 预览（只读）：pdfjs 渲染 + 区域覆盖层（绿=已绑定/黄=待校对/虚线=未识别） ✅ 2026-09-09（后端 ruff/mypy/pytest 86绿 + 前端 eslint/vue-tsc/vitest 26绿 + MCP 浏览器端到端 8/8：中文渲染墨迹验证/覆盖框对齐/P7 竞态/缓存秒开；422 统一错误结构技术债一并清理；验收期修复 P19 pdfjs 降级 5.4.149、P20 vite 预构建缓存须重启）
 - [ ] M6a 占位符区域绑定（正/反向）+ 替换引擎（首 run 样式继承/换段/编号剥离）+ 预览局部刷新
 - [ ] ▲ 里程碑 1 验收：上传带 `{{姓名}}` 占位符的模板 → 自动识别 → 绑定一个块 → 预览看到样式一致的替换（全项目最高风险验证点，不过关不铺开功能）
 
@@ -47,4 +47,3 @@
 - [ ] 产品命名（D13，用户定，影响 README/窗口标题）
 - [ ] 建议：将 PRD 副本纳入项目目录（原件在 ~/Desktop，有丢失风险）——待用户拍板
 - [ ] 技术债：tests/ 未纳入 mypy 门禁（M1/M3a 存量 ~66 个类型标注错误：no-untyped-def/union-attr/Document 误当类型），待专门清理后门禁扩为 `mypy app tests`
-- [ ] 技术债：FastAPI 路径/参数校验错误（422）仍是默认 `{"detail":[...]}` 结构，不符合统一错误结构范式 `{"error":{"code","message"}}`（M4 验收时实锤）；建议加 RequestValidationError handler，可随 M5a 一并处理

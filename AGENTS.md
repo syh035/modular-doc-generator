@@ -118,6 +118,8 @@
 | P16 | LO UNO 常驻监听在本机环境挂起不可用（进程僵住 0 CPU，实测 M4）；且 soffice 默认共享 profile 有单实例锁 | 用 `--convert-to` 子进程 + `-env:UserInstallation` 独立 profile + 超时杀进程组 + sha256 内容寻址缓存（P8 的"常驻进程"方案以此修正落地，见 services/libreoffice.py） |
 | P17 | homebrew cask 版 LO 用自带 fontconfig 枚举字体，但 app bundle 内**无主 fonts.conf** → 系统字体（含全部 CJK）不可见 → 中文回退到无字形的 Linux Libertine G 渲染**空白**（文本仍可提取！）；显式指定字体名也没用（解析不到） | soffice 子进程设 `FONTCONFIG_FILE` 指向自产配置（扫 /System/Library/Fonts 等，见 libreoffice.py `_ensure_fontconfig`）；验证 PDF 必须逐字符查渲染墨迹，**文本提取通过 ≠ 字形渲染正常**；fontconfig 冷缓存首次转换可能耗时数分钟（扫全系统字体），属一次性成本 |
 | P18 | P17 修复后（真 CJK 字体生效），LO 写 PDF 内容流会把同一视觉行拆成乱序片段（「张/三的/简历」顺序错乱、同行 y 基线抖动 104.9~107.0），内容流序 ≠ 阅读序——几何对齐全数失配 | 块序仍可靠（= 文档流序）；块内按 y 重叠（≥50%）聚类成视觉行、行内按 x 排序（pdf_geometry.py `_visual_rows`）；不要假设内容流顺序即阅读顺序 |
+| P19 | pdfjs-dist 6.x（及 5.7+）主线程与 worker bundle 均依赖 `Map.prototype.getOrInsert/getOrInsertComputed`（Map Upsert 提案，Chromium 136+ 才有）；内嵌/MCP 浏览器内核较旧时 `page.render` 抛 "getOrInsertComputed is not a function" → canvas 空白但 DOM/覆盖层正常（极易误判为渲染逻辑 bug） | 前端锁定 `pdfjs-dist@5.4.149`（exact pin，最后一个不用该 API 的版本）；5.4 与 6.x 渲染 API 兼容（`canvas` 参数/`PageViewport` 同构）；升级浏览器或 pdfjs 前先 grep `getOrInsert` 确认 |
+| P20 | 运行中的 Vite dev server 在依赖版本变更后仍按 `node_modules/.vite` 旧预构建产物供给浏览器（报错堆栈指向 `pdfjs-dist.js` 而非源 mjs）——换依赖后硬刷新页面无效，复测仍复现旧错误 | 依赖变更后必须重启 dev server；注意 dev.sh trap 清理不彻底时先 `lsof -iTCP:8740/5173` 查残留并 kill 再启动 |
 
 ## 完成判据
 
