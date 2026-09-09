@@ -6,7 +6,7 @@
  */
 
 import * as pdfjs from 'pdfjs-dist'
-import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from 'pdfjs-dist'
+import type { PDFDocumentProxy, PDFPageProxy, PageViewport, RenderTask } from 'pdfjs-dist'
 
 // Vite：worker 走 URL 导入，交由打包器解析（pdfjs v4+ 标准 ESM 用法）
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -35,6 +35,8 @@ export interface RenderedPage {
   /** 与 canvas 绘制同源的 viewport（覆盖层换算用，勿重建）。 */
   viewport: PageViewport
   render: (canvas: HTMLCanvasElement) => Promise<void>
+  /** 取消进行中的渲染（已完成的任务为 no-op）。重排前必须先取消，P22。 */
+  cancel: () => void
 }
 
 /**
@@ -43,6 +45,7 @@ export interface RenderedPage {
  */
 export function preparePage(page: PDFPageProxy, scale: number): RenderedPage {
   const viewport = page.getViewport({ scale })
+  let task: RenderTask | null = null
   return {
     index: page.pageNumber - 1,
     width: viewport.width,
@@ -54,11 +57,15 @@ export function preparePage(page: PDFPageProxy, scale: number): RenderedPage {
       canvas.height = Math.round(viewport.height * dpr)
       canvas.style.width = `${viewport.width}px`
       canvas.style.height = `${viewport.height}px`
-      await page.render({
+      task = page.render({
         canvas,
         viewport,
         transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
-      }).promise
+      })
+      await task.promise
+    },
+    cancel: () => {
+      task?.cancel()
     },
   }
 }

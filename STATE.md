@@ -15,6 +15,7 @@ M5a 完成待验收；下一步 = 用户浏览器手动验收 → AI 代提交 �
 - 后端技术债清理：RequestValidationError handler → 422 统一 `{"error":{"code":"VALIDATION_ERROR","message":"请求参数校验失败：…"}}`（backend/app/core/errors.py + main.py 注册 + 测试）
 - **验收期修复（P19/P20）**：MCP 浏览器内核 < Chromium 136，pdfjs-dist 6.3.289 的 `Map.getOrInsertComputed` 不存在 → `page.render` 抛错、canvas 空白（DOM/覆盖层正常，极具迷惑性）。降级锁定 `pdfjs-dist@5.4.149`（exact，最后一个不用该 API 的版本；5.4 与 6.x 渲染 API 同构，代码零改动）；依赖变更后必须重启 vite dev server（旧预构建缓存不失效，报错堆栈指向 `pdfjs-dist.js` 可辨认）
 - 验证：后端 ruff ✓ / mypy 26 文件 ✓ / pytest 86 绿（新增 422 一条）；前端 eslint ✓ / vue-tsc ✓ / vitest 26 绿（新增 21：geometry 6 + store 7 + TemplatePreview 5 + TopBar 3）；MCP 浏览器端到端 8/8 PASS（canvas 墨迹 2468 非白像素/中文截图可见/覆盖框对齐「手机号」「教育经历」/P7 竞态/缓存秒开/无阻断错误）
+- **验收追加修复（用户反馈黄框未对齐→数字定位三连）**：① P21 陈旧 bbox——库值系 P17 字体修复前坏字体渲染算出（bbox 非空不覆盖设计缺口），数据修复（置 NULL 重算，14 区域全部重算，干跑+PyMuPDF 实测+浏览器三点闭合）；② P22 渲染竞态白板——TemplatePreview 三缺陷（loading 态无 canvas 崩/在飞渲染不取消致并发 page.render 被拒/异常未捕获），修复为 status 门控 + RenderedPage.cancel()（RenderTask 句柄）+ try/catch；③ vitest 26→28 绿（+2 回归：loading 不渲染、重排取消旧批）；终验 6/6 PASS（框位置 14.52%/14.73%/13.63% vs 预期 14.53%/14.72%/13.63%，框内墨迹 436/577 像素，连切三模板无白板，控制台零报错）
 
 ### 接口契约（M6a/M5b 直接消费）
 

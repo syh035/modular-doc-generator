@@ -10,6 +10,12 @@ const fakePage = {
   getViewport: () => ({ width: 612, height: 792 }),
 }
 
+/** P22 回归：渲染/取消共享 spy（vi.hoisted 使 mock 工厂可引用）。 */
+const { renderSpy, cancelSpy } = vi.hoisted(() => ({
+  renderSpy: vi.fn(async () => {}),
+  cancelSpy: vi.fn(),
+}))
+
 vi.mock('../pdf/viewer', () => {
   const fakeViewport = (scale: number) => ({
     viewBox: [0, 0, 612, 792],
@@ -28,7 +34,8 @@ vi.mock('../pdf/viewer', () => {
       width: 61.2,
       height: 79.2,
       viewport: fakeViewport(0.1),
-      render: vi.fn(async () => {}),
+      render: renderSpy,
+      cancel: cancelSpy,
     })),
   }
 })
@@ -134,5 +141,38 @@ describe('TemplatePreview（M5a 只读预览）', () => {
     await flushPromises()
     expect(wrapper.find('.pdf-page').exists()).toBe(false)
     expect(wrapper.text()).toContain('请在顶部选择模板开始预览')
+  })
+
+  it('P22 回归：loading 态 pdfData 先到不渲染（DOM 无 canvas），ready 后补渲染', async () => {
+    const wrapper = mountPreview()
+    const store = usePreviewStore()
+    // store 时序：pdfData 先置位（fetchTemplate 网络间隙），status 尚为 loading
+    store.pdfData = new ArrayBuffer(8)
+    store.status = 'loading'
+    await flushPromises()
+    expect(renderSpy).not.toHaveBeenCalled() // loading 态无 canvas，不盲目渲染
+
+    store.regions = [region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 })]
+    store.status = 'ready'
+    await flushPromises()
+    expect(renderSpy).toHaveBeenCalledTimes(1) // ready 触发补渲染
+    expect(wrapper.find('.pdf-page').exists()).toBe(true)
+  })
+
+  it('P22 回归：重排（regions 变化）触发 rebuild 时取消上一批在飞渲染', async () => {
+    const wrapper = mountPreview()
+    const store = usePreviewStore()
+    store.status = 'ready'
+    store.pdfData = new ArrayBuffer(8)
+    store.regions = [region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 })]
+    await flushPromises()
+    expect(renderSpy).toHaveBeenCalledTimes(1)
+    expect(cancelSpy).not.toHaveBeenCalled()
+
+    store.regions = [region(2, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 })]
+    await flushPromises()
+    expect(cancelSpy).toHaveBeenCalledTimes(1) // 旧批次先取消再重排
+    expect(renderSpy).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('.overlay.pending').attributes('title')).toBe('字段2')
   })
 })

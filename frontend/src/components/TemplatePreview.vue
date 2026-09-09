@@ -18,6 +18,8 @@ let opened: OpenedPdf | null = null
 let openedData: ArrayBuffer | null = null
 let rebuildSeq = 0
 let observer: ResizeObserver | null = null
+/** 当前批次页面（含在飞渲染的取消句柄，P22）。 */
+let activePages: RenderedPage[] = []
 
 function regionsOf(pageIndex: number): Region[] {
   return store.regions.filter(r => r.bbox !== null && r.bbox.page === pageIndex)
@@ -34,9 +36,24 @@ function overlayStyle(region: Region, page: RenderedPage) {
 }
 
 /** 重建渲染：pdfData 变化重开文档；容器宽度变化仅按新 scale 重排。 */
-async function rebuild(): Promise<void> {
+function rebuild(): void {
   const seq = ++rebuildSeq
+  doRebuild(seq).catch(err => {
+    if (err instanceof Error && err.name === 'RenderingCancelledException') {
+      return // 主动取消属正常流程（P22）
+    }
+    console.error('[TemplatePreview] 渲染失败：', err)
+  })
+}
+
+async function doRebuild(seq: number): Promise<void> {
   unplaced.value = store.regions.filter(r => r.bbox === null)
+  // P22：先取消上一批在飞渲染——seq 守卫拦不住已开始的 page.render，
+  // 新旧批次并发打同一 canvas 会被 pdfjs 拒绝（白板根因）
+  for (const p of activePages) {
+    p.cancel()
+  }
+  activePages = []
   const data = store.pdfData
   if (data === null) {
     await opened?.destroy()
@@ -45,9 +62,23 @@ async function rebuild(): Promise<void> {
     pages.value = []
     return
   }
+  // loading 态 v-else 未渲染（DOM 无 canvas）→ 等 status 就绪后
+  // watcher 再次触发 rebuild 补渲染（canvas 未就绪另有兜底检查）
+  if (store.status !== 'ready') {
+    return
+  }
   if (opened === null || openedData !== data) {
-    await opened?.destroy()
-    opened = await openDocument(data)
+    const previous = opened
+    opened = null
+    openedData = null
+    const doc = await openDocument(data)
+    if (seq !== rebuildSeq) {
+      void doc.destroy()
+      await previous?.destroy()
+      return
+    }
+    await previous?.destroy()
+    opened = doc
     openedData = data
   }
   if (seq !== rebuildSeq) {
@@ -66,18 +97,23 @@ async function rebuild(): Promise<void> {
     return
   }
   pages.value = list
+  activePages = list
   await nextTick()
   if (seq !== rebuildSeq) {
     return
   }
   const canvases = Array.from(scrollRef.value?.querySelectorAll('canvas') ?? [])
+  if (canvases.length !== list.length) {
+    console.warn('[TemplatePreview] canvas 未就绪，跳过本轮渲染')
+    return
+  }
   await Promise.all(list.map((p, i) => p.render(canvases[i])))
 }
 
 watch(
-  () => [store.pdfData, containerWidth.value, store.regions],
+  () => [store.pdfData, containerWidth.value, store.regions, store.status],
   () => {
-    void rebuild()
+    rebuild()
   },
 )
 
@@ -96,6 +132,10 @@ onMounted(() => {
 onBeforeUnmount(() => {
   observer?.disconnect()
   rebuildSeq++
+  for (const p of activePages) {
+    p.cancel()
+  }
+  activePages = []
   void opened?.destroy()
   opened = null
   openedData = null

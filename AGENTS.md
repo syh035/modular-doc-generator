@@ -120,6 +120,8 @@
 | P18 | P17 修复后（真 CJK 字体生效），LO 写 PDF 内容流会把同一视觉行拆成乱序片段（「张/三的/简历」顺序错乱、同行 y 基线抖动 104.9~107.0），内容流序 ≠ 阅读序——几何对齐全数失配 | 块序仍可靠（= 文档流序）；块内按 y 重叠（≥50%）聚类成视觉行、行内按 x 排序（pdf_geometry.py `_visual_rows`）；不要假设内容流顺序即阅读顺序 |
 | P19 | pdfjs-dist 6.x（及 5.7+）主线程与 worker bundle 均依赖 `Map.prototype.getOrInsert/getOrInsertComputed`（Map Upsert 提案，Chromium 136+ 才有）；内嵌/MCP 浏览器内核较旧时 `page.render` 抛 "getOrInsertComputed is not a function" → canvas 空白但 DOM/覆盖层正常（极易误判为渲染逻辑 bug） | 前端锁定 `pdfjs-dist@5.4.149`（exact pin，最后一个不用该 API 的版本）；5.4 与 6.x 渲染 API 兼容（`canvas` 参数/`PageViewport` 同构）；升级浏览器或 pdfjs 前先 grep `getOrInsert` 确认 |
 | P20 | 运行中的 Vite dev server 在依赖版本变更后仍按 `node_modules/.vite` 旧预构建产物供给浏览器（报错堆栈指向 `pdfjs-dist.js` 而非源 mjs）——换依赖后硬刷新页面无效，复测仍复现旧错误 | 依赖变更后必须重启 dev server；注意 dev.sh trap 清理不彻底时先 `lsof -iTCP:8740/5173` 查残留并 kill 再启动 |
+| P21 | bbox 是「首次渲染落库、非空不覆盖」（render_service._persist_region_bboxes）——P17 字体修复后清渲染缓存重转 PDF，**新布局下旧 bbox 静默存活**，前端黄框整体浮高 ~9pt（M5a 验收实锤；前端换算链路无辜，库值本身就是错的） | 已数据修复（bbox 置 NULL 触发重算）；「渲染产物变了但 bbox 不跟随」是设计缺口，bbox 生命周期策略（如缓存 miss 时失效）随 M5b 校对流程定夺；排查对齐问题先比对「库 bbox vs PyMuPDF 实测」再怀疑前端 |
+| P22 | TemplatePreview 三重渲染竞态（M5a 验收实锤白板）：① store 时序 pdfData 先于 status=ready 置位，watcher 在 loading 态触发 rebuild，v-else 未渲染 DOM 无 canvas → render(undefined) 崩；② **seq 序号守卫只能拦「未开始」的任务，拦不住「在飞」的 page.render**——渲染中容器 resize 触发新 rebuild，新旧批次并发打同一 canvas 被 pdfjs 拒绝 → canvas 已设尺寸却全白；③ void rebuild() 异常未捕获无诊断线索 | rebuild 门控 status==='ready'（watch 源含 status，ready 后补渲染）；RenderedPage 持 RenderTask 句柄暴露 cancel()，每轮 rebuild 先取消上一批在飞渲染；openDocument 竞态孤儿文档显式 destroy；整体 try/catch 记 console.error；教训：**前端异步任务取消必须显式，序号守卫不是取消** |
 
 ## 完成判据
 
