@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
+from app.api.templates import router as templates_router
 from app.core.config import settings
 from app.core.errors import AppError, app_error_handler
 from app.models.db import get_conn, init_db
@@ -14,6 +15,7 @@ def create_app() -> FastAPI:
         init_db(conn)
     app = FastAPI(title="简历助手 backend")
     app.include_router(health_router)
+    app.include_router(templates_router)
     app.add_exception_handler(AppError, app_error_handler)  # type: ignore[arg-type]
     return app
 

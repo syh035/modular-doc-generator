@@ -1,5 +1,36 @@
 # STATE.md — 会话状态摘要（累积写入，不新建）
 
+## 2026-09-09 · M3a 模板上传与解析会话（完结，用户验收通过）
+
+### 一句话快照
+
+M3a 完结（手动验收 8/8，四假设全部确认）；下一步 = 新会话执行 M4 渲染管线（TODO.md 顶部，soffice 常驻 + DOCX→PDF + 坐标提取 + 转换缓存）。
+
+### 本次完成
+
+- services/docx_parser.py：`{{字段名}}` 占位符解析——P1 段落内合并 run 后再匹配；D6 只扫 body 段落+表格单元格（含嵌套表格），页眉页脚/文本框天然排除；P3 anchor 记文档流路径
+- services/template_service.py：校验链（.docx 白名单 / OLE 魔数→TEMPLATE_ENCRYPTED / 非 zip→TEMPLATE_CORRUPT / zip 缺 document.xml→TEMPLATE_CORRUPT）→ 建档 parsing → 落盘 `{id}_{原名}` → 解析 → 区域落库 → pending_review；失败清残（事务回滚 + 落盘文件删除）
+- api/templates.py：POST /api/templates（multipart）、GET /api/templates（列表+regions_count）、GET /api/templates/{id}（详情+regions）、GET /api/templates/{id}/regions
+- regions repo 补 count_regions；pyproject 增 python-multipart 依赖（FastAPI 文件上传必需）；mypy ignore 列表加 lxml
+- 验证：ruff ✓ / mypy 24 文件 ✓ / pytest 64 绿（新增 32：parser 9 + service 11 + API 12）/ 真实启动冒烟 ✓（跨 run 合并、409 重复、四类错误、列表详情 404）
+
+### 接口契约（M4/M6a 直接消费）
+
+- anchor.path 编码（docx_parser.parse_placeholders 文档字符串为准）：段落 `[block]`；单元格段落 `[tbl, row, cell, para]`；嵌套表格每深一层追加三元组，末位恒为 para。kind: "p"（len==1）/ "cell_p"。重放：body 直接子元素按序计数 → w:tr → w:tc → 格内 w:p / 嵌套 w:tbl 各自独立计数
+- 占位符 regex：`\{\{\s*([^{}]+?)\s*\}\}`，label=trim 后字段名，placeholder=原文；同段多占位符逐个出区域；order_index 文档流全局递增
+- POST /api/templates → 201 `{id, filename, storage_name, sha256, status:"pending_review", created_at, updated_at, regions:[{..., anchor:object, bbox:null, confidence:null}]}`（列表不带 regions 带 regions_count）
+- 新错误码：TEMPLATE_ALREADY_EXISTS(409)、TEMPLATE_NOT_FOUND(404)
+- 状态机：parsing（建档瞬间态）→ pending_review（解析完成，同步）；ready 触发在 M5b；同 sha256 重复上传直接 409 拒绝（重传关联迁移属 M3b）
+- 占位符区域 type 恒为 "custom"（词表启发式属 M3b）
+
+### 用户偏好（本次新明确）
+
+- 四假设已验收确认（2026-09-09）：①同 sha256 重复→409 拒绝 ②占位符 type=custom ③解析同步+失败无残留、无占位符模板也进待校对 ④纯后端 curl 验收即可
+- 手动测试步骤给纯命令版本：带 # 注释的多行块不能整段粘贴进 zsh（# 被当命令、引号续行错乱，2026-09-09 实锤）
+- 端口残留处理：dev.sh 因 5173 被上次残留 vite 挡住而退出，kill 残留进程后正常；现象=后端也没起、curl 全空
+
+### 变更原则（本次无变更，沿用既有）
+
 ## 2026-09-07 · M1 数据层会话（完结）
 
 ### 一句话快照

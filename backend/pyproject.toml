@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
     "python-docx>=1.1",
     "lxml>=5.0",
     "pymupdf>=1.24",
@@ -33,7 +34,7 @@ warn_redundant_casts = true
 disallow_untyped_defs = true
 # 第三方库暂无类型存根，逐库放开
 [[tool.mypy.overrides]]
-module = ["docx", "fitz"]
+module = ["docx", "fitz", "lxml"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

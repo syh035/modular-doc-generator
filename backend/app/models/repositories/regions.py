@@ -76,6 +76,14 @@ def list_regions(conn: sqlite3.Connection, template_id: int) -> list[Region]:
     return [Region.from_row(r) for r in rows]
 
 
+def count_regions(conn: sqlite3.Connection, template_id: int) -> int:
+    """模板区域数（列表页摘要用，免整行加载）。"""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM regions WHERE template_id = ?", (template_id,)
+    ).fetchone()
+    return int(row["n"])
+
+
 def update_region(
     conn: sqlite3.Connection,
     region_id: int,
