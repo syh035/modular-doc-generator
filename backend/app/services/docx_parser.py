@@ -35,20 +35,23 @@ class ParsedRegion:
     order_index: int  # 文档流出现顺序（D7 迁移匹配依据）
 
 
-def iter_flow_paragraphs(data: bytes) -> Iterator[tuple[dict[str, object], str]]:
-    """按文档流顺序枚举 DOCX 全部正文段落（含表格单元格与嵌套表格）。
+def _paragraph_text(p: etree._Element) -> str:
+    # 只拼直接子 w:r 的 w:t 文本（P1 合并 run；D6 天然排除文本框内文字）
+    return "".join(t.text or "" for t in p.findall(f"{_W}r/{_W}t"))
 
-    每项 yield (anchor, 合并 run 后的段落全文)。anchor 编码与
-    parse_placeholders 完全一致（P3，重放规则见其文档字符串）——
-    M4 渲染位置匹配以此遍历为单一事实源，保证锚点与解析同源。
+
+_FlowElement = tuple[dict[str, object], etree._Element]
+
+
+def iter_flow_paragraph_elements(body: etree._Element) -> Iterator[_FlowElement]:
+    """按文档流顺序枚举段落元素引用（含表格单元格与嵌套表格）。
+
+    anchor 编码与 iter_flow_paragraphs 完全一致——M6a 替换引擎以元素
+    引用定位目标段落：lxml 引用在后续插入兄弟节点后依然有效，多区域
+    替换（含多行克隆插入）互不干扰；替换完成后重新枚举即得新 path。
     """
-    body = Document(BytesIO(data)).element.body
 
-    def paragraph_text(p: etree._Element) -> str:
-        # 只拼直接子 w:r 的 w:t 文本（P1 合并 run；D6 天然排除文本框内文字）
-        return "".join(t.text or "" for t in p.findall(f"{_W}r/{_W}t"))
-
-    def scan_table(tbl: etree._Element, path: list[int]) -> Iterator[tuple[dict[str, object], str]]:
+    def scan_table(tbl: etree._Element, path: list[int]) -> Iterator[_FlowElement]:
         for row_idx, tr in enumerate(tbl.findall(f"{_W}tr")):
             for cell_idx, tc in enumerate(tr.findall(f"{_W}tc")):
                 # 单元格内段落与嵌套表格各自独立计数（path 重放的依据）
@@ -61,7 +64,7 @@ def iter_flow_paragraphs(data: bytes) -> Iterator[tuple[dict[str, object], str]]
                                 "kind": "cell_p",
                                 "path": [*path, row_idx, cell_idx, para_idx],
                             },
-                            paragraph_text(child),
+                            child,
                         )
                         para_idx += 1
                     elif child.tag == f"{_W}tbl":
@@ -70,9 +73,21 @@ def iter_flow_paragraphs(data: bytes) -> Iterator[tuple[dict[str, object], str]]
 
     for block_idx, child in enumerate(body.iterchildren()):
         if child.tag == f"{_W}p":
-            yield {"kind": "p", "path": [block_idx]}, paragraph_text(child)
+            yield {"kind": "p", "path": [block_idx]}, child
         elif child.tag == f"{_W}tbl":
             yield from scan_table(child, [block_idx])
+
+
+def iter_flow_paragraphs(data: bytes) -> Iterator[tuple[dict[str, object], str]]:
+    """按文档流顺序枚举 DOCX 全部正文段落（含表格单元格与嵌套表格）。
+
+    每项 yield (anchor, 合并 run 后的段落全文)。anchor 编码与
+    parse_placeholders 完全一致（P3，重放规则见其文档字符串）——
+    M4 渲染位置匹配以此遍历为单一事实源，保证锚点与解析同源。
+    """
+    body = Document(BytesIO(data)).element.body
+    for anchor, p in iter_flow_paragraph_elements(body):
+        yield anchor, _paragraph_text(p)
 
 
 def parse_placeholders(data: bytes) -> list[ParsedRegion]:

@@ -38,13 +38,22 @@ export function bboxToOverlayRect(bbox: BBox, viewport: ViewportLike): OverlayRe
   }
 }
 
-/** 覆盖层视觉状态：绿=已绑定（M6a 接数据）/ 黄=待校对 / 虚线灰=未识别。 */
+/** 覆盖层视觉状态：绿=已绑定（active）/ 黄=待校对（含 missing 绑定回落）/ 虚线灰=未识别。 */
 export type OverlayKind = 'bound' | 'pending' | 'unrecognized'
 
-export function overlayKind(region: { bbox: BBox | null }): OverlayKind {
+/** overlayKind 入参最小结构（M6a：绑定态接入）。 */
+export interface OverlayRegionLike {
+  bbox: BBox | null
+  binding?: { status: string } | null
+}
+
+export function overlayKind(region: OverlayRegionLike): OverlayKind {
   if (region.bbox === null) {
     return 'unrecognized'
   }
-  // M5a 无绑定数据；M6a 接入 bindings 后在此改为查询绑定态返回 'bound'
+  // active 绑定 = 绿；无绑定或 missing（块已删，内容回落原文）= 黄
+  if (region.binding && region.binding.status === 'active') {
+    return 'bound'
+  }
   return 'pending'
 }

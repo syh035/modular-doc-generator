@@ -12,6 +12,7 @@ from app.models.db import get_conn
 from app.models.entities import Region, Template
 from app.models.repositories import regions as regions_repo
 from app.models.repositories import templates as templates_repo
+from app.models.repositories import versions as versions_repo
 from app.services import render_service, template_service
 
 router = APIRouter(prefix="/api")
@@ -63,10 +64,19 @@ def _get_or_404(conn: sqlite3.Connection, template_id: int) -> Template:
 
 @router.post("/templates", status_code=201)
 def upload_template(file: Annotated[UploadFile, File()]) -> dict[str, object]:
-    """上传 DOCX 模板：校验 → 解析占位符 → 返回模板与区域（同步，D12）。"""
+    """上传 DOCX 模板：校验 → 解析占位符 → 默认版本 → 返回模板与区域（同步，D12）。"""
     data = file.file.read()
     tpl, regions = template_service.upload_template(file.filename or "", data)
-    return _template_dict(tpl, regions=regions)
+    out = _template_dict(tpl, regions=regions)
+    out["default_version_id"] = _default_version_id(tpl.id)
+    return out
+
+
+def _default_version_id(template_id: int) -> int | None:
+    """模板默认版本 id（最早创建即默认；无版本=历史数据，前端走模板预览兜底）。"""
+    with get_conn() as conn:
+        versions = versions_repo.list_versions(conn, template_id)
+    return versions[0].id if versions else None
 
 
 @router.get("/templates")
@@ -82,10 +92,12 @@ def list_templates() -> dict[str, object]:
 
 @router.get("/templates/{template_id}")
 def get_template(template_id: int) -> dict[str, object]:
-    """模板详情（含全部区域）。"""
+    """模板详情（含全部区域 + 默认版本 id）。"""
     with get_conn() as conn:
         tpl = _get_or_404(conn, template_id)
-        return _template_dict(tpl, regions=regions_repo.list_regions(conn, tpl.id))
+        out = _template_dict(tpl, regions=regions_repo.list_regions(conn, tpl.id))
+    out["default_version_id"] = _default_version_id(tpl.id)
+    return out
 
 
 @router.get("/templates/{template_id}/regions")

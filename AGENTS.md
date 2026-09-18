@@ -123,6 +123,11 @@
 | P21 | bbox 是「首次渲染落库、非空不覆盖」（render_service._persist_region_bboxes）——P17 字体修复后清渲染缓存重转 PDF，**新布局下旧 bbox 静默存活**，前端黄框整体浮高 ~9pt（M5a 验收实锤；前端换算链路无辜，库值本身就是错的） | 已数据修复（bbox 置 NULL 触发重算）；「渲染产物变了但 bbox 不跟随」是设计缺口，bbox 生命周期策略（如缓存 miss 时失效）随 M5b 校对流程定夺；排查对齐问题先比对「库 bbox vs PyMuPDF 实测」再怀疑前端 |
 | P22 | TemplatePreview 三重渲染竞态（M5a 验收实锤白板）：① store 时序 pdfData 先于 status=ready 置位，watcher 在 loading 态触发 rebuild，v-else 未渲染 DOM 无 canvas → render(undefined) 崩；② **seq 序号守卫只能拦「未开始」的任务，拦不住「在飞」的 page.render**——渲染中容器 resize 触发新 rebuild，新旧批次并发打同一 canvas 被 pdfjs 拒绝 → canvas 已设尺寸却全白；③ void rebuild() 异常未捕获无诊断线索 | rebuild 门控 status==='ready'（watch 源含 status，ready 后补渲染）；RenderedPage 持 RenderTask 句柄暴露 cancel()，每轮 rebuild 先取消上一批在飞渲染；openDocument 竞态孤儿文档显式 destroy；整体 try/catch 记 console.error；教训：**前端异步任务取消必须显式，序号守卫不是取消** |
 
+## 验收测试流程约定（2026-09-18 用户定）
+
+- 测试开始时：自动准备环境——先 `lsof -iTCP:8740/5173` 查残留进程并清理 → 起后端+前端 → curl /api/health 确认 → 用 MCP browser_use 打开页面执行测试；不等用户手动准备
+- 测试完毕且用户确认后（即提交 git 时）：自动清理残存程序——kill 8740/5173 监听进程、删除临时测试文件（/tmp 脚本与产物）
+
 ## 完成判据
 
 - 每模块：类型检查 + lint + 模块测试全绿

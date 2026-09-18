@@ -1,5 +1,39 @@
 # STATE.md — 会话状态摘要（累积写入，不新建）
 
+## 2026-09-10 · M6a 绑定与替换引擎会话（自动化验收 6/6 全 PASS，待用户最终确认提交）
+
+### 一句话快照
+
+M6a 代码 + 自动化验收测试完成（浏览器实测 6/6 PASS）；下一步 = 用户最终确认 → AI 代提交 → 新会话执行里程碑 1 整体验收或 M2 块库完整（TODO.md 顶部）。
+
+### 本次完成
+
+- 后端替换引擎 services/replacement.py：`apply_replacements(template_data, regions, block_contents) → ReplacementOutcome(data, region_paths)`——P1 段内合并 run 定位占位符区间、新文本由覆盖 run 承载（P5 首覆盖 run 样式继承）；D9 多行内容首行留位 + 后续行克隆段落链式追加（P4 剥离 numPr）；替换后重新枚举文档流得 region→新 path 映射（多行克隆推挤后续索引）；同段多占位符两阶段：克隆行按文档序先收集（文本未动定位准）、文本替换逆序执行（texts 跟随更新防陈旧覆盖）
+- render_service.render_version(version_id)：替换 → 成品 DOCX 临时文件（uuid 防并发）→ LO sha 缓存转换 → 成品文档流↔PDF 几何对齐；**替换后 bbox 现算入响应不落库**（P21「渲染产物变了 bbox 不跟随」缺口就此规避，模板 bbox 落库策略仍留 M5b）；missing 态绑定保留占位符原文
+- 模板上传即建默认版本（template_service，versions 表 name="默认版本"）；M3a 前的存量模板无版本 → 前端回退模板预览（binding 恒 null）
+- API：POST/GET /api/blocks（最小块 API，名称 2–30/内容 ≤5000/非空校验，BLOCK_INVALID）；POST /api/versions/{id}/bindings（upsert 换绑 200）、GET bindings、DELETE /bindings/{region_id}（204）、GET /versions/{id}/preview、GET /versions/{id}/overlay；绑定校验链：版本/区域/块存在性 + 区域归属模板（REGION_TEMPLATE_MISMATCH）
+- 前端：api/{blocks,versions}.ts；stores/blocks.ts（loadBlocks/createNewBlock/selectBlock 点选切换）；stores/preview.ts 版本化——selectTemplate 走 default_version_id 的版本 preview+overlay（无版本回退模板预览）、bindRegionToBlock/unbindRegionFromBlock → refreshVersionRender 局部刷新；BlockLibrary.vue（新建表单+列表+点选高亮+正向绑定提示）、BindingDialog.vue（反向绑定/换绑/解绑浮层）、TemplatePreview.vue 覆盖层可点（绿=已绑定/黄=未绑定）；client.ts 补 204 处理
+- 验证：后端 ruff ✓ / mypy 29 文件 ✓ / pytest 115 绿（+29：replacement 14 + blocks API 7 + versions API 8）；前端 eslint ✓ / vue-tsc ✓ / vitest 55 绿（+27：blocks store 5 + preview store 11 + BlockLibrary 5 + BindingDialog 6）
+- 测试陷阱两则：① @vue/test-utils 传 `createPinia()` 插件会另建实例——组件 store 与测试 `useBlocksStore()` 不同源，直接赋值无效；不传插件则组件回落 activePinia 同源；② `Response.json(body, {method})`——method 非 ResponseInit 合法属性（TS2353），Response 构造器同理
+- 验收期自动化测试（2026-09-18，browser_use 子代理，模板 9 m6a_accept.docx）：6/6 PASS——选模板 3 覆盖层/建块/正向绑定（PDF 首行渲染「张三」）/换绑三行文本块（渲染为 3 行独立段落）/浮层解绑（恢复 {{占位符}}）/全程无 P22 白屏；另定性一条控制台噪音（解绑 204 经 Vite 代理 → Chromium 记 ERR_ABORTED，JS 层正常 resolve、UI 正确，属 cosmetic，已记 TODO）
+- 验收期决策与改动（用户确认）：① 7 个存量模板（M6a 前上传、无版本）整体删除——DB 级联 + 落盘 docx + 对应 sha 缓存；② ERR_ABORTED 仅记 TODO 不修；③ 新建块自动选中（blocks store createNewBlock 置 selectedBlockId=block.id，+1 断言，vitest 55 绿）
+- 验收留痕数据：模板 9（m6a_accept.docx，3 占位符）+ 默认版本 1 + 块「姓名块/评价块」+ 姓名区绑定 active；渲染缓存内不可归属的版本渲染残留 PDF 未清理（可再生，无碍）
+
+### 接口契约（M8/M9/M5b 直接消费）
+
+- POST /api/blocks → 201 `{id,name,content,category,created_at,updated_at}`；GET /api/blocks → `{blocks:[...]}`
+- POST /api/versions/{vid}/bindings `{region_id,block_id}` → 200 `{version_id,region_id,block_id,block_name,status:"active",created_at,updated_at}`（换绑幂等 200）；DELETE /api/versions/{vid}/bindings/{region_id} → 204
+- GET /api/versions/{vid}/preview → 200 application/pdf（替换后成品）；GET /api/versions/{vid}/overlay → `{version_id, regions:[{...region 字段, bbox(现算，可 null), binding:{block_id,block_name,status}|null}]}`
+- 新错误码：BLOCK_INVALID(400)/BLOCK_NOT_FOUND(404)/VERSION_NOT_FOUND(404)/REGION_NOT_FOUND(404)/REGION_TEMPLATE_MISMATCH(400)/BINDING_NOT_FOUND(404)
+- ReplacementOutcome.region_paths：region_id → 成品文档流首行 path（overlay 几何对齐入口）；M9 导出直接复用 apply_replacements 产物 data 落盘
+- 前端 overlay 消费：preview store refreshVersionRender 拉新 overlay，regions 整组替换（P7 共用选择序号）
+
+### 用户偏好（本次新增）
+
+- 验收可用浏览器自动化（MCP browser_use 子代理）代替人工点测（2026-09-18 用户主动要求）；自动化结论与直觉冲突时先查数据库/实测数据再下结论
+
+### 变更原则（本次无变更，沿用既有）
+
 ## 2026-09-09 · M5a 预览只读会话（代码+自验完成，待用户手动验收）
 
 ### 一句话快照

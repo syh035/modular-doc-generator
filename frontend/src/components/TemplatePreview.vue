@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Region } from '../api/templates'
 import { bboxToOverlayRect, overlayKind } from '../pdf/geometry'
 import { openDocument, preparePage, type OpenedPdf, type RenderedPage } from '../pdf/viewer'
-import { usePreviewStore } from '../stores/preview'
+import { useBlocksStore } from '../stores/blocks'
+import { usePreviewStore, type DisplayRegion } from '../stores/preview'
+import BindingDialog from './BindingDialog.vue'
 
 const store = usePreviewStore()
+const blocksStore = useBlocksStore()
 
 /** 滚动容器（页面按 fit-width 平铺，纵向滚动）。 */
 const scrollRef = ref<HTMLElement | null>(null)
@@ -13,6 +16,8 @@ const containerWidth = ref(0)
 const pages = ref<RenderedPage[]>([])
 /** 未定位区域（bbox=null，渲染未匹配）：无几何，只能列表提示（M5b 校对兜底）。 */
 const unplaced = ref<Region[]>([])
+/** 绑定浮层目标区域（null = 关闭）。 */
+const dialogRegion = ref<DisplayRegion | null>(null)
 
 let opened: OpenedPdf | null = null
 let openedData: ArrayBuffer | null = null
@@ -21,17 +26,57 @@ let observer: ResizeObserver | null = null
 /** 当前批次页面（含在飞渲染的取消句柄，P22）。 */
 let activePages: RenderedPage[] = []
 
-function regionsOf(pageIndex: number): Region[] {
+const boundCount = computed(
+  () => store.regions.filter(r => overlayKind(r) === 'bound').length,
+)
+
+function regionsOf(pageIndex: number): DisplayRegion[] {
   return store.regions.filter(r => r.bbox !== null && r.bbox.page === pageIndex)
 }
 
-function overlayStyle(region: Region, page: RenderedPage) {
+function overlayStyle(region: DisplayRegion, page: RenderedPage) {
   const rect = bboxToOverlayRect(region.bbox!, page.viewport)
   return {
     left: `${rect.left}px`,
     top: `${rect.top}px`,
     width: `${rect.width}px`,
     height: `${rect.height}px`,
+  }
+}
+
+function overlayTitle(region: DisplayRegion): string {
+  if (region.binding?.status === 'active') {
+    return `${region.label}（已绑定：${region.binding.block_name ?? `块 #${region.binding.block_id}`}）`
+  }
+  if (region.binding?.status === 'missing') {
+    return `${region.label}（绑定块已删除，待重新绑定）`
+  }
+  return `${region.label}（未绑定，点击选择字符块）`
+}
+
+/** 区域点击（PRD 4.4）：左栏已选块 → 直接绑定/换绑；否则浮层选块/换绑/解绑。 */
+function onRegionClick(region: DisplayRegion): void {
+  const selectedId = blocksStore.selectedBlockId
+  if (selectedId !== null) {
+    void store.bindRegionToBlock(region.id, selectedId)
+    return
+  }
+  dialogRegion.value = region
+}
+
+async function onDialogBind(blockId: number): Promise<void> {
+  const region = dialogRegion.value
+  dialogRegion.value = null
+  if (region) {
+    await store.bindRegionToBlock(region.id, blockId)
+  }
+}
+
+async function onDialogUnbind(): Promise<void> {
+  const region = dialogRegion.value
+  dialogRegion.value = null
+  if (region) {
+    await store.unbindRegionFromBlock(region.id)
   }
 }
 
@@ -143,18 +188,31 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- 右栏：模板预览（只读，M5a）——pdfjs 渲染管线 PDF + 区域覆盖层 -->
+  <!-- 右栏：版本预览（模板+绑定替换成品）——pdfjs 渲染管线 PDF + 可交互覆盖层 -->
   <section class="template-preview">
-    <!-- 顶部工具条：模板名 + 覆盖层图例 -->
+    <!-- 顶部工具条：模板名 + 刷新指示 + 覆盖层图例 -->
     <div
       v-if="store.status === 'ready'"
       class="preview-toolbar"
     >
       <span class="filename">{{ store.currentTemplate?.filename ?? `模板 #${store.currentTemplateId}` }}</span>
       <span class="legend">
-        <i class="dot pending" />待校对 {{ store.regions.length - unplaced.length }}
+        <span
+          v-if="store.refreshing"
+          class="refreshing"
+        ><span class="spinner" />正在刷新预览…</span>
+        <i class="dot bound" />已绑定 {{ boundCount }}
+        <i class="dot pending" />待校对 {{ store.regions.length - unplaced.length - boundCount }}
         <i class="dot unrecognized" />未定位 {{ unplaced.length }}
       </span>
+    </div>
+
+    <!-- 绑定/刷新错误横幅（不动摇 ready 态的已渲染内容） -->
+    <div
+      v-if="store.status === 'ready' && store.error"
+      class="error-banner"
+    >
+      {{ store.error }}
     </div>
 
     <div
@@ -188,14 +246,18 @@ onBeforeUnmount(() => {
           :style="{ width: `${page.width}px`, height: `${page.height}px` }"
         >
           <canvas class="pdf-canvas" />
-          <!-- 覆盖层：绿=已绑定（M6a 接数据）/ 黄=待校对 / 虚线灰=未识别 -->
+          <!-- 覆盖层：绿=已绑定 / 黄=待校对（含 missing 回落）/ 虚线灰=未识别 -->
           <div
             v-for="region in regionsOf(page.index)"
             :key="region.id"
             class="overlay"
             :class="overlayKind(region)"
             :style="overlayStyle(region, page)"
-            :title="region.label"
+            :title="overlayTitle(region)"
+            role="button"
+            tabindex="0"
+            @click="onRegionClick(region)"
+            @keydown.enter="onRegionClick(region)"
           />
         </div>
         <!-- 未定位区域（bbox=null）：无几何坐标，以虚线徽标提示，M5b 校对兜底 -->
@@ -213,6 +275,15 @@ onBeforeUnmount(() => {
             {{ region.label }}
           </span>
         </div>
+        <!-- 绑定浮层（区域内遮罩定位，M6a） -->
+        <BindingDialog
+          v-if="dialogRegion"
+          :region="dialogRegion"
+          :blocks="blocksStore.blocks"
+          @bind="onDialogBind"
+          @unbind="onDialogUnbind"
+          @close="dialogRegion = null"
+        />
       </template>
     </div>
   </section>
@@ -224,6 +295,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  position: relative;
   background: #eceff1;
 }
 
@@ -251,12 +323,25 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
+.refreshing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 12px;
+  color: #3370ff;
+}
+
 .dot {
   display: inline-block;
   width: 10px;
   height: 10px;
   margin: 0 4px 0 12px;
   border-radius: 2px;
+}
+
+.dot.bound {
+  background: rgba(52, 199, 36, 0.25);
+  border: 1px solid #34c724;
 }
 
 .dot.pending {
@@ -269,6 +354,14 @@ onBeforeUnmount(() => {
   border: 1px dashed #909399;
 }
 
+.error-banner {
+  padding: 6px 16px;
+  font-size: 12px;
+  color: #f54a45;
+  background: rgba(245, 74, 69, 0.06);
+  border-bottom: 1px solid rgba(245, 74, 69, 0.2);
+}
+
 .preview-scroll {
   flex: 1;
   overflow: auto;
@@ -277,6 +370,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 16px;
   padding: 16px;
+  position: relative;
 }
 
 .state {
@@ -302,6 +396,7 @@ onBeforeUnmount(() => {
   border-top-color: #3370ff;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
+  display: inline-block;
 }
 
 @keyframes spin {
@@ -323,19 +418,23 @@ onBeforeUnmount(() => {
 
 .overlay {
   position: absolute;
-  pointer-events: none;
+  cursor: pointer;
 }
 
-/* 黄=待校对（占位符已识别且几何定位成功） */
+/* 绿=已绑定（active） */
+.overlay.bound {
+  border: 1.5px solid #34c724;
+  background: rgba(52, 199, 36, 0.15);
+}
+
+/* 黄=待校对（未绑定或 missing 回落） */
 .overlay.pending {
   border: 1.5px solid #ffb900;
   background: rgba(255, 196, 0, 0.18);
 }
 
-/* 绿=已绑定：样式就绪，绑定数据 M6a 接入后由 overlayKind 返回 */
-.overlay.bound {
-  border: 1.5px solid #34c724;
-  background: rgba(52, 199, 36, 0.15);
+.overlay:hover {
+  border-color: #3370ff;
 }
 
 .unplaced-bar {

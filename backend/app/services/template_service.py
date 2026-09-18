@@ -25,12 +25,17 @@ from app.models.db import get_conn
 from app.models.entities import Region, Template
 from app.models.repositories import regions as regions_repo
 from app.models.repositories import templates as templates_repo
+from app.models.repositories import versions as versions_repo
 from app.services.docx_parser import parse_placeholders
 
 # OLE2 复合文档魔数：加密 DOCX 与旧格式 .doc 共用的文件头
 _OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 _DOCX_SUFFIX = ".docx"
+
+# 上传成功即创建默认版本（M6a 假设②：绑定归属版本，前端凭此直接可用；
+# 完整版本管理——新建/复制/切换/删除保护——属 M8）
+DEFAULT_VERSION_NAME = "默认版本"
 
 
 def safe_basename(filename: str) -> str:
@@ -62,7 +67,7 @@ def _validate(filename: str, data: bytes) -> str:
 
 
 def upload_template(filename: str, data: bytes) -> tuple[Template, list[Region]]:
-    """上传模板：校验 → 建档 → 落盘 → 解析 → 状态推进 pending_review。
+    """上传模板：校验 → 建档 → 落盘 → 解析 → 默认版本 → 状态推进 pending_review。
 
     返回 (模板, 区域列表)。同 sha256 内容重复上传 → 409 拒绝
     （按内容指纹重传关联/迁移属 M3b，此处不越界）。
@@ -104,6 +109,7 @@ def upload_template(filename: str, data: bytes) -> tuple[Template, list[Region]]
                     anchor=r.anchor,
                     order_index=r.order_index,
                 )
+            versions_repo.create_version(conn, tpl.id, DEFAULT_VERSION_NAME)
             updated = templates_repo.update_template(
                 conn, tpl.id, status="pending_review", storage_name=storage_name
             )

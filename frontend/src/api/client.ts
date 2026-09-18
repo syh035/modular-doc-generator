@@ -41,6 +41,9 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     }
     throw new ApiRequestError(code, message)
   }
+  if (resp.status === 204) {
+    return undefined as T // No Content（如解绑成功）无 JSON 体
+  }
   return (await resp.json()) as T
 }
 

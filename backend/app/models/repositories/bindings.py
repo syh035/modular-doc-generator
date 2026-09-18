@@ -44,6 +44,12 @@ def get_binding(conn: sqlite3.Connection, version_id: int, region_id: int) -> Bi
     return Binding.from_row(row) if row else None
 
 
+def delete_binding(conn: sqlite3.Connection, binding_id: int) -> bool:
+    """物理删除绑定（解绑）；目标不存在返回 False（幂等）。"""
+    cur = conn.execute("DELETE FROM bindings WHERE id = ?", (binding_id,))
+    return cur.rowcount > 0
+
+
 def list_bindings(conn: sqlite3.Connection, version_id: int) -> list[Binding]:
     """版本的绑定列表（含 missing 态——导出时需对缺失绑定留空并提示）。"""
     rows = conn.execute(

@@ -43,6 +43,8 @@ export interface TemplateListItem extends Template {
 
 export interface TemplateDetail extends Template {
   regions: Region[]
+  /** 默认版本 id（上传即建，M6a；null = 历史模板无版本）。 */
+  default_version_id: number | null
 }
 
 /** 模板列表（最新上传在前）。 */
