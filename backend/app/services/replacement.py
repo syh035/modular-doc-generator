@@ -12,6 +12,7 @@
 
 import copy
 import json
+import zipfile
 from dataclasses import dataclass
 from io import BytesIO
 
@@ -125,12 +126,33 @@ def _replace_in_paragraph(
     entries: list[tuple[Region, int]],
     block_contents: dict[int, str],
 ) -> None:
+    """按区域类型路由段落内替换（M6a 占位符 / M3b 整段）。
+
+    - 有占位符的区域：span 替换（占位符优先——同段混合时整段替换会吞掉
+      占位符语义，整段区域让位；混合只可能来自 M5b 手动框选）
+    - 无占位符的区域（M3b 词表/成段候选）：整段替换
+    """
+    entries.sort(key=lambda e: e[1])
+    ph_entries = [(r, o) for r, o in entries if (r.placeholder or "").strip()]
+    whole_entries = [(r, o) for r, o in entries if not (r.placeholder or "").strip()]
+    if ph_entries:
+        _replace_placeholder_spans(para, ph_entries, block_contents)
+    elif whole_entries:
+        # 同段多个整段区域绑定不同块属语义冲突（一段只能有一份内容），
+        # 防御性只处理文档序第一个
+        _replace_whole_paragraph(para, whole_entries[0][0], block_contents)
+
+
+def _replace_placeholder_spans(
+    para: etree._Element,
+    entries: list[tuple[Region, int]],
+    block_contents: dict[int, str],
+) -> None:
     """替换段落内全部已绑定占位符；多行内容在段落后方追加克隆段落。
 
     entries: (region, 段内 order)——按文档流 order_index 排序即段内
     占位符出现顺序；block_contents 缺失的区域保留原文。
     """
-    entries.sort(key=lambda e: e[1])
     runs = para.findall(f"{_W}r")
     texts = [_run_text(r) for r in runs]
     full = "".join(texts)
@@ -205,6 +227,55 @@ def _replace_in_paragraph(
         anchor_el = clone
 
 
+def _replace_whole_paragraph(
+    para: etree._Element, region: Region, block_contents: dict[int, str]
+) -> None:
+    """无占位符区域（M3b 词表/成段候选）→ 整段替换。
+
+    - P5 同款规则：新文本由区域首 run 承载（继承区域首 run 属性），
+      其余 run 文本清空（保留 run 节点，防段落结构变化）
+    - D9：多行内容首行留位、后续行克隆段落（P4 剥离编号属性）
+    - 未绑定保留原文；无 run 段落（理论不可达：候选区域必有文本）跳过
+    """
+    content = block_contents.get(region.id)
+    if content is None:
+        return  # 未绑定 → 保留原文
+    runs = para.findall(f"{_W}r")
+    if not runs:
+        return
+    lines = content.split("\n")
+    _set_run_text(runs[0], lines[0])
+    for run in runs[1:]:
+        _set_run_text(run, "")
+    anchor_el = para
+    for line in lines[1:]:
+        clone = _clone_line_paragraph(para, runs[0], line)
+        anchor_el.addnext(clone)
+        anchor_el = clone
+
+
+_FIXED_ZIP_DATE = (1980, 1, 1, 0, 0, 0)  # zip 规范允许的最早时间戳
+
+
+def _serialize_deterministic(data: bytes) -> bytes:
+    """zip 时间戳归一的确定性序列化：同内容 → 同字节。
+
+    python-docx save 的 zip entry 时间戳取当前时刻，同内容成品 DOCX
+    每次字节不同 → LO 转换缓存（按内容 sha 键）永远 miss → 每次预览
+    都全量转换（实测 4–21s，D12 超标根因）。归一后未变更内容的重复
+    渲染与 preview/overlay 并发请求直接命中缓存（双检吸收）。
+    """
+    src = zipfile.ZipFile(BytesIO(data))
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        for info in src.infolist():
+            zi = zipfile.ZipInfo(info.filename, date_time=_FIXED_ZIP_DATE)
+            zi.compress_type = info.compress_type
+            zi.external_attr = info.external_attr
+            zf.writestr(zi, src.read(info.filename))
+    return out.getvalue()
+
+
 def apply_replacements(
     template_data: bytes,
     regions: list[Region],
@@ -213,7 +284,8 @@ def apply_replacements(
     """把绑定的块内容替换进模板，返回成品 DOCX 与区域新 path 映射。
 
     block_contents: region_id → 块内容，仅含「有效绑定」（active 且
-    块存活）的区域；缺失区域保留占位符原文。
+    块存活）的区域；缺失区域保留原文（占位符区域留占位符、M3b 词表/
+    成段区域留整段原文）。
     """
     doc = Document(BytesIO(template_data))
     body = doc.element.body
@@ -249,4 +321,4 @@ def apply_replacements(
 
     buf = BytesIO()
     doc.save(buf)
-    return ReplacementOutcome(buf.getvalue(), region_paths)
+    return ReplacementOutcome(_serialize_deterministic(buf.getvalue()), region_paths)

@@ -39,11 +39,15 @@ def test_upload_201_with_regions(client: TestClient) -> None:
     assert body["filename"] == "我的模板.docx"
     assert body["status"] == "pending_review"
     assert body["storage_name"] == f"{body['id']}_我的模板.docx"
+    assert body["reused"] is False
     assert len(body["sha256"]) == 64
     labels = [r["label"] for r in body["regions"]]
     assert labels == ["姓名", "电话"]
     region = body["regions"][0]
-    assert region["type"] == "custom"
+    # 决策 C：占位符 label 过词表推断类型（姓名 → name）
+    assert region["type"] == "name"
+    assert region["confidence"] == 1.0
+    assert body["regions"][1]["type"] == "contact"
     assert region["placeholder"] == "{{姓名}}"
     assert region["anchor"]["kind"] == "p"
     assert region["review_status"] == "pending"
@@ -88,12 +92,51 @@ def test_upload_zip_missing_document(client: TestClient) -> None:
     assert resp.json()["error"]["code"] == "TEMPLATE_CORRUPT"
 
 
-def test_upload_duplicate_409(client: TestClient) -> None:
+def test_upload_duplicate_reuses_existing(client: TestClient) -> None:
+    """D10 指纹关联：同 sha256 重传 → 200 关联已有模板，不重复建档。"""
     data = make_docx()
-    assert post_upload(client, "a.docx", data).status_code == 201
+    first = post_upload(client, "a.docx", data).json()
     resp = post_upload(client, "b.docx", data)
-    assert resp.status_code == 409
-    assert resp.json()["error"]["code"] == "TEMPLATE_ALREADY_EXISTS"
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["reused"] is True
+    assert body["id"] == first["id"]  # 同一模板，解析结果与版本复用
+    assert body["filename"] == "a.docx"  # 沿用首传文件名
+    listing = client.get("/api/templates").json()["templates"]
+    assert len(listing) == 1  # 未新建记录
+
+
+def test_upload_image_only_rejected(client: TestClient) -> None:
+    """M3b：正文无任何文本层（纯图片模板）→ 400 不适用。"""
+    doc = Document()  # 默认模板仅一个空段落，无文本
+    buf = BytesIO()
+    doc.save(buf)
+    resp = post_upload(client, "纯图片.docx", buf.getvalue())
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "TEMPLATE_IMAGE_ONLY"
+
+
+def test_upload_m3b_candidates_persisted(client: TestClient) -> None:
+    """M3b 三层识别落库：占位符（1.0）/ 词表标题（0.9）/ 成段正文（0.4）。"""
+    doc = Document()
+    doc.add_paragraph("教育背景")  # 词表标题 → education / 0.9 / 无占位符
+    doc.add_paragraph("姓名：李四")  # labeled → name / 0.7
+    # ≥30 字成段正文 → custom / 0.4
+    doc.add_paragraph("负责核心模块的架构设计与性能优化工作，主导完成了多个关键项目的交付落地。")
+    doc.add_paragraph("张三")  # 过短非词表 → 不产候选
+    buf = BytesIO()
+    doc.save(buf)
+    body = post_upload(client, "素模板.docx", buf.getvalue()).json()
+    assert body["status"] == "pending_review"
+    regions = body["regions"]
+    assert [(r["type"], r["confidence"]) for r in regions] == [
+        ("education", 0.9),
+        ("name", 0.7),
+        ("custom", 0.4),
+    ]
+    assert all(r["placeholder"] is None for r in regions)
+    assert regions[0]["label"] == "教育背景"
+    assert regions[2]["label"].endswith("…")  # 成段正文 label 截断
 
 
 def test_upload_same_name_different_content(client: TestClient) -> None:

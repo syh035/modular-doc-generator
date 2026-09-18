@@ -19,6 +19,15 @@ from typing import cast
 from docx import Document
 from lxml import etree
 
+from app.services.field_lexicon import (
+    CONF_PARAGRAPH,
+    CONF_PLACEHOLDER,
+    PARAGRAPH_MIN_LEN,
+    classify_field,
+    classify_paragraph,
+    truncate_label,
+)
+
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 # `{{字段名}}`：容忍字段名首尾空白；字段名内不允许花括号（防嵌套误吞）
@@ -33,6 +42,26 @@ class ParsedRegion:
     label: str  # 显示名（字段名），如 "姓名"
     anchor: dict[str, object]  # 文档流锚点：{"kind": "p"|"cell_p", "path": [...]}
     order_index: int  # 文档流出现顺序（D7 迁移匹配依据）
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedCandidate:
+    """候选可替换区域（M3b 三层识别：占位符 > 字段名 > 成段正文）。"""
+
+    region_type: str
+    label: str  # 显示名：字段名 / 词表项 / 成段正文截断前缀
+    placeholder: str | None  # 占位符区域才有；词表/成段候选为 None（整段替换）
+    anchor: dict[str, object]
+    order_index: int
+    confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class ParseOutcome:
+    """候选解析总产出：has_any_text 供纯图片模板判定（M3b）。"""
+
+    candidates: list[ParsedCandidate]
+    has_any_text: bool
 
 
 def _paragraph_text(p: etree._Element) -> str:
@@ -116,3 +145,76 @@ def parse_placeholders(data: bytes) -> list[ParsedRegion]:
             )
             order += 1
     return regions
+
+
+def parse_candidates(data: bytes) -> ParseOutcome:
+    """解析 DOCX，按文档流顺序产出全部候选区域（M3b 三层识别，PRD 4.2）。
+
+    - 占位符区域：同 parse_placeholders，confidence=1.0；label 过词表
+      推断 type（决策 C，如 {{姓名}} → name），未命中为 custom
+    - 字段名区域：无占位符段落匹配词表（标题行 0.9 / 「字段名：值」0.7），
+      placeholder=None（替换走整段替换，replacement._replace_whole_paragraph）
+    - 成段正文：长度 ≥ PARAGRAPH_MIN_LEN 的无占位符段 → custom / 0.4
+    - 优先级：有占位符的段落不再产出段落级候选（一段不重复建区域）；
+      空段与过短非词表段（如「张三」）不产候选，但计入 has_any_text
+    """
+    candidates: list[ParsedCandidate] = []
+    order = 0
+    has_any_text = False
+    for anchor, text in iter_flow_paragraphs(data):
+        if text.strip():
+            has_any_text = True
+        ph_matches = list(_PLACEHOLDER_RE.finditer(text))
+        if ph_matches:
+            for m in ph_matches:
+                label = m.group(1)
+                candidates.append(
+                    ParsedCandidate(
+                        region_type=classify_field(label) or "custom",
+                        label=label,
+                        placeholder=m.group(0),
+                        anchor={
+                            "kind": anchor["kind"],
+                            "path": list(cast("list[int]", anchor["path"])),
+                        },
+                        order_index=order,
+                        confidence=CONF_PLACEHOLDER,
+                    )
+                )
+                order += 1
+            continue  # 占位符段不再产出段落级候选
+        stripped = text.strip()
+        if not stripped:
+            continue
+        hit = classify_paragraph(stripped)
+        if hit is not None:
+            candidates.append(
+                ParsedCandidate(
+                    region_type=hit.region_type,
+                    label=stripped if hit.is_title else hit.term,
+                    placeholder=None,
+                    anchor={
+                        "kind": anchor["kind"],
+                        "path": list(cast("list[int]", anchor["path"])),
+                    },
+                    order_index=order,
+                    confidence=hit.confidence,
+                )
+            )
+            order += 1
+        elif len(stripped) >= PARAGRAPH_MIN_LEN:
+            candidates.append(
+                ParsedCandidate(
+                    region_type="custom",
+                    label=truncate_label(stripped),
+                    placeholder=None,
+                    anchor={
+                        "kind": anchor["kind"],
+                        "path": list(cast("list[int]", anchor["path"])),
+                    },
+                    order_index=order,
+                    confidence=CONF_PARAGRAPH,
+                )
+            )
+            order += 1
+    return ParseOutcome(candidates, has_any_text)

@@ -15,9 +15,9 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.core.errors import (
-    TEMPLATE_ALREADY_EXISTS,
     TEMPLATE_CORRUPT,
     TEMPLATE_ENCRYPTED,
+    TEMPLATE_IMAGE_ONLY,
     TEMPLATE_NOT_DOCX,
     AppError,
 )
@@ -26,7 +26,7 @@ from app.models.entities import Region, Template
 from app.models.repositories import regions as regions_repo
 from app.models.repositories import templates as templates_repo
 from app.models.repositories import versions as versions_repo
-from app.services.docx_parser import parse_placeholders
+from app.services.docx_parser import parse_candidates
 
 # OLE2 复合文档魔数：加密 DOCX 与旧格式 .doc 共用的文件头
 _OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
@@ -66,11 +66,13 @@ def _validate(filename: str, data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def upload_template(filename: str, data: bytes) -> tuple[Template, list[Region]]:
-    """上传模板：校验 → 建档 → 落盘 → 解析 → 默认版本 → 状态推进 pending_review。
+def upload_template(filename: str, data: bytes) -> tuple[Template, list[Region], bool]:
+    """上传模板：校验 → 指纹关联 → 建档 → 落盘 → 候选解析 → 默认版本。
 
-    返回 (模板, 区域列表)。同 sha256 内容重复上传 → 409 拒绝
-    （按内容指纹重传关联/迁移属 M3b，此处不越界）。
+    返回 (模板, 区域列表, reused)。D10：同 sha256 内容重传 → 关联已有
+    模板幂等返回（reused=True，不重复建档/解析）；正文无任何文本层的
+    纯图片模板 → TEMPLATE_IMAGE_ONLY 拒绝（D6 扫描范围内识别不到区域，
+    此类模板不适用）。
     """
     sha256 = _validate(filename, data)
     safe_name = safe_basename(filename)
@@ -78,12 +80,8 @@ def upload_template(filename: str, data: bytes) -> tuple[Template, list[Region]]
     with get_conn() as conn:
         existing = templates_repo.find_by_sha256(conn, sha256)
         if existing is not None:
-            raise AppError(
-                TEMPLATE_ALREADY_EXISTS,
-                f"相同内容的模板已存在（{existing.filename}，上传于 {existing.created_at}），"
-                "无需重复导入",
-                status_code=409,
-            )
+            # D10 指纹关联：解析结果与版本均属已有模板，直接复用
+            return existing, regions_repo.list_regions(conn, existing.id), True
         tpl = templates_repo.create_template(
             conn, filename=safe_name, storage_name="", sha256=sha256
         )
@@ -94,20 +92,28 @@ def upload_template(filename: str, data: bytes) -> tuple[Template, list[Region]]
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(data)
             try:
-                parsed = parse_placeholders(data)
+                outcome = parse_candidates(data)
             except AppError:
                 raise
             except Exception as exc:  # 畸形 XML 等底层解析失败统一兜底
                 raise AppError(TEMPLATE_CORRUPT, "文件已损坏，无法解析正文内容") from exc
-            for r in parsed:
+            if not outcome.has_any_text:
+                raise AppError(
+                    TEMPLATE_IMAGE_ONLY,
+                    "模板正文未发现任何文本层（纯图片模板），无法识别可替换区域，"
+                    "此类模板不适用；请使用含文本的 DOCX 模板",
+                    status_code=400,
+                )
+            for c in outcome.candidates:
                 regions_repo.create_region(
                     conn,
                     tpl.id,
-                    region_type="custom",  # 词表启发式类型推断属 M3b
-                    label=r.label,
-                    placeholder=r.placeholder,
-                    anchor=r.anchor,
-                    order_index=r.order_index,
+                    region_type=c.region_type,
+                    label=c.label,
+                    placeholder=c.placeholder,
+                    anchor=c.anchor,
+                    order_index=c.order_index,
+                    confidence=c.confidence,
                 )
             versions_repo.create_version(conn, tpl.id, DEFAULT_VERSION_NAME)
             updated = templates_repo.update_template(
@@ -118,4 +124,4 @@ def upload_template(filename: str, data: bytes) -> tuple[Template, list[Region]]
         except BaseException:
             dest.unlink(missing_ok=True)  # 失败清残：落盘文件（DB 记录随事务回滚）
             raise
-        return tpl, regions_repo.list_regions(conn, tpl.id)
+        return tpl, regions_repo.list_regions(conn, tpl.id), False

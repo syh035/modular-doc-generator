@@ -5,7 +5,7 @@ from io import BytesIO
 from docx import Document
 from lxml import etree
 
-from app.services.docx_parser import iter_flow_paragraphs, parse_placeholders
+from app.services.docx_parser import iter_flow_paragraphs, parse_candidates, parse_placeholders
 
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _V_NS = "urn:schemas-microsoft-com:vml"
@@ -212,3 +212,80 @@ def test_flow_nested_table_paths() -> None:
     assert isinstance(nested_path, list)
     assert len(nested_path) == 7  # [tbl,row,cell, nested_tbl,row,cell, para]
     assert flow[2][0]["path"] == [0, 0, 0, 1]  # 尾空段：外层 cell 第 2 个段落
+
+
+# ---- parse_candidates（M3b 三层识别）----
+
+
+def test_candidates_placeholder_type_inference() -> None:
+    """决策 C：占位符 label 过词表推断类型，confidence=1.0。"""
+    doc = Document()
+    doc.add_paragraph("{{姓名}}")
+    doc.add_paragraph("{{自定义字段}}")
+    outcome = parse_candidates(docx_bytes(doc))
+    types = [c.region_type for c in outcome.candidates]
+    assert types == ["name", "custom"]
+    assert all(c.confidence == 1.0 for c in outcome.candidates)
+    assert all(c.placeholder is not None for c in outcome.candidates)
+
+
+def test_candidates_placeholder_paragraph_excludes_paragraph_candidate() -> None:
+    """占位符段不再产出段落级候选（一段不重复建区域）。"""
+    doc = Document()
+    doc.add_paragraph("工作经历：{{工作经历}}")  # 同时命中词表前缀与占位符
+    outcome = parse_candidates(docx_bytes(doc))
+    assert len(outcome.candidates) == 1
+    assert outcome.candidates[0].placeholder == "{{工作经历}}"
+
+
+def test_candidates_lexicon_title_and_labeled() -> None:
+    doc = Document()
+    doc.add_paragraph("教育背景")
+    doc.add_paragraph("姓名：李四")
+    outcome = parse_candidates(docx_bytes(doc))
+    edu, name = outcome.candidates
+    assert (edu.region_type, edu.confidence, edu.label) == ("education", 0.9, "教育背景")
+    assert edu.placeholder is None
+    assert (name.region_type, name.confidence, name.label) == ("name", 0.7, "姓名")
+    assert name.order_index == 1
+
+
+def test_candidates_paragraph_threshold_boundary() -> None:
+    """成段阈值：30 字产出、29 字不产出。"""
+    doc = Document()
+    doc.add_paragraph("字" * 29)
+    doc.add_paragraph("字" * 30)
+    outcome = parse_candidates(docx_bytes(doc))
+    assert len(outcome.candidates) == 1
+    c = outcome.candidates[0]
+    assert c.region_type == "custom"
+    assert c.confidence == 0.4
+    assert c.label.endswith("…")
+
+
+def test_candidates_short_non_lexicon_no_candidate() -> None:
+    """过短非词表段（如「张三」）不产候选，但计入 has_any_text。"""
+    doc = Document()
+    doc.add_paragraph("张三")
+    outcome = parse_candidates(docx_bytes(doc))
+    assert outcome.candidates == []
+    assert outcome.has_any_text is True
+
+
+def test_candidates_blank_document_not_image_only_signal() -> None:
+    """全空文档：无候选且 has_any_text=False（纯图片模板判定依据）。"""
+    doc = Document()  # 仅默认空段落
+    outcome = parse_candidates(docx_bytes(doc))
+    assert outcome.candidates == []
+    assert outcome.has_any_text is False
+
+
+def test_candidates_table_cell_lexicon() -> None:
+    """词表识别覆盖表格单元格（D6 扫描范围同占位符）。"""
+    doc = Document()
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "项目经历"
+    outcome = parse_candidates(docx_bytes(doc))
+    assert len(outcome.candidates) == 1
+    assert outcome.candidates[0].region_type == "project"
+    assert outcome.candidates[0].anchor["kind"] == "cell_p"

@@ -84,17 +84,18 @@ def test_reject_empty_file(env: Path) -> None:
 
 def test_upload_success(env: Path) -> None:
     data = make_docx("{{姓名}}的简历，邮箱{{邮箱}}")
-    tpl, regions = upload_template("我的模板.docx", data)
+    tpl, regions, reused = upload_template("我的模板.docx", data)
 
     assert tpl.filename == "我的模板.docx"
     assert tpl.status == "pending_review"
     assert tpl.storage_name == f"{tpl.id}_我的模板.docx"
+    assert reused is False
     # 落盘校验
     stored = env / "templates" / tpl.storage_name
     assert stored.is_file() and stored.read_bytes() == data
-    # 区域落库：占位符 → custom 区域，文档流顺序
+    # 区域落库：决策 C——占位符 label 过词表推断类型（姓名→name / 邮箱→contact）
     assert [r.label for r in regions] == ["姓名", "邮箱"]
-    assert all(r.type == "custom" for r in regions)
+    assert [r.type for r in regions] == ["name", "contact"]
     assert [r.order_index for r in regions] == [0, 1]
     assert regions[0].placeholder == "{{姓名}}"
     # 状态机轨迹：建档 parsing 已被最终态覆盖（同步解析，终态即 pending_review）
@@ -106,7 +107,7 @@ def test_upload_success(env: Path) -> None:
 def test_upload_sanitizes_path_in_filename(env: Path) -> None:
     """multipart 文件名带路径 → 只取纯文件名落盘。"""
     data = make_docx()
-    tpl, _ = upload_template("../../etc/evil.docx", data)
+    tpl, _, _ = upload_template("../../etc/evil.docx", data)
     assert tpl.filename == "evil.docx"
     assert "/" not in tpl.storage_name
     assert (env / "templates" / tpl.storage_name).is_file()
@@ -114,7 +115,7 @@ def test_upload_sanitizes_path_in_filename(env: Path) -> None:
 
 def test_upload_placeholder_free_template(env: Path) -> None:
     """无占位符模板：解析成功 0 区域，仍进待校对（M5b 框选兜底）。"""
-    tpl, regions = upload_template("素模板.docx", make_docx("纯文本段落"))
+    tpl, regions, _ = upload_template("素模板.docx", make_docx("纯文本段落"))
     assert tpl.status == "pending_review"
     assert regions == []
 
@@ -122,19 +123,38 @@ def test_upload_placeholder_free_template(env: Path) -> None:
 # ---- 重复与同名 ----
 
 
-def test_duplicate_content_rejected(env: Path) -> None:
+def test_duplicate_content_reuses_existing(env: Path) -> None:
+    """D10 指纹关联：同 sha256 重传 → 幂等返回已有模板，不新建记录。"""
     data = make_docx()
-    upload_template("第一份.docx", data)
+    tpl_first, _, reused_first = upload_template("第一份.docx", data)
+    tpl_second, regions, reused = upload_template("换名同内容.docx", data)
+    assert reused_first is False
+    assert reused is True
+    assert tpl_second.id == tpl_first.id
+    assert tpl_second.filename == "第一份.docx"  # 沿用首传文件名
+    assert len(regions) == 1  # 解析结果复用（make_docx 默认单占位符）
+    with get_conn() as conn:
+        assert len(templates_repo.list_templates(conn)) == 1
+
+
+def test_image_only_template_rejected(env: Path) -> None:
+    """M3b：正文无文本层（纯图片模板）→ TEMPLATE_IMAGE_ONLY，无残留。"""
+    doc = Document()  # 默认模板仅空段落
+    buf = BytesIO()
+    doc.save(buf)
     with pytest.raises(AppError) as ei:
-        upload_template("换名同内容.docx", data)
-    assert ei.value.code == "TEMPLATE_ALREADY_EXISTS"
-    assert ei.value.status_code == 409
+        upload_template("纯图片.docx", buf.getvalue())
+    assert ei.value.code == "TEMPLATE_IMAGE_ONLY"
+    assert ei.value.status_code == 400
+    with get_conn() as conn:
+        assert templates_repo.list_templates(conn) == []
+    assert list((env / "templates").glob("*")) == []  # 落盘清残
 
 
 def test_same_filename_different_content_allowed(env: Path) -> None:
     """PRD 4.2：同名模板允许重复导入，靠记录区分（id/时间戳）。"""
-    tpl_a, _ = upload_template("简历模板.docx", make_docx("{{姓名}}A"))
-    tpl_b, _ = upload_template("简历模板.docx", make_docx("{{姓名}}B"))
+    tpl_a, _, _ = upload_template("简历模板.docx", make_docx("{{姓名}}A"))
+    tpl_b, _, _ = upload_template("简历模板.docx", make_docx("{{姓名}}B"))
     assert tpl_a.id != tpl_b.id
     assert tpl_a.sha256 != tpl_b.sha256
     assert tpl_a.storage_name != tpl_b.storage_name

@@ -5,7 +5,7 @@ import sqlite3
 from typing import Annotated
 
 from fastapi import APIRouter, File, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.core.errors import TEMPLATE_NOT_FOUND, AppError
 from app.models.db import get_conn
@@ -62,14 +62,19 @@ def _get_or_404(conn: sqlite3.Connection, template_id: int) -> Template:
     return tpl
 
 
-@router.post("/templates", status_code=201)
-def upload_template(file: Annotated[UploadFile, File()]) -> dict[str, object]:
-    """上传 DOCX 模板：校验 → 解析占位符 → 默认版本 → 返回模板与区域（同步，D12）。"""
+@router.post("/templates")
+def upload_template(file: Annotated[UploadFile, File()]) -> JSONResponse:
+    """上传 DOCX 模板：校验 → 候选解析（M3b 三层识别）→ 默认版本。
+
+    201 = 新建；200 = 同 sha256 内容重传关联已有模板（D10，reused=true，
+    区域与版本均为已有模板的解析结果）。同步完成（D12）。
+    """
     data = file.file.read()
-    tpl, regions = template_service.upload_template(file.filename or "", data)
+    tpl, regions, reused = template_service.upload_template(file.filename or "", data)
     out = _template_dict(tpl, regions=regions)
     out["default_version_id"] = _default_version_id(tpl.id)
-    return out
+    out["reused"] = reused
+    return JSONResponse(status_code=200 if reused else 201, content=out)
 
 
 def _default_version_id(template_id: int) -> int | None:

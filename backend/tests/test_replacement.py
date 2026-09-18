@@ -10,7 +10,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 from app.models.entities import Region
-from app.services.docx_parser import parse_placeholders
+from app.services.docx_parser import parse_candidates, parse_placeholders
 from app.services.replacement import apply_replacements
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -246,3 +246,115 @@ def test_empty_content_replaces_to_empty() -> None:
     regions = regions_of(data)
     outcome = apply_replacements(data, regions, {regions[0].id: ""})
     assert paragraphs_text(outcome.data)[0] == "AB"
+
+
+# ---- M3b：无占位符区域整段替换 ----
+
+
+def whole_regions_of(data: bytes, start_id: int = 1) -> list[Region]:
+    """按 M3b 候选解析构造 Region（词表/成段候选 placeholder=None）。"""
+    return [
+        Region(
+            id=start_id + i,
+            template_id=1,
+            type=c.region_type,
+            label=c.label,
+            placeholder=c.placeholder,
+            anchor=json.dumps(c.anchor, ensure_ascii=False),
+            order_index=c.order_index,
+            bbox_json=None,
+            confidence=c.confidence,
+            review_status="pending",
+            created_at="",
+            updated_at="",
+        )
+        for i, c in enumerate(parse_candidates(data).candidates)
+    ]
+
+
+def test_whole_paragraph_replacement_single_line() -> None:
+    """词表标题段绑定 → 整段替换为块内容。"""
+    data = docx_bytes(_doc_with("工作经历", "其他段"))
+    regions = whole_regions_of(data)
+    assert len(regions) == 1 and regions[0].placeholder is None
+
+    outcome = apply_replacements(data, regions, {regions[0].id: "五年后端开发经验"})
+    texts = paragraphs_text(outcome.data)
+    assert texts[0] == "五年后端开发经验"
+    assert texts[1] == "其他段"  # 非区域段不受影响
+    assert outcome.region_paths[regions[0].id] == [0]
+
+
+def test_whole_paragraph_multi_run_keeps_first_run_style() -> None:
+    """P5 同款规则：整段替换由首 run 承载（继承首 run rPr，此处加粗）。"""
+    doc = Document()
+    p = doc.add_paragraph()
+    r1 = p.add_run("工作经历：五年")
+    r1.bold = True
+    p.add_run("后端开发经历，主导多个核心项目的设计与交付。")
+    data = docx_bytes(doc)
+    regions = whole_regions_of(data)
+    assert len(regions) == 1  # labeled 形态候选
+
+    outcome = apply_replacements(data, regions, {regions[0].id: "新标题"})
+    para = Document(BytesIO(outcome.data)).paragraphs[0]
+    assert para.text == "新标题"
+    bold_runs = [r for r in para.runs if r.text and r.bold]
+    assert any("新标题" in (r.text or "") for r in bold_runs)
+
+
+def test_whole_paragraph_multiline_clones() -> None:
+    """D9：多行内容首行留位、后续行克隆段落（含 path 推挤映射）。"""
+    data = docx_bytes(_doc_with("自我评价", "结尾段"))
+    regions = whole_regions_of(data)
+    outcome = apply_replacements(data, regions, {regions[0].id: "第一行\n第二行\n第三行"})
+    texts = paragraphs_text(outcome.data)
+    assert texts == ["第一行", "第二行", "第三行", "结尾段"]
+    assert outcome.region_paths[regions[0].id] == [0]
+
+
+def test_whole_paragraph_unbound_kept_verbatim() -> None:
+    """整段区域未绑定 → 原文保留（M9 导出同规则）。"""
+    data = docx_bytes(_doc_with("姓名：张三"))
+    regions = whole_regions_of(data)
+    outcome = apply_replacements(data, regions, {})
+    assert paragraphs_text(outcome.data)[0] == "姓名：张三"
+
+
+def test_mixed_paragraph_placeholder_wins() -> None:
+    """同段混合占位符与整段区域（M5b 手动框选才可能出现）→ 占位符优先，
+    整段区域让位（整段替换会吞掉占位符语义）。"""
+    data = docx_bytes(_doc_with("电话：{{手机号}}"))
+    ph_regions = regions_of(data)  # 占位符区域
+    whole_region = dataclasses.replace(
+        ph_regions[0], id=99, placeholder=None
+    )  # 同 anchor 伪整段区域
+    outcome = apply_replacements(
+        data,
+        [ph_regions[0], whole_region],
+        {ph_regions[0].id: "13800138000", whole_region.id: "整段内容"},
+    )
+    assert paragraphs_text(outcome.data)[0] == "电话：13800138000"
+
+
+def test_whole_replacement_for_null_placeholder_region() -> None:
+    """placeholder=None 的区域走整段替换（旧 span 逻辑对空占位符的
+    full.find("") 空匹配隐患由路由分支天然排除）。"""
+    data = docx_bytes(_doc_with("普通段落文本"))
+    region = Region(
+        id=1,
+        template_id=1,
+        type="custom",
+        label="普通段落文本",
+        placeholder=None,
+        anchor=json.dumps({"kind": "p", "path": [0]}),
+        order_index=0,
+        bbox_json=None,
+        confidence=0.4,
+        review_status="pending",
+        created_at="",
+        updated_at="",
+    )
+    outcome = apply_replacements(data, [region], {region.id: "内容"})
+    assert paragraphs_text(outcome.data)[0] == "内容"  # 走整段替换
+    assert outcome.region_paths[region.id] == [0]
