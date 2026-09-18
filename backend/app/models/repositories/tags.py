@@ -50,6 +50,28 @@ def rename_tag(conn: sqlite3.Connection, tag_id: int, new_name: str) -> Tag | No
     return tag
 
 
+def list_tags_with_counts(conn: sqlite3.Connection) -> list[tuple[Tag, int]]:
+    """全部标签 + 存活块引用计数（软删除块不计入，供筛选侧栏展示）。"""
+    rows = conn.execute(
+        "SELECT t.id, t.name, t.created_at, COUNT(b.id) AS block_count "
+        "FROM tags t "
+        "LEFT JOIN block_tags bt ON bt.tag_id = t.id "
+        "LEFT JOIN blocks b ON b.id = bt.block_id AND b.deleted_at IS NULL "
+        "GROUP BY t.id ORDER BY t.name"
+    ).fetchall()
+    return [(Tag.from_row(r), r["block_count"]) for r in rows]
+
+
+def merge_tag(conn: sqlite3.Connection, source_id: int, target_id: int) -> None:
+    """合并：source 的块关联并入 target（PK 冲突忽略），随后删除 source（联结行 CASCADE）。"""
+    conn.execute(
+        "INSERT OR IGNORE INTO block_tags (block_id, tag_id) "
+        "SELECT block_id, ? FROM block_tags WHERE tag_id = ?",
+        (target_id, source_id),
+    )
+    conn.execute("DELETE FROM tags WHERE id = ?", (source_id,))
+
+
 def delete_tag(conn: sqlite3.Connection, tag_id: int) -> bool:
     """物理删除标签（联结行 CASCADE 级联清理）。"""
     cur = conn.execute("DELETE FROM tags WHERE id = ?", (tag_id,))

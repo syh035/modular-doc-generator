@@ -202,6 +202,7 @@ export const usePreviewStore = defineStore('preview', () => {
     refreshing,
     loadTemplates,
     selectTemplate,
+    refreshVersionRender,
     bindRegionToBlock,
     unbindRegionFromBlock,
   }

@@ -1,5 +1,33 @@
 # STATE.md — 会话状态摘要（累积写入，不新建）
 
+## 2026-09-18 · M2 块库 + UI 调整三点会话（代码+门禁全绿，待用户手动验收）
+
+### 一句话快照
+
+M2 + UI 三点 + 里程碑 1 验收打勾完成；下一步 = 用户手动验收 → AI 代提交 → 新会话执行 M3b 解析完整或 M5b 校对完整（TODO.md 里程碑 2 区）。
+
+### 本次完成
+
+- 后端 M2：/api/tags（GET 计数含 alive 块 / PUT 重命名撞名即合并返回目标标签 / DELETE 204）+ blocks API 完整化（POST/GET 增 `tags:[{id,name}]`、GET/PUT/DELETE /api/blocks/{id}，PUT 部分更新且 tags 字段=整组替换，DELETE 软删→绑定原子置 missing、重复删 404）+ GET /api/guide/sample-template（python-docx 现生成示例模板，显式 eastAsia 中文字体防 P17）
+- 前端 UI 三点：① TopBar tab 化（工作台/模板制作指南）+ GuidePage.vue（写法说明+可复制示例段落+下载示例模板）；② BlockLibrary 抽屉化（左缘按钮控制 libraryOpen，默认展开；分组列表 zh 排序未分类殿后、标签筛选 chips、一表两用新建/编辑、内联删除二次确认、标签管理面板）；③ 模板下拉从顶栏挪进 TemplatePreview 工具条（idle 态可选），TopBar 不再有模板选择与版本 span（版本 UI 留 M8 入工具条）
+- 验证：后端 ruff ✓ / mypy 32 文件 ✓ / pytest 138 绿（+23）；前端 eslint ✓ / vue-tsc ✓ / vitest 74 绿（+19：TopBar 重写 5 + GuidePage 3 + 工具条下拉 3 + blocks/app store 扩充）
+- 本会话实锤缺陷（均已修）：① preview store 漏导出 `refreshVersionRender`（BlockLibrary 删块后刷新会 undefined 调用）；② blocks store `renameExistingTag` 成功时误返回标签名（契约=成功返回 null，组件按 null 判成功）；③ **P23**：Vue 模板内 `{{ '}}' }}` 字面量按首个 `}}` 截断（GuidePage 已改 script 常量插值，陷阱入 AGENTS.md）
+- 测试陷阱：jsdom 下 `mockResolvedValue(Response.json(...))` 复用同一 Response 实例——组件挂载即 loadBlocks+loadTags 两次 fetch，第二次读已消费 body 报 "Body is unusable" 且经 store.error 渲染进页面文本；stub 须用 mockImplementation 每次新建 Response 并按 URL 分路由（含 /api/tags）
+
+### 接口契约（M3b/M5b/M8/M9 直接消费）
+
+- GET /api/tags → `{tags:[{id,name,block_count}]}`（block_count 只数未软删块；**tags 按名排序**，断言用集合勿比顺序）；PUT /api/tags/{id} `{name}` → 200 TagInfo（新名撞已有标签=合并，返回目标标签 id）；DELETE /api/tags/{id} → 204
+- Block 结构（前后端一致）：`{id,name,content,category,tags:[{id,name}],created_at,updated_at}`；PUT /api/blocks/{id} 部分更新，`tags` 传什么整组替换为什么；DELETE → 204（软删，二次调用 404）
+- GET /api/guide/sample-template → 200 docx（Content-Disposition attachment；仅前端下载链接消费）
+- 新错误码：TAG_INVALID(400) / TAG_NOT_FOUND(404)
+- 前端：app store 增 `activeTab: 'workbench'|'guide'` + setTab；blocks store 增 `libraryOpen/activeTagId/toggleTagFilter/filteredBlocks/groupedBlocks/updateExistingBlock/removeBlock/renameExistingTag→null|errMsg/removeTag`
+
+### 用户偏好（本次新增）
+
+- 无新增，沿用既有（里程碑 1 验收项经用户确认按 M6a 验收口径直接打勾）
+
+### 变更原则（本次无变更，沿用既有）
+
 ## 2026-09-10 · M6a 绑定与替换引擎会话（自动化验收 6/6 全 PASS，待用户最终确认提交）
 
 ### 一句话快照

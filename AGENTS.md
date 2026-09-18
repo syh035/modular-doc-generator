@@ -122,6 +122,7 @@
 | P20 | 运行中的 Vite dev server 在依赖版本变更后仍按 `node_modules/.vite` 旧预构建产物供给浏览器（报错堆栈指向 `pdfjs-dist.js` 而非源 mjs）——换依赖后硬刷新页面无效，复测仍复现旧错误 | 依赖变更后必须重启 dev server；注意 dev.sh trap 清理不彻底时先 `lsof -iTCP:8740/5173` 查残留并 kill 再启动 |
 | P21 | bbox 是「首次渲染落库、非空不覆盖」（render_service._persist_region_bboxes）——P17 字体修复后清渲染缓存重转 PDF，**新布局下旧 bbox 静默存活**，前端黄框整体浮高 ~9pt（M5a 验收实锤；前端换算链路无辜，库值本身就是错的） | 已数据修复（bbox 置 NULL 触发重算）；「渲染产物变了但 bbox 不跟随」是设计缺口，bbox 生命周期策略（如缓存 miss 时失效）随 M5b 校对流程定夺；排查对齐问题先比对「库 bbox vs PyMuPDF 实测」再怀疑前端 |
 | P22 | TemplatePreview 三重渲染竞态（M5a 验收实锤白板）：① store 时序 pdfData 先于 status=ready 置位，watcher 在 loading 态触发 rebuild，v-else 未渲染 DOM 无 canvas → render(undefined) 崩；② **seq 序号守卫只能拦「未开始」的任务，拦不住「在飞」的 page.render**——渲染中容器 resize 触发新 rebuild，新旧批次并发打同一 canvas 被 pdfjs 拒绝 → canvas 已设尺寸却全白；③ void rebuild() 异常未捕获无诊断线索 | rebuild 门控 status==='ready'（watch 源含 status，ready 后补渲染）；RenderedPage 持 RenderTask 句柄暴露 cancel()，每轮 rebuild 先取消上一批在飞渲染；openDocument 竞态孤儿文档显式 destroy；整体 try/catch 记 console.error；教训：**前端异步任务取消必须显式，序号守卫不是取消** |
+| P23 | Vue 模板内渲染占位符字面量 `{{ '{{' }}xx{{ '}}' }}` 会被编译器按**首个 `}}`** 截断（插值定界符扫描不识别字符串字面量）→ eslint 报 parsing error，vite 构建同样挂（M2 会话实锤 GuidePage.vue） | 字面量定义在 script 常量、模板经变量插值渲染（如 `placeholderExample = '{{字段名}}'`）；任何含 `}}` 的字符串都不能出现在模板插值表达式内 |
 
 ## 验收测试流程约定（2026-09-18 用户定）
 

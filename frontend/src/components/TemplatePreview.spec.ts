@@ -85,7 +85,7 @@ async function readyWith(regions: DisplayRegion[]) {
 describe('TemplatePreview（M5a 只读预览）', () => {
   it('idle 态：提示选择模板', () => {
     const wrapper = mountPreview()
-    expect(wrapper.text()).toContain('请在顶部选择模板开始预览')
+    expect(wrapper.text()).toContain('请在上方工具条选择模板开始预览')
   })
 
   it('loading 态：显示生成中提示（D12 首次渲染进度反馈）', async () => {
@@ -167,7 +167,7 @@ describe('TemplatePreview（M5a 只读预览）', () => {
     store.status = 'idle'
     await flushPromises()
     expect(wrapper.find('.pdf-page').exists()).toBe(false)
-    expect(wrapper.text()).toContain('请在顶部选择模板开始预览')
+    expect(wrapper.text()).toContain('请在上方工具条选择模板开始预览')
   })
 
   it('P22 回归：loading 态 pdfData 先到不渲染（DOM 无 canvas），ready 后补渲染', async () => {
@@ -215,7 +215,15 @@ describe('TemplatePreview 绑定交互（M6a）', () => {
     const bindSpy = vi.spyOn(store, 'bindRegionToBlock').mockResolvedValue(true)
     const blocksStore = useBlocksStore()
     blocksStore.blocks = [
-      { id: 9, name: '姓名块', content: '张三', category: '未分类', created_at: '', updated_at: '' },
+      {
+        id: 9,
+        name: '姓名块',
+        content: '张三',
+        category: '未分类',
+        tags: [],
+        created_at: '',
+        updated_at: '',
+      },
     ]
 
     await wrapper.find('.overlay').trigger('click')
@@ -269,5 +277,53 @@ describe('TemplatePreview 绑定交互（M6a）', () => {
     store.refreshing = true
     await flushPromises()
     expect(wrapper.find('.preview-toolbar').text()).toContain('正在刷新预览')
+  })
+})
+
+describe('TemplatePreview 工具条模板下拉（UI 调整③，idle 态可选）', () => {
+  /** stub /api/templates（组件挂载即 loadTemplates）。 */
+  function stubTemplates(list: unknown[]): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((input: RequestInfo | URL) => {
+        if (String(input) === '/api/templates') {
+          return Promise.resolve(Response.json({ templates: list }))
+        }
+        return Promise.resolve(Response.json({}, { status: 404 }))
+      }),
+    )
+  }
+
+  it('挂载即加载模板列表并渲染下拉项（工具条常驻）', async () => {
+    stubTemplates([
+      { id: 1, filename: '简历模板A.docx', regions_count: 3 },
+      { id: 2, filename: '简历模板B.docx', regions_count: 0 },
+    ])
+    const wrapper = mountPreview()
+    await flushPromises()
+    const options = wrapper.findAll('.template-select option')
+    expect(options).toHaveLength(3) // 占位项 + 2 模板
+    expect(options[1].text()).toBe('简历模板A.docx')
+    expect(options[2].text()).toBe('简历模板B.docx')
+  })
+
+  it('列表为空：下拉禁用并显示（暂无模板）', async () => {
+    stubTemplates([])
+    const wrapper = mountPreview()
+    await flushPromises()
+    const select = wrapper.find('.template-select')
+    expect((select.element as HTMLSelectElement).disabled).toBe(true)
+    expect(select.text()).toContain('（暂无模板）')
+  })
+
+  it('idle 态选择模板触发 store.selectTemplate', async () => {
+    stubTemplates([{ id: 7, filename: '模板七.docx', regions_count: 1 }])
+    const wrapper = mountPreview()
+    await flushPromises()
+    const store = usePreviewStore()
+    expect(store.status).toBe('idle')
+    const spy = vi.spyOn(store, 'selectTemplate').mockResolvedValue(undefined)
+    await wrapper.find('.template-select').setValue('7')
+    expect(spy).toHaveBeenCalledWith(7)
   })
 })

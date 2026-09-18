@@ -32,4 +32,13 @@ describe('app store（冒烟）', () => {
     expect(store.healthError).toBe('无法连接本地服务，请确认后端已启动')
     vi.unstubAllGlobals()
   })
+
+  it('tab 切换：默认工作台，setTab 切到指南再切回（UI 调整①）', () => {
+    const store = useAppStore()
+    expect(store.activeTab).toBe('workbench')
+    store.setTab('guide')
+    expect(store.activeTab).toBe('guide')
+    store.setTab('workbench')
+    expect(store.activeTab).toBe('workbench')
+  })
 })

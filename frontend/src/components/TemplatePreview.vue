@@ -9,7 +9,6 @@ import BindingDialog from './BindingDialog.vue'
 
 const store = usePreviewStore()
 const blocksStore = useBlocksStore()
-
 /** 滚动容器（页面按 fit-width 平铺，纵向滚动）。 */
 const scrollRef = ref<HTMLElement | null>(null)
 const containerWidth = ref(0)
@@ -29,6 +28,12 @@ let activePages: RenderedPage[] = []
 const boundCount = computed(
   () => store.regions.filter(r => overlayKind(r) === 'bound').length,
 )
+
+/** 模板下拉（UI 调整③：从顶栏挪到本工具条，idle 态也要可选）。 */
+function onTemplateChange(event: Event): void {
+  const value = (event.target as HTMLSelectElement).value
+  void store.selectTemplate(value === '' ? null : Number(value))
+}
 
 function regionsOf(pageIndex: number): DisplayRegion[] {
   return store.regions.filter(r => r.bbox !== null && r.bbox.page === pageIndex)
@@ -163,6 +168,7 @@ watch(
 )
 
 onMounted(() => {
+  void store.loadTemplates() // 模板列表数据源（UI 调整③：下拉随工具条常驻）
   containerWidth.value = scrollRef.value?.clientWidth ?? 0
   if (typeof ResizeObserver !== 'undefined') {
     observer = new ResizeObserver(entries => {
@@ -190,20 +196,43 @@ onBeforeUnmount(() => {
 <template>
   <!-- 右栏：版本预览（模板+绑定替换成品）——pdfjs 渲染管线 PDF + 可交互覆盖层 -->
   <section class="template-preview">
-    <!-- 顶部工具条：模板名 + 刷新指示 + 覆盖层图例 -->
-    <div
-      v-if="store.status === 'ready'"
-      class="preview-toolbar"
-    >
-      <span class="filename">{{ store.currentTemplate?.filename ?? `模板 #${store.currentTemplateId}` }}</span>
+    <!-- 顶部工具条：模板下拉（idle 态也可选）+ 刷新指示 + 覆盖层图例 -->
+    <div class="preview-toolbar">
+      <select
+        class="template-select"
+        :value="store.currentTemplateId ?? ''"
+        :disabled="store.templates.length === 0"
+        :title="store.templatesError ?? '选择要预览的模板'"
+        @change="onTemplateChange"
+      >
+        <option
+          value=""
+          disabled
+        >
+          {{ store.templatesError ?? (store.templates.length === 0 ? '（暂无模板）' : '（选择模板）') }}
+        </option>
+        <option
+          v-for="t in store.templates"
+          :key="t.id"
+          :value="t.id"
+        >
+          {{ t.filename }}
+        </option>
+      </select>
       <span class="legend">
         <span
           v-if="store.refreshing"
           class="refreshing"
         ><span class="spinner" />正在刷新预览…</span>
-        <i class="dot bound" />已绑定 {{ boundCount }}
-        <i class="dot pending" />待校对 {{ store.regions.length - unplaced.length - boundCount }}
-        <i class="dot unrecognized" />未定位 {{ unplaced.length }}
+        <template v-if="store.status === 'ready'">
+          <i class="dot bound" />已绑定 {{ boundCount }}
+          <i class="dot pending" />待校对 {{ store.regions.length - unplaced.length - boundCount }}
+          <i class="dot unrecognized" />未定位 {{ unplaced.length }}
+        </template>
+        <span
+          v-else-if="store.status === 'idle'"
+          class="toolbar-hint"
+        >选择模板开始预览</span>
       </span>
     </div>
 
@@ -223,7 +252,7 @@ onBeforeUnmount(() => {
         v-if="store.status === 'idle'"
         class="state empty"
       >
-        请在顶部选择模板开始预览
+        请在上方工具条选择模板开始预览
       </div>
       <div
         v-else-if="store.status === 'loading'"
@@ -303,6 +332,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 6px 16px;
   font-size: 12px;
   color: #646a73;
@@ -310,10 +340,16 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid #e2e3e5;
 }
 
-.filename {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.template-select {
+  max-width: 280px;
+  min-width: 140px;
+  padding: 2px 4px;
+  font-size: 12px;
+  color: #1f2329;
+}
+
+.toolbar-hint {
+  color: #8f959e;
 }
 
 .legend {

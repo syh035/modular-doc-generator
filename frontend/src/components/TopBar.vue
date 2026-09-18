@@ -1,47 +1,32 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
 import { useAppStore } from '../stores/app'
-import { usePreviewStore } from '../stores/preview'
 
 const appStore = useAppStore()
-const previewStore = usePreviewStore()
 onMounted(() => {
   void appStore.refreshHealth()
-  void previewStore.loadTemplates()
 })
-
-function onTemplateChange(event: Event) {
-  const value = (event.target as HTMLSelectElement).value
-  void previewStore.selectTemplate(value === '' ? null : Number(value))
-}
 </script>
 
 <template>
   <header class="top-bar">
-    <div class="selectors">
-      <select
-        class="selector template-select"
-        :value="previewStore.currentTemplateId ?? ''"
-        :disabled="previewStore.templates.length === 0"
-        :title="previewStore.templatesError ?? '选择要预览的模板'"
-        @change="onTemplateChange"
+    <!-- UI 调整①：顶部 tab 切换（工作台 / 模板制作指南） -->
+    <nav class="tabs">
+      <button
+        class="tab"
+        :class="{ active: appStore.activeTab === 'workbench' }"
+        @click="appStore.setTab('workbench')"
       >
-        <option
-          value=""
-          disabled
-        >
-          {{ previewStore.templatesError ?? (previewStore.templates.length === 0 ? '（暂无模板）' : '（选择模板）') }}
-        </option>
-        <option
-          v-for="t in previewStore.templates"
-          :key="t.id"
-          :value="t.id"
-        >
-          {{ t.filename }}
-        </option>
-      </select>
-      <span class="selector">版本：{{ '（暂无）' }}</span>
-    </div>
+        工作台
+      </button>
+      <button
+        class="tab"
+        :class="{ active: appStore.activeTab === 'guide' }"
+        @click="appStore.setTab('guide')"
+      >
+        模板制作指南
+      </button>
+    </nav>
     <div class="actions">
       <button disabled>
         导入模板
@@ -68,16 +53,31 @@ function onTemplateChange(event: Event) {
   border-bottom: 1px solid #e2e3e5;
 }
 
-.selectors {
+.tabs {
   display: flex;
   align-items: center;
-  gap: 24px;
-  color: #646a73;
+  gap: 4px;
 }
 
-.template-select {
-  max-width: 280px;
-  padding: 2px 4px;
+.tab {
+  padding: 5px 14px;
+  font-size: 13px;
+  color: #646a73;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tab:hover {
+  background: #f2f3f5;
+  color: #1f2329;
+}
+
+.tab.active {
+  color: #3370ff;
+  background: rgba(51, 112, 255, 0.08);
+  font-weight: 600;
 }
 
 .actions {
