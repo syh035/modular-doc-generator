@@ -1,5 +1,35 @@
 # STATE.md — 会话状态摘要（累积写入，不新建）
 
+## 2026-09-18 · M5b 校对完整会话（浏览器验收批 1–5 全 PASS，已提交 c2c3832）
+
+### 一句话快照
+
+M5b 校对完整交付并验收通过（含 P21 bbox 生命周期定案 + pendingCount Q4 口径修复）；下一步 = 新会话执行 M7 溢出处理（TODO.md 里程碑 2 区下一项）。
+
+### 本次完成
+
+- 后端：regions 表迁移（新增 bbox_pdf_sha/bbox_source 列）+ services/proofread_service.py + api/regions.py（POST 创建/PATCH 更新/DELETE；状态机 pending↔confirmed/excluded；全部候选处理完自动 ready；Q3 无候选直接 ready）
+- **bbox 生命周期（P21 定案）**：bbox_pdf_sha 记渲染产物指纹，sha 不匹配且 bbox_source='auto' → 自动失效重算；bbox_source='manual'（人工框选/微调）永不覆盖
+- 前端：StatusBar 校对模式开关 + TemplatePreview 校对着色（绿=高置信/黄=低置信/蓝=已确认/灰虚线=已排除）+ 拖拽框选新建（服务端 align_flow_to_lines 反解文档流 anchor；空框拦截 REGION_FRAME_EMPTY/跨段拦截 REGION_FRAME_MULTI）+ RegionNameDialog 命名弹层 + 8 手柄边界微调（Esc 取消）+ ProofreadPopover 操作浮层（确认/排除/重新校对/微调/删除）+ 删除级联清绑定
+- 验收期修复：pendingCount 与 regionsOf 的 Q4 口径对齐（excluded 不计入「待校对」统计；浏览器实测待校对 4→3 与可见框一致）
+- 验证：后端 ruff/mypy/pytest 180 绿；前端 eslint/vue-tsc/vitest 96 绿；浏览器自动化验收批 1–5 全 PASS（状态流转/框选新建/空框跨段拦截/零位移防误触/微调几何精确/Esc 取消/删除级联/模板 11+12 自动 ready/正常模式回归/console 无功能错误）
+- 测试遗留数据：模板 11/12 均 ready；块「临时块M5b」残留（绑定已级联清空，可随时删）
+
+### 接口契约（M7/M8/M9/M10 直接消费）
+
+- POST /api/templates/{tid}/regions（框选新建：bbox+label+type）→ 201；PATCH /api/regions/{id}（review_status/bbox/type/label）→ 200；DELETE /api/regions/{id} → 204
+- 新错误码：REGION_FRAME_EMPTY(400) / REGION_FRAME_MULTI(400)；excluded 区域拒绑
+- Region 新字段：bbox_pdf_sha（渲染产物指纹）/ bbox_source（auto|manual）
+- 前端 proofreadMode 切换 = 渲染路径切换（模板预览字节 ↔ 版本渲染字节），overlay 响应 regions 含 review_status/bbox_source
+
+### 用户偏好（本次新增）
+
+- 无新增；沿用浏览器自动化验收 + AI 代提交惯例
+
+### 变更原则（本次新增）
+
+- 手动测试步骤口径修正：素模板 ≠ 0 候选——长正文段（≥30 字）以 custom/0.4 成段落兜底候选（模板 B 实测 2 候选属设计内行为）；「0 候选→直接 ready」仅短文本模板触发（后端单测覆盖）
+
 ## 2026-09-18 · UI 调整②批+③批追加 + P25 缓存修复会话（浏览器验收通过，已提交）
 
 ### 一句话快照
