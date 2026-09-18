@@ -115,9 +115,11 @@ def upload_template(filename: str, data: bytes) -> tuple[Template, list[Region],
                     order_index=c.order_index,
                     confidence=c.confidence,
                 )
+            # Q3 空集豁免：无任何候选区域 → 校对无事可做，直接 ready
+            next_status = "ready" if not outcome.candidates else "pending_review"
             versions_repo.create_version(conn, tpl.id, DEFAULT_VERSION_NAME)
             updated = templates_repo.update_template(
-                conn, tpl.id, status="pending_review", storage_name=storage_name
+                conn, tpl.id, status=next_status, storage_name=storage_name
             )
             assert updated is not None
             tpl = updated

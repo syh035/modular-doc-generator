@@ -12,6 +12,7 @@
 - 单用户场景：全局渲染锁串行化，避免并发重复转换与重复落库
 """
 
+import hashlib
 import json
 import threading
 import uuid
@@ -51,15 +52,29 @@ def _bbox_dict(geo_bbox: tuple[float, float, float, float], page: int) -> dict[s
     }
 
 
-def _persist_region_bboxes(tpl: Template, regions: list[Region], pdf_path: Path) -> int:
-    """对齐文档流与 PDF 行，落库各区域 bbox；返回成功落库的区域数。"""
+def pdf_sha256(pdf_path: Path) -> str:
+    """渲染产物 PDF 内容 sha256（P21 bbox 生命周期：bbox 记录测量来源）。"""
+    return hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+
+
+def _persist_region_bboxes(
+    tpl: Template, regions: list[Region], pdf_path: Path, pdf_sha: str
+) -> int:
+    """对齐文档流与 PDF 行，落库各区域 bbox；返回成功落库的区域数。
+
+    P21 生命周期：auto bbox 在 bbox_pdf_sha ≠ 当前 PDF sha 时失效重算；
+    manual（校对人工微调/框选）bbox 保护不覆盖。
+    """
     docx_path = settings.templates_dir / tpl.storage_name
     flow = list(iter_flow_paragraphs(docx_path.read_bytes()))
     geometry = align_flow_to_lines(flow, extract_pdf_lines(pdf_path))
     updated = 0
     with get_conn() as conn:
         for r in regions:
-            if r.bbox_json:  # 已有坐标（如 M5b 校对产物）不覆盖
+            stale = r.bbox_json is None or (
+                r.bbox_source != "manual" and r.bbox_pdf_sha != pdf_sha
+            )
+            if not stale:
                 continue
             anchor = json.loads(r.anchor)
             path = anchor["path"]
@@ -68,7 +83,11 @@ def _persist_region_bboxes(tpl: Template, regions: list[Region], pdf_path: Path)
             if geo is None:
                 continue  # 未匹配区域保持 bbox=None，M5b 人工兜底
             regions_repo.update_region(
-                conn, r.id, bbox=_bbox_dict(geo.bbox, geo.page)
+                conn,
+                r.id,
+                bbox=_bbox_dict(geo.bbox, geo.page),
+                bbox_source="auto",
+                bbox_pdf_sha=pdf_sha,
             )
             updated += 1
     return updated
@@ -96,8 +115,13 @@ def ensure_template_preview(template_id: int) -> Path:
         )
     with _render_lock:
         pdf_path = libreoffice.get_manager().convert(docx_path)
-        if any(r.bbox_json is None for r in regions):
-            _persist_region_bboxes(tpl, regions, pdf_path)
+        pdf_sha = pdf_sha256(pdf_path)
+        # P21：auto bbox 随渲染产物变化失效重算（manual 校对产物保护不覆盖）
+        if any(
+            r.bbox_json is None or (r.bbox_source != "manual" and r.bbox_pdf_sha != pdf_sha)
+            for r in regions
+        ):
+            _persist_region_bboxes(tpl, regions, pdf_path, pdf_sha)
     return pdf_path
 
 

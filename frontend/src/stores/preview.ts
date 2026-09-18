@@ -26,11 +26,24 @@ import {
   versionPreviewUrl,
   type BindingInfo,
 } from '../api/versions'
+import {
+  createRegion as createRegionApi,
+  deleteRegion as deleteRegionApi,
+  updateRegion as updateRegionApi,
+  type RegionFramePayload,
+  type RegionPatchPayload,
+} from '../api/regions'
 
 export type PreviewStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 /** 当前展示的区域：无版本 = 模板区域（binding 恒 null）；有版本 = overlay 区域。 */
 export type DisplayRegion = Region & { binding: BindingInfo | null }
+
+/** 校对动作返回：ok=false 时 error 为可读信息（如空区域拦截）。 */
+export interface ProofreadResult {
+  ok: boolean
+  error: string | null
+}
 
 export const usePreviewStore = defineStore('preview', () => {
   /** 模板列表（TopBar 下拉数据源）。 */
@@ -52,6 +65,8 @@ export const usePreviewStore = defineStore('preview', () => {
   const pdfData = ref<ArrayBuffer | null>(null)
   /** 绑定后预览刷新中（D12：局部刷新指示，旧内容保持可见）。 */
   const refreshing = ref(false)
+  /** 校对模式（M5b）：开启时预览切到模板本体（校对对象是模板区域，非版本成品）。 */
+  const proofreadMode = ref(false)
 
   const sequencer = new RequestSequencer()
 
@@ -117,10 +132,11 @@ export const usePreviewStore = defineStore('preview', () => {
       }
       const versionId = detail.default_version_id ?? null
       currentVersionId.value = versionId
-      if (versionId !== null) {
-        await _fetchVersionRender(seq, versionId)
-      } else {
+      if (proofreadMode.value || versionId === null) {
+        // 校对模式：看模板本体（原始区域 + 落库 bbox），不看替换成品
         await _fetchTemplateRender(seq, id)
+      } else {
+        await _fetchVersionRender(seq, versionId)
       }
       status.value = 'ready'
     } catch (err) {
@@ -129,6 +145,40 @@ export const usePreviewStore = defineStore('preview', () => {
       }
       status.value = 'error'
       error.value = err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  /**
+   * 切换校对模式：开启 → 拉模板预览 + 原始区域；关闭 → 回版本渲染（无版本回落模板预览）。
+   * 区域级校对动作（确认/排除等）只更新 regions，不需要重拉 PDF。
+   */
+  async function toggleProofreadMode(on: boolean): Promise<void> {
+    if (proofreadMode.value === on) {
+      return
+    }
+    proofreadMode.value = on
+    error.value = null
+    const templateId = currentTemplateId.value
+    if (templateId === null || status.value !== 'ready') {
+      return // idle/加载中：仅翻旗标，selectTemplate 按模式取数
+    }
+    const seq = sequencer.next()
+    refreshing.value = true
+    try {
+      if (on || currentVersionId.value === null) {
+        await _fetchTemplateRender(seq, templateId)
+      } else {
+        await _fetchVersionRender(seq, currentVersionId.value)
+      }
+    } catch (err) {
+      if (err instanceof CancelledError) {
+        return
+      }
+      error.value = err instanceof Error ? err.message : String(err)
+    } finally {
+      if (sequencer.isCurrent(seq)) {
+        refreshing.value = false
+      }
     }
   }
 
@@ -189,6 +239,73 @@ export const usePreviewStore = defineStore('preview', () => {
     }
   }
 
+  /** 校对 PATCH 通用路径：成功同步本地 regions + 模板 ready 态（自动 ready 可能触发）。 */
+  async function _patchRegion(regionId: number, patch: RegionPatchPayload): Promise<ProofreadResult> {
+    try {
+      const updated = await updateRegionApi(regionId, patch)
+      const idx = regions.value.findIndex(r => r.id === regionId)
+      if (idx >= 0) {
+        regions.value[idx] = { ...regions.value[idx], ...updated }
+      }
+      void loadTemplates()
+      return { ok: true, error: null }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /** 确认候选区域（pending → confirmed）。 */
+  async function confirmRegion(regionId: number): Promise<ProofreadResult> {
+    return _patchRegion(regionId, { review_status: 'confirmed' })
+  }
+
+  /** 排除候选区域（pending → excluded；后端拒绝向其建绑定）。 */
+  async function excludeRegion(regionId: number): Promise<ProofreadResult> {
+    return _patchRegion(regionId, { review_status: 'excluded' })
+  }
+
+  /** 重新校对（confirmed/excluded → pending）。 */
+  async function reopenRegion(regionId: number): Promise<ProofreadResult> {
+    return _patchRegion(regionId, { review_status: 'pending' })
+  }
+
+  /** 边界微调：提交新 bbox（即转 manual，产物更新不覆盖，P21 生命周期）。 */
+  async function adjustRegionBBox(regionId: number, bbox: RegionFramePayload): Promise<ProofreadResult> {
+    return _patchRegion(regionId, { bbox })
+  }
+
+  /** 删除区域（后端级联删绑定）→ 本地移除。 */
+  async function removeRegion(regionId: number): Promise<ProofreadResult> {
+    try {
+      await deleteRegionApi(regionId)
+      regions.value = regions.value.filter(r => r.id !== regionId)
+      void loadTemplates()
+      return { ok: true, error: null }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /** 框选新建：服务端反解 anchor → confirmed 区域；错误内联给命名弹层。 */
+  async function createFrameRegion(
+    frame: RegionFramePayload,
+    label: string,
+    type: string,
+  ): Promise<ProofreadResult> {
+    const templateId = currentTemplateId.value
+    if (templateId === null) {
+      return { ok: false, error: '未选择模板，无法新建区域' }
+    }
+    try {
+      const region = await createRegionApi(templateId, { label, type, bbox: frame })
+      regions.value = [...regions.value, { ...region, binding: null }]
+      void loadTemplates()
+      return { ok: true, error: null }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
   return {
     templates,
     templatesError,
@@ -200,10 +317,18 @@ export const usePreviewStore = defineStore('preview', () => {
     regions,
     pdfData,
     refreshing,
+    proofreadMode,
     loadTemplates,
     selectTemplate,
+    toggleProofreadMode,
     refreshVersionRender,
     bindRegionToBlock,
     unbindRegionFromBlock,
+    confirmRegion,
+    excludeRegion,
+    reopenRegion,
+    adjustRegionBBox,
+    removeRegion,
+    createFrameRegion,
   }
 })

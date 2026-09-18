@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from app.core.errors import (
     BINDING_NOT_FOUND,
     BLOCK_NOT_FOUND,
+    REGION_EXCLUDED,
     REGION_NOT_FOUND,
     REGION_TEMPLATE_MISMATCH,
     VERSION_NOT_FOUND,
@@ -64,6 +65,12 @@ def upsert_binding(version_id: int, payload: BindingCreate) -> dict[str, object]
             raise AppError(
                 REGION_TEMPLATE_MISMATCH,
                 f"区域（id={region.id}）不属于该版本所属模板（id={version.template_id}）",
+                status_code=400,
+            )
+        if region.review_status == "excluded":
+            raise AppError(
+                REGION_EXCLUDED,
+                f"区域（id={region.id}）已在校对中排除，不能绑定",
                 status_code=400,
             )
         block = blocks_repo.get_block(conn, payload.block_id)

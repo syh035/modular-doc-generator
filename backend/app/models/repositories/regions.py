@@ -14,7 +14,8 @@ from app.models.entities import Region
 
 _SELECT = (
     "SELECT id, template_id, type, label, placeholder, anchor, order_index, "
-    "bbox_json, confidence, review_status, created_at, updated_at FROM regions"
+    "bbox_json, bbox_pdf_sha, bbox_source, confidence, review_status, "
+    "created_at, updated_at FROM regions"
 )
 
 
@@ -28,6 +29,8 @@ def create_region(
     order_index: int,
     placeholder: str | None = None,
     bbox: dict[str, Any] | None = None,
+    bbox_source: str = "auto",
+    bbox_pdf_sha: str | None = None,
     confidence: float | None = None,
     review_status: str = "pending",
 ) -> Region:
@@ -41,8 +44,8 @@ def create_region(
     now = utcnow()
     cur = conn.execute(
         "INSERT INTO regions (template_id, type, label, placeholder, anchor, order_index, "
-        "bbox_json, confidence, review_status, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "bbox_json, bbox_pdf_sha, bbox_source, confidence, review_status, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             template_id,
             region_type,
@@ -51,6 +54,8 @@ def create_region(
             json.dumps(anchor, ensure_ascii=False),
             order_index,
             json.dumps(bbox, ensure_ascii=False) if bbox is not None else None,
+            bbox_pdf_sha,
+            bbox_source,
             confidence,
             review_status,
             now,
@@ -94,6 +99,8 @@ def update_region(
     anchor: dict[str, Any] | None = None,
     order_index: int | None = None,
     bbox: dict[str, Any] | None = None,
+    bbox_source: str | None = None,
+    bbox_pdf_sha: str | None = None,
     confidence: float | None = None,
     review_status: str | None = None,
 ) -> Region | None:
@@ -124,6 +131,12 @@ def update_region(
     if bbox is not None:
         sets.append("bbox_json = ?")
         params.append(json.dumps(bbox, ensure_ascii=False))
+    if bbox_source is not None:
+        sets.append("bbox_source = ?")
+        params.append(bbox_source)
+    if bbox_pdf_sha is not None:
+        sets.append("bbox_pdf_sha = ?")
+        params.append(bbox_pdf_sha)
     if confidence is not None:
         sets.append("confidence = ?")
         params.append(confidence)
@@ -141,6 +154,15 @@ def update_region(
     region = get_region(conn, region_id)
     assert region is not None
     return region
+
+
+def max_order_index(conn: sqlite3.Connection, template_id: int) -> int:
+    """模板区域 order_index 最大值（手动框选区域接在文档流序尾部）。"""
+    row = conn.execute(
+        "SELECT COALESCE(MAX(order_index), -1) AS m FROM regions WHERE template_id = ?",
+        (template_id,),
+    ).fetchone()
+    return int(row["m"])
 
 
 def delete_region(conn: sqlite3.Connection, region_id: int) -> bool:

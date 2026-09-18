@@ -6,6 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from app.api.blocks import router as blocks_router
 from app.api.guide import router as guide_router
 from app.api.health import router as health_router
+from app.api.regions import router as regions_router
 from app.api.tags import router as tags_router
 from app.api.templates import router as templates_router
 from app.api.versions import router as versions_router
@@ -21,6 +22,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="简历助手 backend")
     app.include_router(health_router)
     app.include_router(templates_router)
+    app.include_router(regions_router)
     app.include_router(blocks_router)
     app.include_router(tags_router)
     app.include_router(versions_router)

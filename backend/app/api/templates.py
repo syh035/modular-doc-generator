@@ -18,7 +18,7 @@ from app.services import render_service, template_service
 router = APIRouter(prefix="/api")
 
 
-def _region_dict(r: Region) -> dict[str, object]:
+def region_dict(r: Region) -> dict[str, object]:
     """区域序列化：anchor/bbox 落库为 JSON 文本，出参还原为对象。"""
     return {
         "id": r.id,
@@ -49,7 +49,7 @@ def _template_dict(
         "updated_at": t.updated_at,
     }
     if regions is not None:
-        out["regions"] = [_region_dict(r) for r in regions]
+        out["regions"] = [region_dict(r) for r in regions]
     if regions_count is not None:
         out["regions_count"] = regions_count
     return out
@@ -112,7 +112,7 @@ def list_regions(template_id: int) -> dict[str, object]:
         tpl = _get_or_404(conn, template_id)
         return {
             "template_id": tpl.id,
-            "regions": [_region_dict(r) for r in regions_repo.list_regions(conn, tpl.id)],
+            "regions": [region_dict(r) for r in regions_repo.list_regions(conn, tpl.id)],
         }
 
 

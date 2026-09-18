@@ -54,7 +54,13 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """开发期轻量迁移（2026-09-18 用户确认移除分类功能）：blocks.category 列废弃即删。"""
+    """开发期轻量迁移（幂等）：旧库补列 / 废列即删。"""
     cols = [r[1] for r in conn.execute("PRAGMA table_info(blocks)")]
     if "category" in cols:
-        conn.execute("ALTER TABLE blocks DROP COLUMN category")
+        conn.execute("ALTER TABLE blocks DROP COLUMN category")  # 2026-09-18 用户确认移除分类
+    # M5b（P21 bbox 生命周期）：bbox_pdf_sha 记录测量来源 PDF，bbox_source 区分自动/人工
+    region_cols = [r[1] for r in conn.execute("PRAGMA table_info(regions)")]
+    if "bbox_pdf_sha" not in region_cols:
+        conn.execute("ALTER TABLE regions ADD COLUMN bbox_pdf_sha TEXT")
+    if "bbox_source" not in region_cols:
+        conn.execute("ALTER TABLE regions ADD COLUMN bbox_source TEXT NOT NULL DEFAULT 'auto'")

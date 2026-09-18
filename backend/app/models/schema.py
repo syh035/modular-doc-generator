@@ -61,6 +61,8 @@ DDL_STATEMENTS: tuple[str, ...] = (
         anchor TEXT NOT NULL,          -- 文档流锚点 JSON（P3：身份锚定）
         order_index INTEGER NOT NULL,  -- 文档流出现顺序（D7 迁移匹配依据）
         bbox_json TEXT,                -- 页面坐标 JSON，仅展示与测量
+        bbox_pdf_sha TEXT,             -- bbox 测量来源 PDF sha256（P21：PDF 变→auto bbox 失效重算）
+        bbox_source TEXT NOT NULL DEFAULT 'auto',  -- auto=渲染几何算得 / manual=人工保护不覆盖
         confidence REAL,               -- 解析置信度（M3b）
         review_status TEXT NOT NULL DEFAULT 'pending',
         created_at TEXT NOT NULL,

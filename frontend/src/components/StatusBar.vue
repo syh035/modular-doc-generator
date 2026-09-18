@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { useAppStore } from '../stores/app'
+import { usePreviewStore } from '../stores/preview'
 
 const appStore = useAppStore()
+const previewStore = usePreviewStore()
 </script>
 
 <template>
   <!-- 底部状态条：左下角服务状态（绿点+文字，2026-09-18 自 TopBar 右上角迁入）；
-       溢出提示 / 校对模式开关（M5/M7 实现） -->
+       校对模式开关（M5b，选中模板才可用）/ 溢出提示（M7 实现） -->
   <footer class="status-bar">
     <span
       class="health"
@@ -24,6 +26,19 @@ const appStore = useAppStore()
     >
       LibreOffice 未安装：{{ appStore.health.libreoffice.hint }}
     </span>
+    <label
+      v-if="previewStore.currentTemplateId !== null"
+      class="proofread-switch"
+      title="开启后预览模板本体并标注候选区域，可确认/排除/框选新建区域"
+    >
+      <input
+        type="checkbox"
+        data-testid="proofread-toggle"
+        :checked="previewStore.proofreadMode"
+        @change="previewStore.toggleProofreadMode(($event.target as HTMLInputElement).checked)"
+      >
+      校对模式
+    </label>
   </footer>
 </template>
 
@@ -58,5 +73,18 @@ const appStore = useAppStore()
 
 .warn {
   color: #ff8800;
+}
+
+.proofread-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  cursor: pointer;
+  user-select: none;
+}
+
+.proofread-switch input {
+  accent-color: #3370ff;
 }
 </style>

@@ -1,11 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { Region } from '../api/templates'
-import { bboxToOverlayRect, overlayKind } from '../pdf/geometry'
+import type { RegionFramePayload } from '../api/regions'
+import {
+  bboxToOverlayRect,
+  overlayKind,
+  overlayRectToBBox,
+  type OverlayRect,
+} from '../pdf/geometry'
 import { openDocument, preparePage, type OpenedPdf, type RenderedPage } from '../pdf/viewer'
 import { useBlocksStore } from '../stores/blocks'
 import { usePreviewStore, type DisplayRegion } from '../stores/preview'
 import BindingDialog from './BindingDialog.vue'
+import ProofreadPopover from './ProofreadPopover.vue'
+import RegionNameDialog from './RegionNameDialog.vue'
 
 const store = usePreviewStore()
 const blocksStore = useBlocksStore()
@@ -14,9 +21,21 @@ const scrollRef = ref<HTMLElement | null>(null)
 const containerWidth = ref(0)
 const pages = ref<RenderedPage[]>([])
 /** 未定位区域（bbox=null，渲染未匹配）：无几何，只能列表提示（M5b 校对兜底）。 */
-const unplaced = ref<Region[]>([])
-/** 绑定浮层目标区域（null = 关闭）。 */
+const unplaced = computed(() =>
+  store.regions.filter(r => r.bbox === null && (store.proofreadMode || r.review_status !== 'excluded')),
+)
+/** 绑定浮层目标区域（null = 关闭，正常模式）。 */
 const dialogRegion = ref<DisplayRegion | null>(null)
+/** 校对浮层目标（null = 关闭，校对模式；page 供微调启动取 viewport）。 */
+const popoverTarget = ref<{ region: DisplayRegion; page: RenderedPage } | null>(null)
+/** 命名弹层：框选完成待命名（null = 关闭）。 */
+const nameDialog = ref<{ frame: RegionFramePayload } | null>(null)
+const nameError = ref<string | null>(null)
+const nameSubmitting = ref(false)
+/** 拖拽中的框选草稿（页内 CSS 像素矩形）。 */
+const draftFrame = ref<{ page: number; rect: OverlayRect } | null>(null)
+/** 微调草稿：区域 id + 页内矩形（null = 未在微调）。 */
+const adjustDraft = ref<{ regionId: number; page: number; rect: OverlayRect } | null>(null)
 
 let opened: OpenedPdf | null = null
 let openedData: ArrayBuffer | null = null
@@ -25,9 +44,66 @@ let observer: ResizeObserver | null = null
 /** 当前批次页面（含在飞渲染的取消句柄，P22）。 */
 let activePages: RenderedPage[] = []
 
+/** 微调手柄集合（方向缩写：n 北 / e 东…组合 = 角）。 */
+const ADJUST_HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as const
+type AdjustHandle = (typeof ADJUST_HANDLES)[number] | 'move'
+const MIN_DRAG = 3 // 小于 3px 视为点击（过滤误触）
+const MIN_ADJUST = 3 // 微调矩形最小边（px）
+
+interface DragState {
+  kind: 'frame' | 'adjust'
+  handle: AdjustHandle
+  page: RenderedPage
+  startPageX: number
+  startPageY: number
+  originRect: OverlayRect
+}
+
+let drag: DragState | null = null
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.min(Math.max(v, lo), hi)
+}
+
+/** 反向拖拽归一为左上原点矩形。 */
+function normRect(x0: number, y0: number, x1: number, y1: number): OverlayRect {
+  return {
+    left: Math.min(x0, x1),
+    top: Math.min(y0, y1),
+    width: Math.abs(x1 - x0),
+    height: Math.abs(y1 - y0),
+  }
+}
+
+/** 鼠标位置 → 页容器内坐标（越界钳制到页界 = 禁止跨页框选）。 */
+function pagePoint(e: MouseEvent, page: RenderedPage): { x: number; y: number } | null {
+  const el = scrollRef.value?.querySelector<HTMLElement>(`[data-page="${page.index}"]`)
+  if (!el) {
+    return null
+  }
+  const box = el.getBoundingClientRect()
+  return {
+    x: clamp(e.clientX - box.left, 0, page.width),
+    y: clamp(e.clientY - box.top, 0, page.height),
+  }
+}
+
 const boundCount = computed(
   () => store.regions.filter(r => overlayKind(r) === 'bound').length,
 )
+// Q4：与 regionsOf 对齐，正常模式 excluded 区域不显示也不计入待校对统计
+const pendingCount = computed(
+  () =>
+    store.regions.filter(
+      r => r.bbox !== null && overlayKind(r) === 'pending' && r.review_status !== 'excluded',
+    ).length,
+)
+/** 校对进度：非 pending 区域数 / 总数（含 bbox=null 的未定位区域）。 */
+const proofreadProgress = computed(() => {
+  const total = store.regions.length
+  const done = store.regions.filter(r => r.review_status !== 'pending').length
+  return { done, total }
+})
 
 /** 模板下拉（UI 调整③：从顶栏挪到本工具条，idle 态也要可选）。 */
 function onTemplateChange(event: Event): void {
@@ -36,17 +112,40 @@ function onTemplateChange(event: Event): void {
 }
 
 function regionsOf(pageIndex: number): DisplayRegion[] {
-  return store.regions.filter(r => r.bbox !== null && r.bbox.page === pageIndex)
+  return store.regions.filter(r => {
+    if (r.bbox === null || r.bbox.page !== pageIndex) {
+      return false
+    }
+    // Q4：正常模式不显示排除区域（不参与绑定与替换）
+    if (!store.proofreadMode && r.review_status === 'excluded') {
+      return false
+    }
+    return true
+  })
 }
 
-function overlayStyle(region: DisplayRegion, page: RenderedPage) {
-  const rect = bboxToOverlayRect(region.bbox!, page.viewport)
+function rectStyle(rect: OverlayRect) {
   return {
     left: `${rect.left}px`,
     top: `${rect.top}px`,
     width: `${rect.width}px`,
     height: `${rect.height}px`,
   }
+}
+
+function overlayStyle(region: DisplayRegion, page: RenderedPage) {
+  return rectStyle(bboxToOverlayRect(region.bbox!, page.viewport))
+}
+
+/** 校对模式着色：高置信候选绿 / 低置信候选黄 / 已确认蓝 / 已排除灰虚线。 */
+function proofreadClass(region: DisplayRegion): string {
+  if (region.review_status === 'confirmed') {
+    return 'confirmed'
+  }
+  if (region.review_status === 'excluded') {
+    return 'excluded'
+  }
+  return (region.confidence ?? 0) >= 0.9 ? 'cand-high' : 'cand-low'
 }
 
 function overlayTitle(region: DisplayRegion): string {
@@ -60,7 +159,12 @@ function overlayTitle(region: DisplayRegion): string {
 }
 
 /** 区域点击（PRD 4.4）：左栏已选块 → 直接绑定/换绑；否则浮层选块/换绑/解绑。 */
-function onRegionClick(region: DisplayRegion): void {
+function onRegionClick(region: DisplayRegion, page: RenderedPage): void {
+  if (store.proofreadMode) {
+    // 校对模式：区域点击 = 校对操作浮层（确认/排除/微调/删除）
+    popoverTarget.value = { region, page }
+    return
+  }
   const selectedId = blocksStore.selectedBlockId
   if (selectedId !== null) {
     void store.bindRegionToBlock(region.id, selectedId)
@@ -85,6 +189,196 @@ async function onDialogUnbind(): Promise<void> {
   }
 }
 
+// ---- 校对模式（M5b）：框选 / 微调 / 操作浮层 ----
+
+function beginFrameDrag(e: MouseEvent, page: RenderedPage): void {
+  if (!store.proofreadMode || adjustDraft.value !== null) {
+    return
+  }
+  const pt = pagePoint(e, page)
+  if (!pt) {
+    return
+  }
+  popoverTarget.value = null // 框选开始即收起校对浮层
+  drag = {
+    kind: 'frame',
+    handle: 'move',
+    page,
+    startPageX: pt.x,
+    startPageY: pt.y,
+    originRect: { left: pt.x, top: pt.y, width: 0, height: 0 },
+  }
+  draftFrame.value = { page: page.index, rect: { ...drag.originRect } }
+  window.addEventListener('mousemove', onDragMove)
+  window.addEventListener('mouseup', onDragEnd)
+}
+
+/** 启动微调拖拽（手柄缩放 / 主体移动）。 */
+function beginAdjustDrag(
+  e: MouseEvent,
+  handle: AdjustHandle,
+  region: DisplayRegion,
+  page: RenderedPage,
+): void {
+  if (region.bbox === null) {
+    return
+  }
+  e.preventDefault()
+  e.stopPropagation()
+  const pt = pagePoint(e, page)
+  if (!pt) {
+    return
+  }
+  const originRect = bboxToOverlayRect(region.bbox, page.viewport)
+  drag = { kind: 'adjust', handle, page, startPageX: pt.x, startPageY: pt.y, originRect }
+  adjustDraft.value = { regionId: region.id, page: page.index, rect: { ...originRect } }
+  window.addEventListener('mousemove', onDragMove)
+  window.addEventListener('mouseup', onDragEnd)
+}
+
+function onDragMove(e: MouseEvent): void {
+  if (!drag) {
+    return
+  }
+  const pt = pagePoint(e, drag.page)
+  if (!pt) {
+    return
+  }
+  const { startPageX: sx, startPageY: sy, originRect: o, handle } = drag
+  if (drag.kind === 'frame') {
+    draftFrame.value = { page: drag.page.index, rect: normRect(sx, sy, pt.x, pt.y) }
+    return
+  }
+  const r: OverlayRect = { ...o }
+  const dx = pt.x - sx
+  const dy = pt.y - sy
+  if (handle === 'move') {
+    r.left = clamp(o.left + dx, 0, drag.page.width - o.width)
+    r.top = clamp(o.top + dy, 0, drag.page.height - o.height)
+  } else {
+    // includes 语义恰好覆盖组合角（'ne' 同时含 n/e），单独方向只含自身
+    if (handle.includes('w')) {
+      const nl = clamp(o.left + dx, 0, o.left + o.width - MIN_ADJUST)
+      r.width = o.left + o.width - nl
+      r.left = nl
+    }
+    if (handle.includes('e')) {
+      r.width = clamp(o.left + o.width + dx, o.left + MIN_ADJUST, drag.page.width) - o.left
+    }
+    if (handle.includes('n')) {
+      const nt = clamp(o.top + dy, 0, o.top + o.height - MIN_ADJUST)
+      r.height = o.top + o.height - nt
+      r.top = nt
+    }
+    if (handle.includes('s')) {
+      r.height = clamp(o.top + o.height + dy, o.top + MIN_ADJUST, drag.page.height) - o.top
+    }
+  }
+  adjustDraft.value = { regionId: adjustDraft.value?.regionId ?? 0, page: drag.page.index, rect: r }
+}
+
+function onDragEnd(): void {
+  window.removeEventListener('mousemove', onDragMove)
+  window.removeEventListener('mouseup', onDragEnd)
+  const d = drag
+  drag = null
+  if (!d) {
+    return
+  }
+  if (d.kind === 'frame') {
+    const rect = draftFrame.value?.rect
+    draftFrame.value = null
+    if (!rect || rect.width < MIN_DRAG || rect.height < MIN_DRAG) {
+      return // 视为点击，不误开命名弹层
+    }
+    const b = overlayRectToBBox(rect, d.page.viewport)
+    nameError.value = null
+    nameDialog.value = { frame: { page: d.page.index, ...b } }
+    return
+  }
+  const rect = adjustDraft.value?.rect
+  const regionId = adjustDraft.value?.regionId
+  adjustDraft.value = null
+  if (!rect || !regionId) {
+    return
+  }
+  const b = overlayRectToBBox(rect, d.page.viewport)
+  void store.adjustRegionBBox(regionId, { page: d.page.index, ...b })
+}
+
+/** Esc 取消微调（草稿丢弃，区域保持原 bbox）。 */
+function onCancelAdjust(e: KeyboardEvent): void {
+  if (e.key === 'Escape' && adjustDraft.value) {
+    adjustDraft.value = null
+    drag = null
+  }
+}
+
+async function onNameSubmit(label: string, type: string): Promise<void> {
+  const frame = nameDialog.value?.frame
+  if (!frame) {
+    return
+  }
+  nameSubmitting.value = true
+  nameError.value = null
+  const result = await store.createFrameRegion(frame, label, type)
+  nameSubmitting.value = false
+  if (!result.ok) {
+    nameError.value = result.error // 内联显示（空区域/跨多段拦截），关闭后重新框选
+    return
+  }
+  nameDialog.value = null
+}
+
+function onPopoverConfirm(): void {
+  const t = popoverTarget.value
+  popoverTarget.value = null
+  if (t) {
+    void store.confirmRegion(t.region.id)
+  }
+}
+
+function onPopoverExclude(): void {
+  const t = popoverTarget.value
+  popoverTarget.value = null
+  if (t) {
+    void store.excludeRegion(t.region.id)
+  }
+}
+
+function onPopoverReopen(): void {
+  const t = popoverTarget.value
+  popoverTarget.value = null
+  if (t) {
+    void store.reopenRegion(t.region.id)
+  }
+}
+
+function onPopoverAdjust(): void {
+  const t = popoverTarget.value
+  popoverTarget.value = null
+  if (!t || t.region.bbox === null) {
+    return
+  }
+  adjustDraft.value = {
+    regionId: t.region.id,
+    page: t.page.index,
+    rect: bboxToOverlayRect(t.region.bbox, t.page.viewport),
+  }
+}
+
+async function onPopoverRemove(): Promise<void> {
+  const t = popoverTarget.value
+  popoverTarget.value = null
+  if (!t) {
+    return
+  }
+  if (!window.confirm(`删除区域「${t.region.label}」？其绑定关系将一并删除。`)) {
+    return
+  }
+  await store.removeRegion(t.region.id)
+}
+
 /** 重建渲染：pdfData 变化重开文档；容器宽度变化仅按新 scale 重排。 */
 function rebuild(): void {
   const seq = ++rebuildSeq
@@ -97,7 +391,6 @@ function rebuild(): void {
 }
 
 async function doRebuild(seq: number): Promise<void> {
-  unplaced.value = store.regions.filter(r => r.bbox === null)
   // P22：先取消上一批在飞渲染——seq 守卫拦不住已开始的 page.render，
   // 新旧批次并发打同一 canvas 会被 pdfjs 拒绝（白板根因）
   for (const p of activePages) {
@@ -167,6 +460,18 @@ watch(
   },
 )
 
+// 切换校对模式：关闭所有弹层与草稿（popover 持有的 RenderedPage 引用即将失效）
+watch(
+  () => store.proofreadMode,
+  () => {
+    popoverTarget.value = null
+    nameDialog.value = null
+    nameError.value = null
+    draftFrame.value = null
+    adjustDraft.value = null
+  },
+)
+
 onMounted(() => {
   void store.loadTemplates() // 模板列表数据源（UI 调整③：下拉随工具条常驻）
   containerWidth.value = scrollRef.value?.clientWidth ?? 0
@@ -178,10 +483,14 @@ onMounted(() => {
       observer.observe(scrollRef.value)
     }
   }
+  window.addEventListener('keydown', onCancelAdjust)
 })
 
 onBeforeUnmount(() => {
   observer?.disconnect()
+  window.removeEventListener('keydown', onCancelAdjust)
+  window.removeEventListener('mousemove', onDragMove)
+  window.removeEventListener('mouseup', onDragEnd)
   rebuildSeq++
   for (const p of activePages) {
     p.cancel()
@@ -267,9 +576,20 @@ onBeforeUnmount(() => {
           v-if="store.refreshing"
           class="refreshing"
         ><span class="spinner" />正在刷新预览…</span>
-        <template v-if="store.status === 'ready'">
+        <!-- 校对模式图例：候选按置信度分色 + 进度 -->
+        <template v-if="store.status === 'ready' && store.proofreadMode">
+          <i class="dot cand-high" />高置信候选
+          <i class="dot cand-low" />低置信候选
+          <i class="dot confirmed" />已确认
+          <i class="dot excluded" />已排除
+          <span
+            class="progress"
+            data-testid="proofread-progress"
+          >已处理 {{ proofreadProgress.done }}/{{ proofreadProgress.total }}</span>
+        </template>
+        <template v-else-if="store.status === 'ready'">
           <i class="dot bound" />已绑定 {{ boundCount }}
-          <i class="dot pending" />待校对 {{ store.regions.length - unplaced.length - boundCount }}
+          <i class="dot pending" />待校对 {{ pendingCount }}
           <i class="dot unrecognized" />未定位 {{ unplaced.length }}
         </template>
       </span>
@@ -311,21 +631,50 @@ onBeforeUnmount(() => {
           v-for="page in pages"
           :key="page.index"
           class="pdf-page"
+          :data-page="page.index"
           :style="{ width: `${page.width}px`, height: `${page.height}px` }"
+          @mousedown="beginFrameDrag($event, page)"
         >
           <canvas class="pdf-canvas" />
-          <!-- 覆盖层：绿=已绑定 / 黄=待校对（含 missing 回落）/ 虚线灰=未识别 -->
-          <div
+          <!-- 覆盖层：正常模式 绿=已绑定/黄=待校对；校对模式 按校对态+置信度着色 -->
+          <template
             v-for="region in regionsOf(page.index)"
             :key="region.id"
-            class="overlay"
-            :class="overlayKind(region)"
-            :style="overlayStyle(region, page)"
-            :title="overlayTitle(region)"
-            role="button"
-            tabindex="0"
-            @click="onRegionClick(region)"
-            @keydown.enter="onRegionClick(region)"
+          >
+            <!-- 微调中：蓝框 + 8 方向手柄 + 主体拖移（Esc 取消） -->
+            <div
+              v-if="adjustDraft?.regionId === region.id"
+              class="overlay adjusting"
+              :style="rectStyle(adjustDraft.rect)"
+              data-testid="adjust-frame"
+              @mousedown="beginAdjustDrag($event, 'move', region, page)"
+            >
+              <span
+                v-for="h in ADJUST_HANDLES"
+                :key="h"
+                class="handle"
+                :class="`h-${h}`"
+                @mousedown="beginAdjustDrag($event, h, region, page)"
+              />
+            </div>
+            <div
+              v-else
+              class="overlay"
+              :class="store.proofreadMode ? proofreadClass(region) : overlayKind(region)"
+              :style="overlayStyle(region, page)"
+              :title="overlayTitle(region)"
+              role="button"
+              tabindex="0"
+              @click="onRegionClick(region, page)"
+              @keydown.enter="onRegionClick(region, page)"
+              @mousedown.stop
+            />
+          </template>
+          <!-- 框选草稿（虚线蓝框，pointer-events 穿透） -->
+          <div
+            v-if="draftFrame?.page === page.index"
+            class="draft-frame"
+            :style="rectStyle(draftFrame.rect)"
           />
         </div>
         <!-- 未定位区域（bbox=null）：无几何坐标，以虚线徽标提示，M5b 校对兜底 -->
@@ -343,7 +692,7 @@ onBeforeUnmount(() => {
             {{ region.label }}
           </span>
         </div>
-        <!-- 绑定浮层（区域内遮罩定位，M6a） -->
+        <!-- 绑定浮层（区域内遮罩定位，M6a，正常模式） -->
         <BindingDialog
           v-if="dialogRegion"
           :region="dialogRegion"
@@ -351,6 +700,25 @@ onBeforeUnmount(() => {
           @bind="onDialogBind"
           @unbind="onDialogUnbind"
           @close="dialogRegion = null"
+        />
+        <!-- 校对操作浮层（校对模式） -->
+        <ProofreadPopover
+          v-if="popoverTarget"
+          :region="popoverTarget.region"
+          @confirm="onPopoverConfirm"
+          @exclude="onPopoverExclude"
+          @reopen="onPopoverReopen"
+          @adjust="onPopoverAdjust"
+          @remove="onPopoverRemove"
+          @close="popoverTarget = null"
+        />
+        <!-- 框选命名弹层（校对模式） -->
+        <RegionNameDialog
+          v-if="nameDialog"
+          :error="nameError"
+          :submitting="nameSubmitting"
+          @submit="onNameSubmit"
+          @close="nameDialog = null"
         />
       </template>
     </div>
@@ -540,6 +908,130 @@ onBeforeUnmount(() => {
 
 .overlay:hover {
   border-color: #3370ff;
+}
+
+/* ---- 校对模式（M5b）---- */
+
+/* 高置信候选（confidence ≥ 0.9）= 绿 */
+.overlay.cand-high {
+  border: 1.5px solid #34c724;
+  background: rgba(52, 199, 36, 0.12);
+}
+
+/* 低置信候选 = 黄 */
+.overlay.cand-low {
+  border: 1.5px solid #ffb900;
+  background: rgba(255, 196, 0, 0.15);
+}
+
+/* 已确认 = 蓝 */
+.overlay.confirmed {
+  border: 1.5px solid #3370ff;
+  background: rgba(51, 112, 255, 0.12);
+}
+
+/* 已排除 = 灰虚线（正常模式下不渲染） */
+.overlay.excluded {
+  border: 1.5px dashed #909399;
+  background: transparent;
+}
+
+/* 微调中：蓝实线 + 拖移光标 */
+.overlay.adjusting {
+  border: 1.5px solid #3370ff;
+  background: rgba(51, 112, 255, 0.08);
+  cursor: move;
+}
+
+.handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: #fff;
+  border: 1.5px solid #3370ff;
+  border-radius: 2px;
+}
+
+.handle.h-nw {
+  left: -4px;
+  top: -4px;
+  cursor: nwse-resize;
+}
+
+.handle.h-n {
+  left: calc(50% - 4px);
+  top: -4px;
+  cursor: ns-resize;
+}
+
+.handle.h-ne {
+  right: -4px;
+  top: -4px;
+  cursor: nesw-resize;
+}
+
+.handle.h-e {
+  right: -4px;
+  top: calc(50% - 4px);
+  cursor: ew-resize;
+}
+
+.handle.h-se {
+  right: -4px;
+  bottom: -4px;
+  cursor: nwse-resize;
+}
+
+.handle.h-s {
+  left: calc(50% - 4px);
+  bottom: -4px;
+  cursor: ns-resize;
+}
+
+.handle.h-sw {
+  left: -4px;
+  bottom: -4px;
+  cursor: nesw-resize;
+}
+
+.handle.h-w {
+  left: -4px;
+  top: calc(50% - 4px);
+  cursor: ew-resize;
+}
+
+/* 框选草稿：虚线蓝框，不拦截鼠标 */
+.draft-frame {
+  position: absolute;
+  border: 1.5px dashed #3370ff;
+  background: rgba(51, 112, 255, 0.1);
+  pointer-events: none;
+}
+
+.dot.cand-high {
+  background: rgba(52, 199, 36, 0.2);
+  border: 1px solid #34c724;
+}
+
+.dot.cand-low {
+  background: rgba(255, 196, 0, 0.3);
+  border: 1px solid #ffb900;
+}
+
+.dot.confirmed {
+  background: rgba(51, 112, 255, 0.2);
+  border: 1px solid #3370ff;
+}
+
+.dot.excluded {
+  background: transparent;
+  border: 1px dashed #909399;
+}
+
+.progress {
+  margin-left: 12px;
+  color: #3370ff;
+  font-weight: 600;
 }
 
 .unplaced-bar {

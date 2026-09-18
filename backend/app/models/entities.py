@@ -77,6 +77,9 @@ class Region:
     review_status: str
     created_at: str
     updated_at: str
+    # M5b：bbox 生命周期（P21）——测量来源 PDF sha 与 auto/manual 来源；默认保持旧行为
+    bbox_pdf_sha: str | None = None
+    bbox_source: str | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Region":
@@ -89,6 +92,8 @@ class Region:
             anchor=row["anchor"],
             order_index=row["order_index"],
             bbox_json=row["bbox_json"],
+            bbox_pdf_sha=row["bbox_pdf_sha"],
+            bbox_source=row["bbox_source"],
             confidence=row["confidence"],
             review_status=row["review_status"],
             created_at=row["created_at"],

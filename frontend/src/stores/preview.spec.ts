@@ -252,6 +252,161 @@ describe('绑定流（M6a）', () => {
   })
 })
 
+describe('校对域（M5b）', () => {
+  const BBOX = { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 }
+
+  /** 按「METHOD url」路由的 fetch 替身（校对动作需区分 POST/PATCH/DELETE）。 */
+  function proofreadRoutes(handlers: Record<string, (init?: RequestInit) => Response>) {
+    const fn = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET').toUpperCase()
+      const handler = handlers[`${method} ${String(input)}`]
+      if (handler === undefined) {
+        return Promise.resolve(
+          Response.json({ error: { code: 'NOT_FOUND', message: 'nope' } }, { status: 404 }),
+        )
+      }
+      return Promise.resolve(handler(init))
+    })
+    vi.stubGlobal('fetch', fn)
+    return fn
+  }
+
+  /** 基础路由：模板详情 + 模板/版本渲染 + 列表；opts 可覆盖/追加。 */
+  function baseRoutes(opts: Record<string, (init?: RequestInit) => Response> = {}) {
+    return proofreadRoutes({
+      'GET /api/templates': () => Response.json({ templates: [] }),
+      'GET /api/templates/1': () =>
+        Response.json({
+          id: 1,
+          filename: 't.docx',
+          default_version_id: 5,
+          regions: [region(1, BBOX)],
+        }),
+      'GET /api/templates/1/preview': () => new Response(new ArrayBuffer(4)),
+      'GET /api/versions/5/preview': () => new Response(new ArrayBuffer(3)),
+      'GET /api/versions/5/overlay': () => Response.json({ regions: [] }),
+      ...opts,
+    })
+  }
+
+  async function readyProofreadStore(): Promise<ReturnType<typeof usePreviewStore>> {
+    const store = usePreviewStore()
+    store.proofreadMode = true // 直置旗标：区域级测试不依赖渲染切换
+    await store.selectTemplate(1)
+    expect(store.status).toBe('ready')
+    return store
+  }
+
+  it('toggleProofreadMode：开 → 模板渲染，关 → 回版本渲染', async () => {
+    baseRoutes()
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    expect(store.pdfData?.byteLength).toBe(3) // 默认走版本渲染
+    await store.toggleProofreadMode(true)
+    expect(store.proofreadMode).toBe(true)
+    expect(store.pdfData?.byteLength).toBe(4) // 校对对象是模板本体
+    expect(store.regions[0].binding).toBeNull()
+    await store.toggleProofreadMode(false)
+    expect(store.pdfData?.byteLength).toBe(3) // 回版本渲染
+  })
+
+  it('confirmRegion：PATCH 状态机并同步本地 regions', async () => {
+    const fetchFn = baseRoutes({
+      'PATCH /api/regions/1': () =>
+        Response.json({ ...region(1, BBOX), review_status: 'confirmed' }),
+    })
+    const store = await readyProofreadStore()
+    const result = await store.confirmRegion(1)
+    expect(result).toEqual({ ok: true, error: null })
+    expect(store.regions[0].review_status).toBe('confirmed')
+    const patch = fetchFn.mock.calls.find(
+      c => String(c[0]) === '/api/regions/1' && (c[1] as RequestInit).method === 'PATCH',
+    )
+    expect(JSON.parse((patch?.[1] as RequestInit).body as string)).toEqual({
+      review_status: 'confirmed',
+    })
+  })
+
+  it('excludeRegion / reopenRegion：排除后可重新校对', async () => {
+    baseRoutes({
+      'PATCH /api/regions/1': (init) => {
+        const body = JSON.parse((init?.body as string) ?? '{}') as { review_status: string }
+        return Response.json({ ...region(1, BBOX), review_status: body.review_status })
+      },
+    })
+    const store = await readyProofreadStore()
+    await store.excludeRegion(1)
+    expect(store.regions[0].review_status).toBe('excluded')
+    await store.reopenRegion(1)
+    expect(store.regions[0].review_status).toBe('pending')
+  })
+
+  it('adjustRegionBBox：PATCH bbox 后本地 bbox 跟随（manual 保护由后端负责）', async () => {
+    const newBBox = { page: 0, x0: 10, y0: 20, x1: 30, y1: 40 }
+    baseRoutes({
+      'PATCH /api/regions/1': () => Response.json({ ...region(1, newBBox) }),
+    })
+    const store = await readyProofreadStore()
+    const result = await store.adjustRegionBBox(1, newBBox)
+    expect(result.ok).toBe(true)
+    expect(store.regions[0].bbox).toEqual(newBBox)
+  })
+
+  it('removeRegion：DELETE 后从本地 regions 移除', async () => {
+    const fetchFn = baseRoutes({
+      'DELETE /api/regions/1': () => new Response(null, { status: 204 }),
+    })
+    const store = await readyProofreadStore()
+    expect(store.regions).toHaveLength(1)
+    const result = await store.removeRegion(1)
+    expect(result.ok).toBe(true)
+    expect(store.regions).toHaveLength(0)
+    const del = fetchFn.mock.calls.find(
+      c => String(c[0]) === '/api/regions/1' && (c[1] as RequestInit).method === 'DELETE',
+    )
+    expect(del).toBeDefined()
+  })
+
+  it('createFrameRegion：POST 201 → 追加到 regions', async () => {
+    const fetchFn = baseRoutes({
+      'POST /api/templates/1/regions': () =>
+        Response.json(
+          { ...region(2, BBOX), anchor: { kind: 'p', path: [7] }, review_status: 'confirmed' },
+          { status: 201 },
+        ),
+    })
+    const store = await readyProofreadStore()
+    const result = await store.createFrameRegion(BBOX, '工作经历一', 'work')
+    expect(result.ok).toBe(true)
+    expect(store.regions).toHaveLength(2)
+    expect(store.regions[1].label).toBe('字段2')
+    expect(store.regions[1].review_status).toBe('confirmed')
+    const post = fetchFn.mock.calls.find(
+      c => String(c[0]) === '/api/templates/1/regions' && (c[1] as RequestInit).method === 'POST',
+    )
+    expect(JSON.parse((post?.[1] as RequestInit).body as string)).toEqual({
+      label: '工作经历一',
+      type: 'work',
+      bbox: BBOX,
+    })
+  })
+
+  it('createFrameRegion：多段拦截 400 → ok=false 且 error 为后端 message', async () => {
+    baseRoutes({
+      'POST /api/templates/1/regions': () =>
+        Response.json(
+          { error: { code: 'REGION_FRAME_MULTI', message: '框选区域覆盖了多个段落，请逐段框选' } },
+          { status: 400 },
+        ),
+    })
+    const store = await readyProofreadStore()
+    const result = await store.createFrameRegion(BBOX, '跨段区域', 'work')
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('框选区域覆盖了多个段落，请逐段框选')
+    expect(store.regions).toHaveLength(1) // 未追加
+  })
+})
+
 describe('currentTemplate 计算属性', () => {
   it('从列表解析当前模板', async () => {
     stubFetch({

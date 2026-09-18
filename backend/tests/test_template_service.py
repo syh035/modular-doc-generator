@@ -114,9 +114,9 @@ def test_upload_sanitizes_path_in_filename(env: Path) -> None:
 
 
 def test_upload_placeholder_free_template(env: Path) -> None:
-    """无占位符模板：解析成功 0 区域，仍进待校对（M5b 框选兜底）。"""
+    """无占位符模板：解析成功 0 区域，Q3 空集豁免直接 ready（框选补建区域）。"""
     tpl, regions, _ = upload_template("素模板.docx", make_docx("纯文本段落"))
-    assert tpl.status == "pending_review"
+    assert tpl.status == "ready"
     assert regions == []
 
 

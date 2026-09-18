@@ -146,6 +146,20 @@ describe('TemplatePreview（M5a 只读预览）', () => {
     expect(wrapper.find('.preview-toolbar').text()).toContain('未定位 1')
   })
 
+  it('Q4 回归：excluded 区域不计入「待校对」统计（与 overlay 可见数一致）', async () => {
+    const excluded = {
+      ...region(4, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 }),
+      review_status: 'excluded' as const,
+    }
+    const { wrapper } = await readyWith([
+      region(1, { page: 0, x0: 100, y0: 200, x1: 300, y1: 250 }),
+      excluded,
+    ])
+    // overlay 只渲染非 excluded 的 1 个，统计同口径
+    expect(wrapper.findAll('.overlay')).toHaveLength(1)
+    expect(wrapper.find('.preview-toolbar').text()).toContain('待校对 1')
+  })
+
   it('missing 绑定回落黄框且 title 提示', async () => {
     const { wrapper } = await readyWith([
       region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 }, {
