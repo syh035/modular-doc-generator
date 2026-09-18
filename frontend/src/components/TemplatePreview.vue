@@ -196,29 +196,72 @@ onBeforeUnmount(() => {
 <template>
   <!-- 右栏：版本预览（模板+绑定替换成品）——pdfjs 渲染管线 PDF + 可交互覆盖层 -->
   <section class="template-preview">
-    <!-- 顶部工具条：模板下拉（idle 态也可选）+ 刷新指示 + 覆盖层图例 -->
+    <!-- 顶部工具条：左组（块库展开按钮[仅收起态] + 模板下拉紧凑排列）+ 右侧图例，中间自然留白 -->
     <div class="preview-toolbar">
-      <select
-        class="template-select"
-        :value="store.currentTemplateId ?? ''"
-        :disabled="store.templates.length === 0"
-        :title="store.templatesError ?? '选择要预览的模板'"
-        @change="onTemplateChange"
-      >
-        <option
-          value=""
-          disabled
+      <div class="toolbar-left">
+        <button
+          v-if="!blocksStore.libraryOpen"
+          class="library-expand"
+          title="展开块库"
+          @click="blocksStore.toggleLibrary()"
         >
-          {{ store.templatesError ?? (store.templates.length === 0 ? '（暂无模板）' : '（选择模板）') }}
-        </option>
-        <option
-          v-for="t in store.templates"
-          :key="t.id"
-          :value="t.id"
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 14 14"
+            aria-hidden="true"
+          >
+            <rect
+              x="0.75"
+              y="0.75"
+              width="12.5"
+              height="12.5"
+              rx="2"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1"
+            />
+            <line
+              x1="4.5"
+              y1="3.5"
+              x2="4.5"
+              y2="10.5"
+              stroke="currentColor"
+              stroke-width="1.5"
+            />
+            <line
+              x1="8"
+              y1="3.5"
+              x2="8"
+              y2="10.5"
+              stroke="currentColor"
+              stroke-width="1.5"
+            />
+          </svg>
+          块库
+        </button>
+        <select
+          class="template-select"
+          :value="store.currentTemplateId ?? ''"
+          :disabled="store.templates.length === 0"
+          :title="store.templatesError ?? '选择要预览的模板'"
+          @change="onTemplateChange"
         >
-          {{ t.filename }}
-        </option>
-      </select>
+          <option
+            value=""
+            disabled
+          >
+            {{ store.templatesError ?? (store.templates.length === 0 ? '（暂无模板）' : '（选择模板）') }}
+          </option>
+          <option
+            v-for="t in store.templates"
+            :key="t.id"
+            :value="t.id"
+          >
+            {{ t.filename }}
+          </option>
+        </select>
+      </div>
       <span class="legend">
         <span
           v-if="store.refreshing"
@@ -229,10 +272,6 @@ onBeforeUnmount(() => {
           <i class="dot pending" />待校对 {{ store.regions.length - unplaced.length - boundCount }}
           <i class="dot unrecognized" />未定位 {{ unplaced.length }}
         </template>
-        <span
-          v-else-if="store.status === 'idle'"
-          class="toolbar-hint"
-        >选择模板开始预览</span>
       </span>
     </div>
 
@@ -338,6 +377,40 @@ onBeforeUnmount(() => {
   color: #646a73;
   background: #fff;
   border-bottom: 1px solid #e2e3e5;
+  container-type: inline-size; /* 容器查询基准：预览区宽度（抽屉挤压时隐藏图例） */
+}
+
+/* 预览区过窄时图例（已绑定/待校对/未定位）与下拉重叠 → 直接隐藏 */
+@container (max-width: 620px) {
+  .legend {
+    display: none;
+  }
+}
+
+/* 左组：块库按钮 + 模板下拉紧凑排列（中间留白由 space-between 拉开到右侧图例前） */
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.library-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: #646a73;
+  background: none;
+  border: 1px solid #d0d3d6;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.library-expand:hover {
+  color: #3370ff;
+  border-color: #3370ff;
 }
 
 .template-select {
@@ -346,10 +419,6 @@ onBeforeUnmount(() => {
   padding: 2px 4px;
   font-size: 12px;
   color: #1f2329;
-}
-
-.toolbar-hint {
-  color: #8f959e;
 }
 
 .legend {

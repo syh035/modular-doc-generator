@@ -34,11 +34,6 @@ onMounted(() => {
       <button disabled>
         导出 DOCX
       </button>
-      <span
-        class="health-dot"
-        :title="appStore.healthError ?? (appStore.health?.libreoffice.hint ?? '服务正常')"
-        :class="appStore.health ? 'ok' : 'bad'"
-      />
     </div>
   </header>
 </template>
@@ -84,20 +79,5 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.health-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  margin-left: 8px;
-}
-
-.health-dot.ok {
-  background: #34c724;
-}
-
-.health-dot.bad {
-  background: #f54a45;
 }
 </style>

@@ -17,7 +17,6 @@ DDL_STATEMENTS: tuple[str, ...] = (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         content TEXT NOT NULL,
-        category TEXT NOT NULL DEFAULT '未分类',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         deleted_at TEXT                -- 软删除标记（D11），NULL = 存活

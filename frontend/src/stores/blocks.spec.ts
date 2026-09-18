@@ -1,6 +1,11 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { useBlocksStore } from './blocks'
+import {
+  LIBRARY_DEFAULT_WIDTH,
+  LIBRARY_MAX_WIDTH,
+  LIBRARY_MIN_WIDTH,
+  useBlocksStore,
+} from './blocks'
 
 function stubFetch(routes: Record<string, () => unknown>) {
   vi.stubGlobal(
@@ -18,11 +23,10 @@ function stubFetch(routes: Record<string, () => unknown>) {
   )
 }
 
-const block = (id: number, name: string, category = '未分类', tags: { id: number; name: string }[] = []) => ({
+const block = (id: number, name: string, tags: { id: number; name: string }[] = []) => ({
   id,
   name,
   content: `${name}内容`,
-  category,
   tags,
   created_at: '',
   updated_at: '',
@@ -31,6 +35,47 @@ const block = (id: number, name: string, category = '未分类', tags: { id: num
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.unstubAllGlobals()
+  localStorage.clear()
+})
+
+describe('块库抽屉宽度与开合（UI 调整②批）', () => {
+  it('默认宽度 320、默认展开', () => {
+    const store = useBlocksStore()
+    expect(store.libraryWidth).toBe(LIBRARY_DEFAULT_WIDTH)
+    expect(store.libraryOpen).toBe(true)
+  })
+
+  it('setLibraryWidth：越界收敛到 [MIN, MAX] 并四舍五入', () => {
+    const store = useBlocksStore()
+    store.setLibraryWidth(150)
+    expect(store.libraryWidth).toBe(LIBRARY_MIN_WIDTH)
+    store.setLibraryWidth(999)
+    expect(store.libraryWidth).toBe(LIBRARY_MAX_WIDTH)
+    store.setLibraryWidth(322.4)
+    expect(store.libraryWidth).toBe(322)
+  })
+
+  it('宽度与开合均 localStorage 记忆，新 store 实例恢复', () => {
+    const first = useBlocksStore()
+    first.setLibraryWidth(340)
+    first.toggleLibrary() // 展开 → 收起
+    expect(localStorage.getItem('blocks.libraryWidth')).toBe('340')
+    expect(localStorage.getItem('blocks.libraryOpen')).toBe('0')
+
+    setActivePinia(createPinia())
+    const second = useBlocksStore()
+    expect(second.libraryWidth).toBe(340)
+    expect(second.libraryOpen).toBe(false)
+  })
+
+  it('toggleLibrary 双向切换并持久化', () => {
+    const store = useBlocksStore()
+    store.toggleLibrary()
+    expect(store.libraryOpen).toBe(false)
+    store.toggleLibrary()
+    expect(store.libraryOpen).toBe(true)
+    expect(localStorage.getItem('blocks.libraryOpen')).toBe('1')
+  })
 })
 
 describe('blocks store（M6a 基础）', () => {
@@ -69,10 +114,11 @@ describe('blocks store（M6a 基础）', () => {
       }),
     )
     const store = useBlocksStore()
+    store.blocks = [block(8, '旧块')] // 预置存量块：验证新块按更新时间倒序插到最前
     const ok = await store.createNewBlock('新块', '内容')
     expect(ok).toBe(true)
-    expect(store.blocks).toHaveLength(1)
-    expect(store.blocks[0].name).toBe('新块')
+    expect(store.blocks).toHaveLength(2)
+    expect(store.blocks[0].id).toBe(7) // 新块排最前
     expect(store.selectedBlockId).toBe(7) // 新建即选中（建完可直接点区域绑定）
     expect(store.createError).toBeNull()
   })
@@ -175,19 +221,17 @@ describe('blocks store（M2 更新/删除）', () => {
 })
 
 describe('blocks store（M2 标签筛选与管理）', () => {
-  it('toggleTagFilter + filteredBlocks + groupedBlocks 分组', () => {
+  it('toggleTagFilter + filteredBlocks 平铺筛选', () => {
     const store = useBlocksStore()
     store.blocks = [
-      block(1, '姓名', '基本信息', [{ id: 10, name: '求职' }]),
-      block(2, '电话', '基本信息', []),
-      block(3, '评价', '其他', [{ id: 10, name: '求职' }]),
+      block(1, '姓名', [{ id: 10, name: '求职' }]),
+      block(2, '电话', []),
+      block(3, '评价', [{ id: 10, name: '求职' }]),
     ]
-    expect(store.groupedBlocks.map(g => g.category)).toEqual(['基本信息', '其他'])
-    expect(store.groupedBlocks[0].blocks.map(b => b.id)).toEqual([1, 2])
+    expect(store.filteredBlocks.map(b => b.id)).toEqual([1, 2, 3])
 
     store.toggleTagFilter(10)
     expect(store.filteredBlocks.map(b => b.id)).toEqual([1, 3])
-    expect(store.groupedBlocks.map(g => g.category)).toEqual(['基本信息', '其他'])
 
     store.toggleTagFilter(10) // 再点取消筛选
     expect(store.activeTagId).toBeNull()

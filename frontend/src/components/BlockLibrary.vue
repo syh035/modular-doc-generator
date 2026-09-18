@@ -2,9 +2,9 @@
 /**
  * 左栏：字符块库（M2 完整实现）。
  *
- * - 分组列表（按分类聚拢）+ 标签筛选 + 新建/编辑/删除（二次确认，软删 D11）
+ * - 平铺列表（更新时间倒序）+ 标签筛选（单行横滚，可整体收起）+ 新建/编辑/删除（二次确认，软删 D11）
  * - 标签管理：重命名（撞名即合并，全库生效）/ 删除
- * - 抽屉本体：展开/收起由 App.vue 左缘按钮控制（libraryOpen）
+ * - 抽屉本体：宽度拖拽可调 + 展开/收起（libraryOpen，头部折叠按钮）
  * - 正向绑定流：点选块高亮 → 右栏点目标区域即绑定（PRD 4.4）
  */
 
@@ -21,10 +21,8 @@ const showForm = ref(false)
 const editingId = ref<number | null>(null)
 const name = ref('')
 const content = ref('')
-const category = ref('')
 const tagsInput = ref('')
 const formError = ref<string | null>(null)
-const formVisible = computed(() => showForm.value || editingId.value !== null)
 const submitLabel = computed(() =>
   editingId.value !== null ? (store.updating ? '保存中…' : '保存') : store.creating ? '创建中…' : '创建',
 )
@@ -44,7 +42,6 @@ function parseTags(raw: string): string[] {
 function resetForm(): void {
   name.value = ''
   content.value = ''
-  category.value = ''
   tagsInput.value = ''
   editingId.value = null
   showForm.value = false
@@ -61,10 +58,9 @@ function onNewClick(): void {
 
 function startEdit(block: Block): void {
   editingId.value = block.id
-  showForm.value = false
+  showForm.value = false // 就地编辑时收起顶部新建表单
   name.value = block.name
   content.value = block.content
-  category.value = block.category
   tagsInput.value = block.tags.map(t => t.name).join('，')
   formError.value = null
 }
@@ -80,7 +76,6 @@ async function submit(): Promise<void> {
     const ok = await store.updateExistingBlock(editingId.value, {
       name: name.value.trim(),
       content: content.value,
-      category: category.value,
       tags: tagNames, // 表单即整组替换语义
     })
     if (ok) {
@@ -90,12 +85,7 @@ async function submit(): Promise<void> {
     }
     return
   }
-  const ok = await store.createNewBlock(
-    name.value.trim(),
-    content.value,
-    category.value,
-    tagNames,
-  )
+  const ok = await store.createNewBlock(name.value.trim(), content.value, tagNames)
   if (ok) {
     resetForm()
   } else {
@@ -119,6 +109,26 @@ async function confirmDelete(id: number): Promise<void> {
 const manageOpen = ref(false)
 const manageError = ref<string | null>(null)
 const tagEdits = reactive<Record<number, string>>({})
+/** 标签筛选栏整体收起/展开（收起后为：[标签管理][搜索框][展开按钮]）。 */
+const tagsBarOpen = ref(true)
+
+/** 标签搜索（折叠态）：关键字匹配标签名 → 过滤出挂有匹配标签的块。 */
+const tagSearch = ref('')
+const matchedTagIds = computed<Set<number> | null>(() => {
+  const kw = tagSearch.value.trim()
+  if (!kw) {
+    return null
+  }
+  return new Set(store.tags.filter(t => t.name.includes(kw)).map(t => t.id))
+})
+
+/** 列表最终可见块 = 标签筛选 ∩ 标签搜索过滤。 */
+const visibleBlocks = computed(() => {
+  const ids = matchedTagIds.value
+  return ids === null
+    ? store.filteredBlocks
+    : store.filteredBlocks.filter(b => b.tags.some(t => ids.has(t.id)))
+})
 
 function toggleManage(): void {
   manageOpen.value = !manageOpen.value
@@ -155,50 +165,131 @@ onMounted(() => {
 </script>
 
 <template>
-  <aside class="block-library">
+  <aside
+    class="block-library"
+    :style="{ width: store.libraryWidth + 'px' }"
+  >
     <div class="header">
       <span>字符块库</span>
       <div class="header-ops">
         <button
-          class="ghost"
-          @click="toggleManage"
-        >
-          {{ manageOpen ? '收起管理' : '标签管理' }}
-        </button>
-        <button
           class="primary"
           @click="onNewClick"
         >
-          {{ formVisible && editingId === null ? '收起' : '+ 新建字符块' }}
+          {{ showForm ? '收起' : '+ 新建字符块' }}
+        </button>
+        <!-- UI 调整②批：矩形内置竖线折叠按钮（收起后在预览工具条左端展开） -->
+        <button
+          class="icon-collapse"
+          title="收起块库"
+          @click="store.toggleLibrary()"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 14 14"
+            aria-hidden="true"
+          >
+            <rect
+              x="0.75"
+              y="0.75"
+              width="12.5"
+              height="12.5"
+              rx="2"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1"
+            />
+            <line
+              x1="4.5"
+              y1="3.5"
+              x2="4.5"
+              y2="10.5"
+              stroke="currentColor"
+              stroke-width="1.5"
+            />
+            <line
+              x1="8"
+              y1="3.5"
+              x2="8"
+              y2="10.5"
+              stroke="currentColor"
+              stroke-width="1.5"
+            />
+          </svg>
         </button>
       </div>
     </div>
 
-    <!-- 标签筛选（单选开关） -->
-    <div
-      v-if="store.tags.length > 0"
-      class="tag-bar"
-    >
+    <!-- 标签筛选（单行横向滚动，可整体收起）+ 行尾固定入口 -->
+    <div class="tag-bar">
+      <template v-if="tagsBarOpen">
+        <div
+          v-if="store.tags.length > 0"
+          class="tag-scroll"
+        >
+          <button
+            class="tag-chip"
+            :class="{ active: store.activeTagId === null }"
+            @click="store.toggleTagFilter(null)"
+          >
+            全部
+          </button>
+          <button
+            v-for="tag in store.tags"
+            :key="tag.id"
+            class="tag-chip"
+            :class="{ active: store.activeTagId === tag.id }"
+            :title="`${tag.block_count} 个块`"
+            @click="store.toggleTagFilter(tag.id)"
+          >
+            {{ tag.name }}（{{ tag.block_count }}）
+          </button>
+        </div>
+        <span
+          v-else
+          class="tag-empty"
+        >暂无标签</span>
+      </template>
       <button
-        class="tag-chip"
-        :class="{ active: store.activeTagId === null }"
-        @click="store.toggleTagFilter(null)"
+        class="manage-toggle"
+        :class="{ open: manageOpen }"
+        :title="manageOpen ? '收起标签管理' : '标签管理'"
+        @click="toggleManage"
       >
-        全部
+        {{ manageOpen ? '收起管理' : '标签管理' }}
       </button>
-      <button
-        v-for="tag in store.tags"
-        :key="tag.id"
-        class="tag-chip"
-        :class="{ active: store.activeTagId === tag.id }"
-        :title="`${tag.block_count} 个块`"
-        @click="store.toggleTagFilter(tag.id)"
+      <!-- 折叠态：标签管理右侧放关键字搜索框（搜标签名，过滤块列表）；展开按钮固定最右 -->
+      <input
+        v-if="!tagsBarOpen"
+        v-model="tagSearch"
+        class="tag-search"
+        placeholder="搜索标签…"
       >
-        {{ tag.name }} {{ tag.block_count }}
+      <button
+        class="tagbar-toggle"
+        :title="tagsBarOpen ? '收起标签栏' : '展开标签栏'"
+        @click="tagsBarOpen = !tagsBarOpen"
+      >
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 10 10"
+          aria-hidden="true"
+          :style="{ transform: tagsBarOpen ? 'none' : 'rotate(-90deg)' }"
+        >
+          <path
+            d="M2 3.5 L5 6.5 L8 3.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linecap="round"
+          />
+        </svg>
       </button>
     </div>
 
-    <!-- 标签管理：重命名（撞名即合并）/ 删除 -->
+    <!-- 标签管理：每行 = 标签名标题（含块数）在上 → 编辑框/操作在下（窄宽度不重叠） -->
     <div
       v-if="manageOpen"
       class="tag-manage"
@@ -211,23 +302,31 @@ onMounted(() => {
         :key="tag.id"
         class="tag-row"
       >
-        <input
-          v-model="tagEdits[tag.id]"
-          class="input"
-          maxlength="20"
-        >
-        <button
-          class="ghost"
-          @click="saveTag(tag.id)"
-        >
-          保存
-        </button>
-        <button
-          class="danger-btn"
-          @click="removeTagById(tag.id)"
-        >
-          删除
-        </button>
+        <div class="tag-row-head">
+          <span class="tag-row-title">{{ tag.name }}</span>
+          <span class="tag-row-count">{{ tag.block_count }} 个块</span>
+        </div>
+        <div class="tag-row-body">
+          <input
+            v-model="tagEdits[tag.id]"
+            class="input"
+            maxlength="20"
+            aria-label="标签重命名"
+            placeholder="重命名"
+          >
+          <button
+            class="ghost"
+            @click="saveTag(tag.id)"
+          >
+            保存
+          </button>
+          <button
+            class="danger-btn"
+            @click="removeTagById(tag.id)"
+          >
+            删除
+          </button>
+        </div>
       </div>
       <p
         v-if="store.tags.length === 0"
@@ -243,43 +342,38 @@ onMounted(() => {
       </p>
     </div>
 
-    <!-- 新建/编辑表单 -->
+    <!-- 新建表单（编辑走块卡片内就地表单）；每个字段带标题 -->
     <form
-      v-if="formVisible"
+      v-if="showForm"
       class="create-form"
       @submit.prevent="submit"
     >
-      <input
-        v-model="name"
-        class="input"
-        placeholder="块名称（2–30 字）"
-        maxlength="30"
-      >
-      <textarea
-        v-model="content"
-        class="input"
-        rows="4"
-        placeholder="块内容（≤5000 字，换行将渲染为换段）"
-      />
-      <input
-        v-model="category"
-        class="input"
-        list="category-options"
-        placeholder="分类（默认未分类）"
-        maxlength="20"
-      >
-      <datalist id="category-options">
-        <option
-          v-for="c in store.categories"
-          :key="c"
-          :value="c"
+      <label class="field">
+        <span class="field-label">名称</span>
+        <input
+          v-model="name"
+          class="input"
+          placeholder="2–30 字"
+          maxlength="30"
+        >
+      </label>
+      <label class="field">
+        <span class="field-label">内容</span>
+        <textarea
+          v-model="content"
+          class="input"
+          rows="4"
+          placeholder="≤5000 字，换行将渲染为换段"
         />
-      </datalist>
-      <input
-        v-model="tagsInput"
-        class="input"
-        placeholder="标签（逗号分隔，最多 10 个）"
-      >
+      </label>
+      <label class="field">
+        <span class="field-label">标签</span>
+        <input
+          v-model="tagsInput"
+          class="input"
+          placeholder="逗号分隔，最多 10 个"
+        >
+      </label>
       <p
         v-if="formError"
         class="form-error"
@@ -290,17 +384,9 @@ onMounted(() => {
         <button
           type="submit"
           class="primary"
-          :disabled="store.creating || store.updating"
+          :disabled="store.creating"
         >
           {{ submitLabel }}
-        </button>
-        <button
-          v-if="editingId !== null"
-          type="button"
-          class="ghost"
-          @click="cancelEdit"
-        >
-          取消
         </button>
       </div>
     </form>
@@ -334,83 +420,131 @@ onMounted(() => {
         暂无字符块，点击上方按钮新建
       </div>
       <div
-        v-else-if="store.blocks.length > 0 && store.groupedBlocks.length === 0"
+        v-else-if="visibleBlocks.length === 0"
         class="empty"
       >
-        该标签下暂无字符块
+        {{ tagSearch.trim() ? '无匹配标签的字符块' : '该标签下暂无字符块' }}
       </div>
-      <template
-        v-for="group in store.groupedBlocks"
-        :key="group.category"
+      <div
+        v-for="block in visibleBlocks"
+        :key="block.id"
+        class="block-item"
+        :class="{ selected: store.selectedBlockId === block.id }"
+        @click="store.selectBlock(block.id)"
       >
-        <div class="group-header">
-          {{ group.category }}（{{ group.blocks.length }}）
-        </div>
-        <div
-          v-for="block in group.blocks"
-          :key="block.id"
-          class="block-item"
-          :class="{ selected: store.selectedBlockId === block.id }"
-          @click="store.selectBlock(block.id)"
-        >
-          <div class="item-head">
-            <span class="name">{{ block.name }}</span>
-            <span
-              class="ops"
-              @click.stop
-            >
-              <template v-if="deletingId === block.id">
-                <button
-                  class="op danger"
-                  @click="confirmDelete(block.id)"
-                >
-                  确认删除
-                </button>
-                <button
-                  class="op"
-                  @click="deletingId = null"
-                >
-                  取消
-                </button>
-              </template>
-              <template v-else>
-                <button
-                  class="op"
-                  @click="startEdit(block)"
-                >
-                  编辑
-                </button>
-                <button
-                  class="op danger"
-                  @click="deletingId = block.id"
-                >
-                  删除
-                </button>
-              </template>
-            </span>
-          </div>
-          <span class="content">{{ block.content }}</span>
+        <div class="item-head">
+          <span class="name">{{ block.name }}</span>
           <span
-            v-if="block.tags.length > 0"
-            class="item-tags"
+            class="ops"
+            @click.stop
           >
-            <span
-              v-for="t in block.tags"
-              :key="t.id"
-              class="mini-tag"
-            >
-              {{ t.name }}
-            </span>
+            <template v-if="deletingId === block.id">
+              <button
+                class="op danger"
+                @click="confirmDelete(block.id)"
+              >
+                确认删除
+              </button>
+              <button
+                class="op"
+                @click="deletingId = null"
+              >
+                取消
+              </button>
+            </template>
+            <template v-else>
+              <button
+                class="op"
+                @click="startEdit(block)"
+              >
+                编辑
+              </button>
+              <button
+                class="op danger"
+                @click="deletingId = block.id"
+              >
+                删除
+              </button>
+            </template>
           </span>
         </div>
-      </template>
+        <span class="content">{{ block.content }}</span>
+        <span
+          v-if="block.tags.length > 0"
+          class="item-tags"
+        >
+          <span
+            v-for="t in block.tags"
+            :key="t.id"
+            class="mini-tag"
+          >
+            {{ t.name }}
+          </span>
+        </span>
+        <!-- 就地编辑：编辑框在块卡片下方，字段带标题 -->
+        <form
+          v-if="editingId === block.id"
+          class="edit-form"
+          @click.stop
+          @submit.prevent="submit"
+        >
+          <label class="field">
+            <span class="field-label">名称</span>
+            <input
+              v-model="name"
+              class="input"
+              placeholder="2–30 字"
+              maxlength="30"
+            >
+          </label>
+          <label class="field">
+            <span class="field-label">内容</span>
+            <textarea
+              v-model="content"
+              class="input"
+              rows="4"
+              placeholder="≤5000 字，换行将渲染为换段"
+            />
+          </label>
+          <label class="field">
+            <span class="field-label">标签</span>
+            <input
+              v-model="tagsInput"
+              class="input"
+              placeholder="逗号分隔，最多 10 个"
+            >
+          </label>
+          <p
+            v-if="formError"
+            class="form-error"
+          >
+            {{ formError }}
+          </p>
+          <div class="form-actions">
+            <button
+              type="submit"
+              class="primary"
+              :disabled="store.updating"
+            >
+              {{ submitLabel }}
+            </button>
+            <button
+              type="button"
+              class="ghost"
+              @click="cancelEdit"
+            >
+              取消
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   </aside>
 </template>
 
 <style scoped>
 .block-library {
-  width: 320px;
+  /* 宽度由 store.libraryWidth 驱动（拖拽可调，见 App.vue resizer） */
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -422,15 +556,36 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid #e2e3e5;
   font-weight: 600;
+  white-space: nowrap; /* 宽度下限=头部行不换行（LIBRARY_MIN_WIDTH），不允许多行 */
 }
 
 .header-ops {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.icon-collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: #646a73;
+  background: none;
+  border: 1px solid #d0d3d6;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.icon-collapse:hover {
+  color: #3370ff;
+  border-color: #3370ff;
 }
 
 .primary {
@@ -483,13 +638,100 @@ onMounted(() => {
 
 .tag-bar {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid #e2e3e5;
 }
 
+/* 单行横向滚动：标签多时不换行挤压行尾固定入口 */
+.tag-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.tag-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+
+.tag-scroll::-webkit-scrollbar-thumb {
+  background: #d0d3d6;
+  border-radius: 3px;
+}
+
+.tag-empty {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: #a8abb0;
+}
+
+/* 行尾固定入口：不参与滚动、不收缩，保证完整呈现 */
+.manage-toggle {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: #646a73;
+  background: none;
+  border: 1px dashed #d0d3d6;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.manage-toggle:hover,
+.manage-toggle.open {
+  color: #3370ff;
+  border-color: #3370ff;
+}
+
+.tagbar-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: #646a73;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* 折叠态搜索框：占据标签管理与固定展开按钮之间的全部剩余空间 */
+.tag-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 12px;
+  border: 1px solid #d0d3d6;
+  border-radius: 12px;
+}
+
+.tag-search:focus {
+  border-color: #3370ff;
+  outline: none;
+}
+
+.tagbar-toggle:hover {
+  color: #3370ff;
+  background: #f2f3f5;
+}
+
+.tagbar-toggle svg {
+  transition: transform 0.15s ease;
+}
+
 .tag-chip {
+  flex: 0 0 auto; /* 单行横滚：chip 不收缩，溢出靠滚动条 */
+  white-space: nowrap;
   padding: 2px 8px;
   font-size: 12px;
   color: #646a73;
@@ -522,14 +764,47 @@ onMounted(() => {
 }
 
 .tag-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
-.tag-row .input {
-  flex: 1;
+/* 行头：标签名标题 + 块数（编辑框的标题，位于编辑框上方） */
+.tag-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.tag-row-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #40464e;
+}
+
+.tag-row-count {
+  font-size: 11px;
+  color: #a8abb0;
+}
+
+/* 行体：编辑框压缩占余宽（min-width:0 防溢出重叠），按钮不收缩 */
+.tag-row-body {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tag-row-body .input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  font-size: 12px;
+  padding: 0 6px;
+}
+
+.tag-row-body button {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 2px 8px;
 }
 
 .hint {
@@ -601,11 +876,25 @@ onMounted(() => {
   font-size: 13px;
 }
 
-.group-header {
-  padding: 6px 4px 4px;
+/* 表单字段：标题在上、输入框在下（新建与就地编辑共用） */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+
+.field-label {
   font-size: 12px;
-  font-weight: 600;
   color: #8f959e;
+}
+
+/* 就地编辑表单：嵌在块卡片内底部，虚线分隔 */
+.edit-form {
+  width: 100%;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #e2e3e5;
 }
 
 .block-item {
@@ -676,12 +965,15 @@ onMounted(() => {
 }
 
 .content {
-  display: block;
+  /* UI 调整②批：最多显示前 2 行（约 44 字），超出省略；宽度压缩时以高度换宽度自然换行 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
   font-size: 12px;
   color: #8f959e;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-word;
+  white-space: pre-wrap;
 }
 
 .item-tags {

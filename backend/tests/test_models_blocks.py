@@ -26,7 +26,7 @@ def _full_fixture(conn) -> tuple[int, int, int, int]:
 
 def test_crud_roundtrip(conn) -> None:
     """创建 → 读取 → 更新 → 列表，字段完整往返。"""
-    block = blocks.create_block(conn, "自我介绍", "五年后端经验", category="摘要")
+    block = blocks.create_block(conn, "自我介绍", "五年后端经验")
     assert block.id > 0
     assert block.deleted_at is None
 
@@ -34,22 +34,22 @@ def test_crud_roundtrip(conn) -> None:
     assert got is not None
     assert got.name == "自我介绍"
     assert got.content == "五年后端经验"
-    assert got.category == "摘要"
 
     updated = blocks.update_block(conn, block.id, name="自我介绍 v2", content="六年经验")
     assert updated is not None
     assert updated.name == "自我介绍 v2"
     assert updated.content == "六年经验"
-    assert updated.category == "摘要"  # 未传字段不动
     assert updated.updated_at >= got.updated_at  # 定长时间戳，字典序即时间序
 
 
 def test_list_filters(conn) -> None:
-    """列表默认排除软删除行；分类过滤生效。"""
-    b1 = blocks.create_block(conn, "块1", "内容1", category="教育")
-    b2 = blocks.create_block(conn, "块2", "内容2", category="工作")
+    """列表默认排除软删除行；平铺按更新时间倒序（最近编辑在前）。"""
+    b1 = blocks.create_block(conn, "块1", "内容1")
+    b2 = blocks.create_block(conn, "块2", "内容2")
+    assert [b.id for b in blocks.list_blocks(conn)] == [b2.id, b1.id]  # 后创建的在前
+
+    blocks.update_block(conn, b1.id, content="内容1改")  # b1 更新时间最新 → 回到最前
     assert [b.id for b in blocks.list_blocks(conn)] == [b1.id, b2.id]
-    assert [b.id for b in blocks.list_blocks(conn, category="工作")] == [b2.id]
 
     blocks.soft_delete_block(conn, b1.id)
     assert [b.id for b in blocks.list_blocks(conn)] == [b2.id]

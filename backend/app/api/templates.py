@@ -124,4 +124,7 @@ def get_preview(template_id: int) -> FileResponse:
     模板远低于 D12 解析基线的量级）；后续调用命中转换缓存。
     """
     pdf_path = render_service.ensure_template_preview(template_id)
-    return FileResponse(pdf_path, media_type="application/pdf")
+    # no-store：同 P25（URL 不随内容变化，禁止浏览器启发式缓存复用旧 PDF）
+    return FileResponse(
+        pdf_path, media_type="application/pdf", headers={"Cache-Control": "no-store"}
+    )

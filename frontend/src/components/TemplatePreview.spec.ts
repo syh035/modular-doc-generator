@@ -219,7 +219,6 @@ describe('TemplatePreview 绑定交互（M6a）', () => {
         id: 9,
         name: '姓名块',
         content: '张三',
-        category: '未分类',
         tags: [],
         created_at: '',
         updated_at: '',
@@ -325,5 +324,35 @@ describe('TemplatePreview 工具条模板下拉（UI 调整③，idle 态可选�
     const spy = vi.spyOn(store, 'selectTemplate').mockResolvedValue(undefined)
     await wrapper.find('.template-select').setValue('7')
     expect(spy).toHaveBeenCalledWith(7)
+  })
+})
+
+describe('块库展开按钮（UI 调整②批）', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(() => Promise.resolve(Response.json({ templates: [] }))),
+    )
+  })
+
+  it('展开态：工具条不显示展开按钮', async () => {
+    const wrapper = mountPreview()
+    await flushPromises()
+    expect(useBlocksStore().libraryOpen).toBe(true)
+    expect(wrapper.find('button.library-expand').exists()).toBe(false)
+  })
+
+  it('收起态：工具条最左显示 [块库] 按钮，点击展开', async () => {
+    const wrapper = mountPreview()
+    const blocksStore = useBlocksStore() // mount 后取：与组件同一 pinia 实例
+    blocksStore.libraryOpen = false
+    await flushPromises()
+    const btn = wrapper.find('button.library-expand')
+    expect(btn.exists()).toBe(true)
+    expect(btn.text()).toContain('块库')
+    expect(btn.find('svg').exists()).toBe(true)
+    await btn.trigger('click')
+    expect(blocksStore.libraryOpen).toBe(true)
   })
 })

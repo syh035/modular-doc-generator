@@ -8,12 +8,11 @@ export interface BlockTag {
   name: string
 }
 
-/** 字符块（内容资产主体，软删除块不出列表）。 */
+/** 字符块（内容资产主体，软删除块不出列表；分类功能已移除）。 */
 export interface Block {
   id: number
   name: string
   content: string
-  category: string
   tags: BlockTag[]
   created_at: string
   updated_at: string
@@ -31,11 +30,10 @@ export interface TagInfo {
 export interface BlockPayload {
   name?: string
   content?: string
-  category?: string
   tags?: string[]
 }
 
-/** 块列表（存活块，创建正序，含各自标签组）。 */
+/** 块列表（存活块，更新时间倒序，含各自标签组）。 */
 export async function listBlocks(): Promise<Block[]> {
   const body = await apiFetch<{ blocks: Block[] }>('/api/blocks')
   return body.blocks

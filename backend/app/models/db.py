@@ -47,6 +47,14 @@ def get_conn(db_path: str | Path | None = None) -> Iterator[sqlite3.Connection]:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """建表建索引（幂等，CREATE IF NOT EXISTS）。"""
+    """建表建索引（幂等，CREATE IF NOT EXISTS）+ 轻量迁移。"""
     for ddl in DDL_STATEMENTS:
         conn.execute(ddl)
+    _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """开发期轻量迁移（2026-09-18 用户确认移除分类功能）：blocks.category 列废弃即删。"""
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(blocks)")]
+    if "category" in cols:
+        conn.execute("ALTER TABLE blocks DROP COLUMN category")

@@ -2,7 +2,9 @@
 
 - 名称 2–30 字 / 内容 ≤5000 字（D8）/ 标签 ≤10 个，超限 BLOCK_INVALID / TAG_INVALID
 - 标签以名字传入：不存在的自动创建（get-or-create）
-- 删除只软删（D11）：置 deleted_at + 关联绑定同事务置 missing（repo 原子完成）
+- 删除只软删（D11）：置 deleted_at + 绑定同事务置 missing + 标签关联清除，
+  无存活块引用的标签随即自动清理（2026-09-18 用户确认）
+- 分类功能已移除（2026-09-18 用户确认），块列表平铺按更新时间倒序
 """
 
 import sqlite3
@@ -23,26 +25,22 @@ _NAME_MIN, _NAME_MAX = 2, 30
 _CONTENT_MAX = 5000
 _TAG_NAME_MAX = 20
 _TAGS_MAX = 10
-_DEFAULT_CATEGORY = "未分类"
 
 
 class BlockCreate(BaseModel):
     name: str
     content: str
-    category: str = _DEFAULT_CATEGORY
     tags: list[str] = []
 
 
 class BlockUpdate(BaseModel):
     name: str | None = None
     content: str | None = None
-    category: str | None = None
     tags: list[str] | None = None  # None = 不动标签；[] = 清空标签
 
 
-def _validate(name: str, content: str, category: str) -> tuple[str, str, str]:
+def _validate(name: str, content: str) -> tuple[str, str]:
     name = name.strip()
-    category = category.strip() or _DEFAULT_CATEGORY
     if not (_NAME_MIN <= len(name) <= _NAME_MAX):
         raise AppError(
             BLOCK_INVALID, f"块名称长度须在 {_NAME_MIN}–{_NAME_MAX} 字之间", status_code=400
@@ -53,7 +51,7 @@ def _validate(name: str, content: str, category: str) -> tuple[str, str, str]:
         )
     if not content.strip():
         raise AppError(BLOCK_INVALID, "块内容不能为空", status_code=400)
-    return name, content, category
+    return name, content
 
 
 def _validate_tags(raw: list[str]) -> list[str]:
@@ -84,7 +82,7 @@ def _resolve_tags(conn: sqlite3.Connection, names: list[str]) -> list[Tag]:
 
 
 def _replace_tags(conn: sqlite3.Connection, block_id: int, names: list[str]) -> list[Tag]:
-    """整组替换块标签：摘除不在新集合的，挂上缺的。"""
+    """整组替换块标签：摘除不在新集合的，挂上缺的；摘除后清理无引用标签。"""
     desired = _resolve_tags(conn, names)
     desired_ids = {t.id for t in desired}
     for current in tags_repo.tags_of_block(conn, block_id):
@@ -92,6 +90,7 @@ def _replace_tags(conn: sqlite3.Connection, block_id: int, names: list[str]) -> 
             tags_repo.detach_tag(conn, block_id, current.id)
     for tag in desired:
         tags_repo.attach_tag(conn, block_id, tag.id)
+    tags_repo.prune_orphan_tags(conn)
     return tags_repo.tags_of_block(conn, block_id)
 
 
@@ -100,7 +99,6 @@ def _block_dict(b: Block, tags: list[Tag]) -> dict[str, object]:
         "id": b.id,
         "name": b.name,
         "content": b.content,
-        "category": b.category,
         "tags": [{"id": t.id, "name": t.name} for t in tags],
         "created_at": b.created_at,
         "updated_at": b.updated_at,
@@ -118,17 +116,17 @@ def _block_with_tags(conn: sqlite3.Connection, block_id: int) -> dict[str, objec
 @router.post("/blocks", status_code=201)
 def create_block(payload: BlockCreate) -> dict[str, object]:
     """新建字符块（标签 get-or-create 挂接）。"""
-    name, content, category = _validate(payload.name, payload.content, payload.category)
+    name, content = _validate(payload.name, payload.content)
     tag_names = _validate_tags(payload.tags)
     with get_conn() as conn:
-        block = blocks_repo.create_block(conn, name, content, category)
+        block = blocks_repo.create_block(conn, name, content)
         tags = _replace_tags(conn, block.id, tag_names)
     return _block_dict(block, tags)
 
 
 @router.get("/blocks")
 def list_blocks() -> dict[str, object]:
-    """块列表（存活块，排除软删除，创建正序，含各自标签组）。"""
+    """块列表（存活块，排除软删除，更新时间倒序，含各自标签组）。"""
     with get_conn() as conn:
         items = [
             _block_dict(b, tags_repo.tags_of_block(conn, b.id))
@@ -156,17 +154,14 @@ def update_block(block_id: int, payload: BlockUpdate) -> dict[str, object]:
             raise AppError(
                 BLOCK_NOT_FOUND, f"字符块不存在或已删除（id={block_id}）", status_code=404
             )
-        name = content = category = None
-        if payload.name is not None or payload.content is not None or payload.category is not None:
-            # 三字段任一传入即整体校验：以现值补齐未传字段，保证不变量仍成立
-            name, content, category = _validate(
+        name = content = None
+        if payload.name is not None or payload.content is not None:
+            # 两字段任一传入即整体校验：以现值补齐未传字段，保证不变量仍成立
+            name, content = _validate(
                 payload.name if payload.name is not None else current.name,
                 payload.content if payload.content is not None else current.content,
-                payload.category if payload.category is not None else current.category,
             )
-        updated = blocks_repo.update_block(
-            conn, block_id, name=name, content=content, category=category
-        )
+        updated = blocks_repo.update_block(conn, block_id, name=name, content=content)
         assert updated is not None
         tags = (
             _replace_tags(conn, block_id, _validate_tags(payload.tags))
@@ -178,9 +173,11 @@ def update_block(block_id: int, payload: BlockUpdate) -> dict[str, object]:
 
 @router.delete("/blocks/{block_id}", status_code=204)
 def delete_block(block_id: int) -> Response:
-    """软删除块（D11）：关联绑定同事务置 missing，导出留空并提示。"""
+    """软删除块（D11）：绑定同事务置 missing，标签关联清除 + 无引用标签自动清理。"""
     with get_conn() as conn:
         deleted = blocks_repo.soft_delete_block(conn, block_id)
+        if deleted:
+            tags_repo.prune_orphan_tags(conn)
     if not deleted:
         raise AppError(BLOCK_NOT_FOUND, f"字符块不存在或已删除（id={block_id}）", status_code=404)
     return Response(status_code=204)

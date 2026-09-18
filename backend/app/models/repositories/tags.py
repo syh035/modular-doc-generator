@@ -78,6 +78,16 @@ def delete_tag(conn: sqlite3.Connection, tag_id: int) -> bool:
     return cur.rowcount > 0
 
 
+def prune_orphan_tags(conn: sqlite3.Connection) -> int:
+    """删除无任何块引用的标签（块删除/标签替换后调用），返回删除数。
+
+    「字符块库没有任何块对应的标签即删除」（2026-09-18 用户确认）；
+    块软删时其 block_tags 行已同事务清除，故仅按联结表判断即可。
+    """
+    cur = conn.execute("DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM block_tags)")
+    return cur.rowcount
+
+
 # ---- block_tags 联结操作 ----
 
 

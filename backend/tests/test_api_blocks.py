@@ -1,4 +1,4 @@
-"""/api/blocks 测试（M6a 最小块 API）：创建 201、字段校验 400、列表。"""
+"""/api/blocks 测试（M6a 最小块 API）：创建 201、字段校验、列表；分类功能已移除。"""
 
 from fastapi.testclient import TestClient
 
@@ -7,29 +7,27 @@ def create_block(
     client: TestClient,
     name: str,
     content: str,
-    category: str = "未分类",
     tags: list[str] | None = None,
 ):
-    payload: dict = {"name": name, "content": content, "category": category}
+    payload: dict = {"name": name, "content": content}
     if tags is not None:
         payload["tags"] = tags
     return client.post("/api/blocks", json=payload)
 
 
 def test_create_block_201(client: TestClient) -> None:
-    resp = create_block(client, "姓名", "张三", "基本信息")
+    resp = create_block(client, "姓名", "张三")
     assert resp.status_code == 201
     body = resp.json()
     assert body["name"] == "姓名"
     assert body["content"] == "张三"
-    assert body["category"] == "基本信息"
     assert body["id"] > 0
+    assert "category" not in body  # 分类功能已移除（2026-09-18）
 
 
-def test_create_block_name_stripped_and_default_category(client: TestClient) -> None:
+def test_create_block_name_stripped(client: TestClient) -> None:
     body = create_block(client, "  电话  ", "138").json()
     assert body["name"] == "电话"
-    assert body["category"] == "未分类"  # 缺省分类
 
 
 def test_create_block_name_too_short(client: TestClient) -> None:
@@ -56,13 +54,15 @@ def test_create_block_content_blank(client: TestClient) -> None:
     assert resp.json()["error"]["code"] == "BLOCK_INVALID"
 
 
-def test_list_blocks(client: TestClient) -> None:
+def test_list_blocks_updated_desc(client: TestClient) -> None:
     create_block(client, "块A", "内容A")
     create_block(client, "块B", "内容B")
-    resp = client.get("/api/blocks")
+    # 块A 刚编辑过 → 更新时间最新，应排最前（平铺按更新时间倒序）
+    block_a = next(b for b in client.get("/api/blocks").json()["blocks"] if b["name"] == "块A")
+    resp = client.put(f"/api/blocks/{block_a['id']}", json={"content": "内容A改"})
     assert resp.status_code == 200
-    items = resp.json()["blocks"]
-    assert [b["name"] for b in items] == ["块A", "块B"]  # 创建正序
+    items = client.get("/api/blocks").json()["blocks"]
+    assert [b["name"] for b in items] == ["块A", "块B"]
 
 
 # ---- M2：标签挂接 / 详情 / 更新 / 软删除 ----
@@ -99,13 +99,12 @@ def test_get_block_detail_404(client: TestClient) -> None:
 
 
 def test_update_block_partial(client: TestClient) -> None:
-    block_id = create_block(client, "姓名", "张三", "基本信息", tags=["求职"]).json()["id"]
+    block_id = create_block(client, "姓名", "张三", tags=["求职"]).json()["id"]
     resp = client.put(f"/api/blocks/{block_id}", json={"content": "李四"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["content"] == "李四"
     assert body["name"] == "姓名"  # 未传字段保持
-    assert body["category"] == "基本信息"
     assert [t["name"] for t in body["tags"]] == ["求职"]  # tags 未传不动
 
 
@@ -116,15 +115,15 @@ def test_update_block_full_validation(client: TestClient) -> None:
     assert resp.json()["error"]["code"] == "BLOCK_INVALID"
 
 
-def test_update_block_replace_tags(client: TestClient) -> None:
+def test_update_block_replace_tags_prunes_orphans(client: TestClient) -> None:
+    """标签整组替换：被摘除且无块引用的标签自动删除（2026-09-18 用户确认）。"""
     block_id = create_block(client, "姓名", "张三", tags=["求职", "旧标签"]).json()["id"]
     resp = client.put(f"/api/blocks/{block_id}", json={"tags": ["求职", "新标签"]})
     assert resp.status_code == 200
     assert {t["name"] for t in resp.json()["tags"]} == {"求职", "新标签"}
-    tags = {t["name"]: t["block_count"] for t in client.get("/api/tags").json()["tags"]}
-    assert tags["新标签"] == 1
-    # 旧标签无块引用后计数为 0（仍列出，供管理）
-    assert tags["旧标签"] == 0
+    tag_names = {t["name"] for t in client.get("/api/tags").json()["tags"]}
+    assert "新标签" in tag_names
+    assert "旧标签" not in tag_names  # 无块引用 → 已被自动清理
 
 
 def test_update_block_tags_empty_clears(client: TestClient) -> None:
@@ -132,6 +131,7 @@ def test_update_block_tags_empty_clears(client: TestClient) -> None:
     resp = client.put(f"/api/blocks/{block_id}", json={"tags": []})
     assert resp.status_code == 200
     assert resp.json()["tags"] == []
+    assert client.get("/api/tags").json()["tags"] == []  # 求职标签无引用 → 自动清理
 
 
 def test_update_block_404(client: TestClient) -> None:
@@ -147,6 +147,20 @@ def test_delete_block_soft(client: TestClient) -> None:
     assert [b["id"] for b in client.get("/api/blocks").json()["blocks"]] == []
     assert client.get(f"/api/blocks/{block_id}").status_code == 404
     assert client.delete(f"/api/blocks/{block_id}").status_code == 404
+
+
+def test_delete_block_prunes_orphan_tags(client: TestClient) -> None:
+    """删块后无存活块引用的标签自动清理（2026-09-18 用户确认）。"""
+    create_block(client, "块甲", "内容", tags=["独占标签"]).json()
+    create_block(client, "块乙", "内容", tags=["共享标签"]).json()
+    # 删掉引用「独占标签」的块 → 标签消失；共享标签仍有块引用 → 保留
+    block_a = next(
+        b for b in client.get("/api/blocks").json()["blocks"] if b["name"] == "块甲"
+    )
+    assert client.delete(f"/api/blocks/{block_a['id']}").status_code == 204
+    tag_names = {t["name"] for t in client.get("/api/tags").json()["tags"]}
+    assert "独占标签" not in tag_names
+    assert "共享标签" in tag_names
 
 
 def test_delete_block_sets_bindings_missing(client: TestClient) -> None:

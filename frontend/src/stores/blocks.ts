@@ -3,7 +3,7 @@
  *
  * 正向绑定流（PRD 4.4）：左栏点选块 → 高亮 selectedBlockId →
  * 右栏点目标区域即绑定；再点同块取消选中。
- * 列表分组/筛选在 computed 侧完成（本地单机，数据量小）。
+ * 块列表平铺（更新时间倒序）+ 标签筛选在 computed 侧完成（本地单机，数据量小）。
  */
 
 import { defineStore } from 'pinia'
@@ -21,18 +21,63 @@ import {
   type TagInfo,
 } from '../api/blocks'
 
-/** 分组视图：按分类聚拢（分类名 → 该类块），供列表分组渲染。 */
-export interface BlockGroup {
-  category: string
-  blocks: Block[]
+/** 抽屉宽度边界（UI 调整②批）：上限 360，下限=头部内容 + 约一半呼吸空白（分类移除后头部精简，实测校准）。 */
+export const LIBRARY_MIN_WIDTH = 230
+export const LIBRARY_MAX_WIDTH = 360
+export const LIBRARY_DEFAULT_WIDTH = 320
+
+const LIBRARY_WIDTH_KEY = 'blocks.libraryWidth'
+const LIBRARY_OPEN_KEY = 'blocks.libraryOpen'
+
+function _readStored(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null // localStorage 不可用（隐私模式/测试环境）时静默降级
+  }
+}
+
+function _writeStored(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // 忽略写入失败
+  }
 }
 
 export const useBlocksStore = defineStore('blocks', () => {
   const blocks = ref<Block[]>([])
   const tags = ref<TagInfo[]>([])
   const error = ref<string | null>(null)
-  /** 块库抽屉展开态（UI 调整②：左缘按钮控制，默认展开）。 */
-  const libraryOpen = ref(true)
+  /** 块库抽屉展开态（UI 调整②，展开/收起均 localStorage 记忆）。 */
+  const libraryOpen = ref(_readStored(LIBRARY_OPEN_KEY) !== '0')
+  /** 抽屉宽度（拖拽可调，持久化）。 */
+  const libraryWidth = ref(LIBRARY_DEFAULT_WIDTH)
+  {
+    const stored = Number(_readStored(LIBRARY_WIDTH_KEY))
+    if (Number.isFinite(stored) && stored > 0) {
+      libraryWidth.value = _clampWidth(stored)
+    }
+  }
+
+  function _clampWidth(raw: number): number {
+    return Math.min(
+      LIBRARY_MAX_WIDTH,
+      Math.max(LIBRARY_MIN_WIDTH, Math.round(raw)),
+    )
+  }
+
+  /** 拖拽落定入口：越界值收敛到 [MIN, MAX]。 */
+  function setLibraryWidth(px: number): void {
+    libraryWidth.value = _clampWidth(px)
+    _writeStored(LIBRARY_WIDTH_KEY, String(libraryWidth.value))
+  }
+
+  /** 折叠开关（头部矩形竖线按钮 / 工具条左端按钮共用）。 */
+  function toggleLibrary(): void {
+    libraryOpen.value = !libraryOpen.value
+    _writeStored(LIBRARY_OPEN_KEY, libraryOpen.value ? '1' : '0')
+  }
 
   /** 正向绑定流选中的块（null = 未选中）。 */
   const selectedBlockId = ref<number | null>(null)
@@ -48,26 +93,6 @@ export const useBlocksStore = defineStore('blocks', () => {
     }
     return blocks.value.filter(b => b.tags.some(t => t.id === activeTagId.value))
   })
-
-  /** 按分类分组（分类名 zh 排序，未分类殿后）。 */
-  const groupedBlocks = computed<BlockGroup[]>(() => {
-    const map = new Map<string, Block[]>()
-    for (const b of filteredBlocks.value) {
-      const list = map.get(b.category)
-      if (list) {
-        list.push(b)
-      } else {
-        map.set(b.category, [b])
-      }
-    }
-    return [...map.entries()]
-      .sort(([a], [b]) =>
-        a === '未分类' ? 1 : b === '未分类' ? -1 : a.localeCompare(b, 'zh'),
-      )
-      .map(([category, groupBlocks]) => ({ category, blocks: groupBlocks }))
-  })
-
-  const categories = computed(() => groupedBlocks.value.map(g => g.category))
 
   /** 新建表单态。 */
   const creating = ref(false)
@@ -102,18 +127,17 @@ export const useBlocksStore = defineStore('blocks', () => {
   async function createNewBlock(
     name: string,
     content: string,
-    category = '未分类',
     tagNames: string[] = [],
   ): Promise<boolean> {
     creating.value = true
     createError.value = null
     try {
-      const payload: BlockPayload = { name, content, category }
+      const payload: BlockPayload = { name, content }
       if (tagNames.length > 0) {
         payload.tags = tagNames
       }
       const block = await createBlock(payload)
-      blocks.value = [...blocks.value, block]
+      blocks.value = [block, ...blocks.value] // 更新时间倒序：新块排最前
       selectedBlockId.value = block.id // 新建即选中：建完可直接点区域绑定
       void loadTags() // 新标签计数变化
       return true
@@ -131,7 +155,8 @@ export const useBlocksStore = defineStore('blocks', () => {
     updateError.value = null
     try {
       const updated = await updateBlock(id, payload)
-      blocks.value = blocks.value.map(b => (b.id === updated.id ? updated : b))
+      // 更新时间倒序：刚编辑过的块排最前，其余保持原相对顺序
+      blocks.value = [updated, ...blocks.value.filter(b => b.id !== updated.id)]
       void loadTags()
       return true
     } catch (err) {
@@ -200,12 +225,13 @@ export const useBlocksStore = defineStore('blocks', () => {
     tags,
     error,
     libraryOpen,
+    libraryWidth,
+    setLibraryWidth,
+    toggleLibrary,
     selectedBlockId,
     selectedBlock,
     activeTagId,
     filteredBlocks,
-    groupedBlocks,
-    categories,
     creating,
     createError,
     updating,

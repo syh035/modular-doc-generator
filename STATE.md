@@ -1,5 +1,34 @@
 # STATE.md — 会话状态摘要（累积写入，不新建）
 
+## 2026-09-18 · UI 调整②批+③批追加 + P25 缓存修复会话（浏览器验收通过，已提交）
+
+### 一句话快照
+
+块库抽屉体验完整化 + 分类功能彻底移除 + P25 缓存修复交付；下一步 = 新会话执行 M5b 校对完整（TODO.md 里程碑 2 区下一项，含 bbox 生命周期策略定夺）。
+
+### 本次完成
+
+- ②批：抽屉宽度拖拽（230–360 + localStorage 记忆，下限经头部实测校准 260→230）；折叠按钮矩形内置竖线（头部新建右侧 / 收起态工具条最左）；卡片 2 行截断
+- ③批追加（用户连续反馈）：**分类功能彻底移除**（blocks.category 列 DROP + 启动迁移 _migrate + 前后端全清，列表平铺按更新时间倒序）；无引用标签自动清理（tags.prune_orphan_tags，删块/替换标签同事务）；标签栏单行横滚 + 整体收起 + 折叠态关键字搜索框（匹配标签名→过滤块）；标签管理两行式（标题+N个块在上/编辑框在下，230px 无重叠）；块编辑就地展开（卡片内下方，字段带标题，新建表单同步加标题）；绿点迁 StatusBar 左下（绿点+文字组合）；工具条左组紧凑布局（toolbar-left 修 space-between 分散问题）；图例容器查询 ≤620px 隐藏；idle 提示删除
+- **P25 缓存修复**：渲染端点 FileResponse 无 Cache-Control → 浏览器启发式缓存复用旧 PDF（绑定后"替换无反应"，后端 PDF 实测已正确替换）→ 两端点加 no-store
+- 验证：后端 ruff/mypy/pytest 169 绿；前端 vue-tsc/eslint/vitest 84 绿（+StatusBar spec 3）；浏览器自动化 7/7+4/4+3/3+3/3
+
+### 接口契约（变更，M5b/M8 直接消费）
+
+- **Block 结构变更**：`category` 字段已删（前后端+schema），现为 `{id,name,content,tags,created_at,updated_at}`；块列表 GET /api/blocks 按更新时间倒序
+- 标签生命周期：无任何存活块引用的标签自动删除（删块/PUT tags 整组替换后 prune）；GET /api/tags 不再出现 0 引用标签
+- 渲染端点（/api/templates/{id}/preview、/api/versions/{id}/preview）响应带 `Cache-Control: no-store`（P25）——前端同 URL 重取永远真实请求
+- 前端 blocks store：createNewBlock(name,content,tags)（3 参，category 已删）；groupedBlocks/categories 已删；新块插入列表头部（倒序语义）
+
+### 用户偏好（本次新增）
+
+- UI 迭代粒度小而快：一条反馈一次修复一验收；编辑类表单一律"字段标题在上、输入框在下"
+- 空间布局敏感：会抠"重叠/间距/按钮位置"，容器查询隐藏优于换行挤压
+
+### 变更原则（本次新增）
+
+- 分类功能（M2 交付物）经用户确认整体移除——后续不再有"未分类"概念；无引用标签自动删除同理
+
 ## 2026-09-18 · M3b 解析完整 + 预览性能修复会话（验收 7/7 通过，已提交）
 
 ### 一句话快照

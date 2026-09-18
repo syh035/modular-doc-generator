@@ -117,9 +117,16 @@ def delete_binding(version_id: int, region_id: int) -> Response:
 
 @router.get("/versions/{version_id}/preview")
 def get_version_preview(version_id: int) -> FileResponse:
-    """版本预览 PDF（模板 + 绑定替换后的成品，单管线铁律）。"""
+    """版本预览 PDF（模板 + 绑定替换后的成品，单管线铁律）。
+
+    Cache-Control: no-store——URL 不随绑定内容变化，若交给浏览器启发式缓存，
+    绑定后会复用旧 PDF 导致「替换了但预览没反应」（2026-09-18 实锤，P25）；
+    转换成本由后端内容寻址缓存兜底，浏览器禁止缓存。
+    """
     rendered = render_service.render_version(version_id)
-    return FileResponse(rendered.pdf_path, media_type="application/pdf")
+    return FileResponse(
+        rendered.pdf_path, media_type="application/pdf", headers={"Cache-Control": "no-store"}
+    )
 
 
 @router.get("/versions/{version_id}/overlay")

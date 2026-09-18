@@ -13,7 +13,6 @@ class Block:
     id: int
     name: str
     content: str
-    category: str
     created_at: str
     updated_at: str
     deleted_at: str | None  # 软删除标记（D11），NULL = 存活
@@ -24,7 +23,6 @@ class Block:
             id=row["id"],
             name=row["name"],
             content=row["content"],
-            category=row["category"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             deleted_at=row["deleted_at"],

@@ -8,7 +8,6 @@ const block = (id: number, name: string, content: string): Block => ({
   id,
   name,
   content,
-  category: '未分类',
   tags: [],
   created_at: '',
   updated_at: '',

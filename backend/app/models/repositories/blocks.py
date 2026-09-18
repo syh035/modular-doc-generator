@@ -2,6 +2,7 @@
 
 块是内容资产主体：只软删除（D11），不做物理删除路由；
 字段业务校验（名称 2–30 字 / 内容 ≤5000 字 / 标签 ≤10 个）属 M2 service 层职责，此处纯存储。
+分类功能已移除（2026-09-18 用户确认），块列表平铺按更新时间倒序。
 """
 
 import sqlite3
@@ -9,18 +10,15 @@ import sqlite3
 from app.models.db import utcnow
 from app.models.entities import Block
 
-_SELECT = "SELECT id, name, content, category, created_at, updated_at, deleted_at FROM blocks"
+_SELECT = "SELECT id, name, content, created_at, updated_at, deleted_at FROM blocks"
 
 
-def create_block(
-    conn: sqlite3.Connection, name: str, content: str, category: str = "未分类"
-) -> Block:
+def create_block(conn: sqlite3.Connection, name: str, content: str) -> Block:
     """新建块并回读完整行。"""
     now = utcnow()
     cur = conn.execute(
-        "INSERT INTO blocks (name, content, category, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (name, content, category, now, now),
+        "INSERT INTO blocks (name, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        (name, content, now, now),
     )
     assert cur.lastrowid is not None
     block = get_block(conn, cur.lastrowid)
@@ -43,21 +41,13 @@ def list_blocks(
     conn: sqlite3.Connection,
     *,
     include_deleted: bool = False,
-    category: str | None = None,
 ) -> list[Block]:
-    """块列表（按创建时间正序）；默认排除软删除行，可按分类过滤。"""
+    """块列表（平铺，按更新时间倒序——最近编辑的块排前面）；默认排除软删除行。"""
     sql = _SELECT
-    conds: list[str] = []
-    params: list[object] = []
     if not include_deleted:
-        conds.append("deleted_at IS NULL")
-    if category is not None:
-        conds.append("category = ?")
-        params.append(category)
-    if conds:
-        sql += " WHERE " + " AND ".join(conds)
-    sql += " ORDER BY id"
-    rows = conn.execute(sql, params).fetchall()
+        sql += " WHERE deleted_at IS NULL"
+    sql += " ORDER BY updated_at DESC, id DESC"
+    rows = conn.execute(sql).fetchall()
     return [Block.from_row(r) for r in rows]
 
 
@@ -67,7 +57,6 @@ def update_block(
     *,
     name: str | None = None,
     content: str | None = None,
-    category: str | None = None,
 ) -> Block | None:
     """部分更新（仅传入的字段）；目标不存在或已软删除时返回 None。"""
     sets: list[str] = []
@@ -78,9 +67,6 @@ def update_block(
     if content is not None:
         sets.append("content = ?")
         params.append(content)
-    if category is not None:
-        sets.append("category = ?")
-        params.append(category)
     if not sets:
         return get_block(conn, block_id)
     sets.append("updated_at = ?")
@@ -97,10 +83,11 @@ def update_block(
 
 
 def soft_delete_block(conn: sqlite3.Connection, block_id: int) -> bool:
-    """软删除块（D11）：置 deleted_at，并将关联绑定同事务置 missing。
+    """软删除块（D11）：置 deleted_at，绑定同事务置 missing，标签关联一并清除。
 
     原子性依赖调用方将本函数放在同一个 get_conn() 事务块内执行——
-    两条 UPDATE 同事务提交/回滚，不存在「块已删而绑定仍 active」的中间态。
+    全部写操作同事务提交/回滚，不存在「块已删而绑定仍 active」的中间态。
+    标签联结行删除后，无存活块引用的标签由调用方 prune（tags.prune_orphan_tags）。
     目标不存在或已删时返回 False（幂等）。
     """
     now = utcnow()
@@ -115,4 +102,5 @@ def soft_delete_block(conn: sqlite3.Connection, block_id: int) -> bool:
         "WHERE block_id = ? AND status = 'active'",
         (now, block_id),
     )
+    conn.execute("DELETE FROM block_tags WHERE block_id = ?", (block_id,))
     return True

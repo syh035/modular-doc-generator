@@ -1,4 +1,4 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../stores/app'
@@ -68,20 +68,10 @@ describe('TopBar tab 导航（UI 调整①）', () => {
       expect(b.attributes('disabled')).toBeDefined()
     }
   })
-})
 
-describe('TopBar 健康指示', () => {
-  it('探测成功：绿点（ok）', async () => {
+  it('健康绿点已迁至 StatusBar，TopBar 不再渲染（2026-09-18 UI 调整③）', () => {
     stubHealth(true)
     const wrapper = mountTopBar()
-    await flushPromises()
-    expect(wrapper.find('.health-dot.ok').exists()).toBe(true)
-  })
-
-  it('探测失败：红点（bad）', async () => {
-    stubHealth(false)
-    const wrapper = mountTopBar()
-    await flushPromises()
-    expect(wrapper.find('.health-dot.bad').exists()).toBe(true)
+    expect(wrapper.find('.health-dot').exists()).toBe(false)
   })
 })
