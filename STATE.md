@@ -1,5 +1,37 @@
 # STATE.md — 会话状态摘要（累积写入，不新建）
 
+## 2026-09-18 · M3b 解析完整 + 预览性能修复会话（验收 7/7 通过，已提交）
+
+### 一句话快照
+
+M3b 解析完整交付并验收通过（含 P24 预览性能根因修复）；下一步 = 新会话执行 M5b 校对完整（TODO.md 里程碑 2 区下一项，含 bbox 生命周期策略定夺）。
+
+### 本次完成
+
+- M3b 三层解析（docx_parser.parse_candidates）：占位符（confidence 1.0，label 过词表推断 type，决策 C）→ 词表段（标题=0.9 / "字段名："labeled=0.7）→ 成段正文（≥30 字=0.4）；同段不重复建区域；regions 落库带 type/confidence（M1 预留列，无 schema 变更）
+- D10 指纹关联：同 sha256 重传 409 → 200 关联已有模板（响应带 reused 标记，首传 201）；TEMPLATE_ALREADY_EXISTS 错误码退役
+- 纯图片模板：正文无任何文本层 → 400 TEMPLATE_IMAGE_ONLY（新错误码，走失败清残）；有文本无占位符照旧进待校对
+- 整段替换（replacement.py，决策 A）：无占位符区域整段替换（首 run 样式继承 P5 / 多行克隆 P4 剥编号），同段混合时占位符优先；修复空 placeholder 命中 `full.find("")` 产生怪异插入的隐患
+- **P24 预览性能根因修复**：python-docx save 的 zip entry 时间戳取当前时刻 → 成品 DOCX 字节漂移 → LO sha 缓存永 miss → 每次预览全量 soffice 转换（4–72s，且 preview/overlay 串行双转换）；replacement.py `_serialize_deterministic` zip 时间戳归一后：重复 preview 13.6s→0.036s，overlay 0.047s，双请求一次转换
+- 验证：后端 ruff/mypy/pytest 166 绿（+28，含 field_lexicon/候选解析/指纹关联/整段替换/真实 LO 端到端）；前端 74 绿零改动（置信度着色 UI 留 M5b）
+- 浏览器自动化验收 7/7（TRAE-browseruse）：三层解析落库/指纹关联/纯图片 400/覆盖层黄框（3 候选、过短段"张三"无框=反向边界用例）/词表区域绑定黄转绿/整段替换预览（"教育背景"→块内容）/控制台无功能错误
+
+### 接口契约（M5b/M8/M9 直接消费）
+
+- POST /api/templates → 首传 201 `{template, reused:false}`；同内容重传 200 `{template, reused:true}`（关联已有模板及其版本/区域）
+- Region 增语义字段：`confidence` REAL（1.0 占位符 / 0.9 词表标题 / 0.7 labeled / 0.4 成段）+ `review_status`（现默认 pending，M5b 启用 confirmed/excluded）
+- 新错误码：TEMPLATE_IMAGE_ONLY(400)；新服务模块 services/field_lexicon.py（词表常量可扩充，加分项）
+- replacement.apply_replacements 产物为确定性字节（P24）——后续任何"DOCX→内容寻址缓存"链路必须保持序列化确定性
+
+### 用户偏好（本次新增）
+
+- 验收方式：调用 TRAE-browseruse skill 界面内浏览器自动检测（用户指令"调用skill，界面内浏览器自动检测"），替代人工点测
+- 对界面上"预期外文字"敏感（验收中追问"张三"来源）——测试数据的设计意图要在交付说明里预先标注
+
+### 变更原则（本次新增）
+
+- 同 sha256 重传行为变更（409→200 关联）系 D10 定稿口径落地，M3a 时代的 409 契约废止
+
 ## 2026-09-18 · M2 块库 + UI 调整三点会话（代码+门禁全绿，待用户手动验收）
 
 ### 一句话快照
