@@ -424,3 +424,163 @@ describe('currentTemplate 计算属性', () => {
     expect(store.currentTemplate?.filename).toBe('two.docx')
   })
 })
+
+describe('版本管理（M8）', () => {
+  const VERSIONS = {
+    versions: [
+      { id: 5, template_id: 1, name: '默认版本', binding_count: 1, created_at: '', updated_at: '' },
+      { id: 6, template_id: 1, name: '投递B岗', binding_count: 0, created_at: '', updated_at: '' },
+    ],
+  }
+
+  /** 按「METHOD url」路由的 fetch 替身（版本管理需区分 POST/PATCH/DELETE）。 */
+  function versionRoutes(opts: Record<string, (init?: RequestInit) => Response> = {}) {
+    const fn = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET').toUpperCase()
+      const handlers: Record<string, (init?: RequestInit) => Response> = {
+        'GET /api/templates': () => Response.json({ templates: [] }),
+        'GET /api/templates/1': () =>
+          Response.json({ id: 1, filename: 't.docx', default_version_id: 5, regions: [] }),
+        'GET /api/templates/1/versions': () => Response.json(VERSIONS),
+        'GET /api/versions/5/preview': () => new Response(new ArrayBuffer(5)),
+        'GET /api/versions/5/overlay': () => Response.json({ regions: [] }),
+        'GET /api/versions/6/preview': () => new Response(new ArrayBuffer(6)),
+        'GET /api/versions/6/overlay': () => Response.json({ regions: [] }),
+        'GET /api/versions/7/preview': () => new Response(new ArrayBuffer(7)),
+        'GET /api/versions/7/overlay': () => Response.json({ regions: [] }),
+        ...opts,
+      }
+      const handler = handlers[`${method} ${String(input)}`]
+      if (handler === undefined) {
+        return Promise.resolve(
+          Response.json({ error: { code: 'NOT_FOUND', message: 'nope' } }, { status: 404 }),
+        )
+      }
+      return Promise.resolve(handler(init))
+    })
+    vi.stubGlobal('fetch', fn)
+    return fn
+  }
+
+  it('selectTemplate 顺带加载版本列表（下拉数据源）', async () => {
+    versionRoutes()
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    expect(store.versions).toHaveLength(2)
+    expect(store.versions[0].name).toBe('默认版本')
+    expect(store.versions[0].binding_count).toBe(1)
+  })
+
+  it('selectVersion：切换整体刷新（新版本渲染产物 + overlay）', async () => {
+    versionRoutes()
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    expect(store.pdfData?.byteLength).toBe(5)
+
+    await store.selectVersion(6)
+    expect(store.currentVersionId).toBe(6)
+    expect(store.status).toBe('ready')
+    expect(store.pdfData?.byteLength).toBe(6)
+  })
+
+  it('selectVersion：同版本幂等、校对模式下不响应', async () => {
+    versionRoutes()
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    await store.selectVersion(5) // 同版本：不重复刷新
+    expect(store.pdfData?.byteLength).toBe(5)
+
+    await store.toggleProofreadMode(true)
+    await store.selectVersion(6) // 校对对象是模板本体，切版本不响应
+    expect(store.currentVersionId).toBe(5)
+  })
+
+  it('createNewVersion：POST 复制底稿 → 刷新列表并切到新版本', async () => {
+    const fetchFn = versionRoutes({
+      'POST /api/templates/1/versions': () =>
+        Response.json(
+          { id: 7, template_id: 1, name: '投递A岗', binding_count: 0, created_at: '', updated_at: '' },
+          { status: 201 },
+        ),
+    })
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+
+    const result = await store.createNewVersion('投递A岗', true)
+    expect(result.ok).toBe(true)
+    const post = fetchFn.mock.calls.find(
+      c =>
+        String(c[0]) === '/api/templates/1/versions' &&
+        (c[1] as RequestInit | undefined)?.method === 'POST',
+    )
+    expect(JSON.parse((post?.[1] as RequestInit).body as string)).toEqual({
+      name: '投递A岗',
+      copy_from: 5,
+    })
+    expect(store.currentVersionId).toBe(7) // 成功后切到新版本
+    expect(store.pdfData?.byteLength).toBe(7)
+    expect(store.status).toBe('ready')
+  })
+
+  it('createNewVersion：重名 409 → ok=false 且 currentVersionId 不变', async () => {
+    versionRoutes({
+      'POST /api/templates/1/versions': () =>
+        Response.json(
+          { error: { code: 'VERSION_NAME_TAKEN', message: '同模板下已存在同名版本「投递B岗」' } },
+          { status: 409 },
+        ),
+    })
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    const result = await store.createNewVersion('投递B岗', false)
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('同模板下已存在同名版本「投递B岗」')
+    expect(store.currentVersionId).toBe(5)
+  })
+
+  it('renameCurrentVersion：PATCH 后同步列表显示', async () => {
+    versionRoutes({
+      'PATCH /api/versions/5': () =>
+        Response.json({ id: 5, template_id: 1, name: '主力版本', binding_count: 1, created_at: '', updated_at: '' }),
+    })
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    const result = await store.renameCurrentVersion('主力版本')
+    expect(result.ok).toBe(true)
+    expect(store.versions[0].name).toBe('主力版本')
+  })
+
+  it('deleteCurrentVersion：DELETE 后从列表移除并切到相邻版本', async () => {
+    const fetchFn = versionRoutes({
+      'DELETE /api/versions/5': () => new Response(null, { status: 204 }),
+    })
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    const result = await store.deleteCurrentVersion()
+    expect(result.ok).toBe(true)
+    const del = fetchFn.mock.calls.find(
+      c => String(c[0]) === '/api/versions/5' && (c[1] as RequestInit).method === 'DELETE',
+    )
+    expect(del).toBeDefined()
+    expect(store.versions).toHaveLength(1)
+    expect(store.currentVersionId).toBe(6) // 同位前一个（唯一剩余）
+    expect(store.status).toBe('ready')
+  })
+
+  it('deleteCurrentVersion：失败（如 LAST_VERSION）→ ok=false 且列表不变', async () => {
+    versionRoutes({
+      'DELETE /api/versions/5': () =>
+        Response.json(
+          { error: { code: 'LAST_VERSION', message: '模板至少保留一个内容版本' } },
+          { status: 400 },
+        ),
+    })
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    const result = await store.deleteCurrentVersion()
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('模板至少保留一个内容版本')
+    expect(store.versions).toHaveLength(2)
+    expect(store.currentVersionId).toBe(5)
+  })
+})

@@ -252,3 +252,140 @@ def test_version_render_real_lo(client: TestClient) -> None:
     region = overlay["regions"][0]
     assert region["bbox"] is not None
     assert region["binding"]["status"] == "active"
+
+
+# ---- 版本管理（M8：新建 / 复制底稿 / 重命名 / 删除保护）----
+
+
+def test_list_versions_with_counts(client: TestClient) -> None:
+    """版本列表创建正序 + active 绑定数（missing 不计入）。"""
+    tpl = upload(client, make_docx())
+    tid, vid, regions = tpl["id"], tpl["default_version_id"], tpl["regions"]
+    bid = make_block(client, "手机号块", "138")
+    assert bind(client, vid, regions[0]["id"], bid).status_code == 200
+
+    resp = client.get(f"/api/templates/{tid}/versions")
+    assert resp.status_code == 200
+    versions = resp.json()["versions"]
+    assert len(versions) == 1
+    assert versions[0]["id"] == vid
+    assert versions[0]["name"] == "默认版本"
+    assert versions[0]["binding_count"] == 1
+
+    # 软删块 → 绑定 missing → 计数归零
+    assert client.delete(f"/api/blocks/{bid}").status_code == 204
+    versions = client.get(f"/api/templates/{tid}/versions").json()["versions"]
+    assert versions[0]["binding_count"] == 0
+
+
+def test_create_version_blank(client: TestClient) -> None:
+    tpl = upload(client, make_docx())
+    tid = tpl["id"]
+    resp = client.post(f"/api/templates/{tid}/versions", json={"name": "投递A岗"})
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["name"] == "投递A岗"
+    assert body["template_id"] == tid
+    # 空白版本：无绑定
+    assert client.get(f"/api/versions/{body['id']}/bindings").json()["bindings"] == []
+    # 列表两个版本（默认版本在前）
+    names = [v["name"] for v in client.get(f"/api/templates/{tid}/versions").json()["versions"]]
+    assert names == ["默认版本", "投递A岗"]
+
+
+def test_create_version_copy_from(client: TestClient) -> None:
+    """复制底稿：active 绑定复制，missing 不迁移。"""
+    tpl = upload(client, make_docx())
+    tid, vid, regions = tpl["id"], tpl["default_version_id"], tpl["regions"]
+    b_keep = make_block(client, "保留块", "138")
+    b_gone = make_block(client, "将删块", "zhangsan@example.com")
+    assert bind(client, vid, regions[0]["id"], b_keep).status_code == 200
+    assert bind(client, vid, regions[1]["id"], b_gone).status_code == 200
+    assert client.delete(f"/api/blocks/{b_gone}").status_code == 204  # → missing
+
+    resp = client.post(
+        f"/api/templates/{tid}/versions", json={"name": "复制品", "copy_from": vid}
+    )
+    assert resp.status_code == 201
+    new_vid = resp.json()["id"]
+    bindings = client.get(f"/api/versions/{new_vid}/bindings").json()["bindings"]
+    assert len(bindings) == 1  # missing 不复制
+    assert bindings[0]["region_id"] == regions[0]["id"]
+    assert bindings[0]["block_id"] == b_keep
+    assert bindings[0]["status"] == "active"
+
+
+def test_create_version_validations(client: TestClient) -> None:
+    tpl = upload(client, make_docx())
+    tid = tpl["id"]
+
+    # 名称非法：空 / 纯空白 / 超 30 字
+    for name in ("", "   ", "a" * 31):
+        resp = client.post(f"/api/templates/{tid}/versions", json={"name": name})
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "VERSION_INVALID"
+
+    # 同模板重名 409
+    assert client.post(f"/api/templates/{tid}/versions", json={"name": "V1"}).status_code == 201
+    resp = client.post(f"/api/templates/{tid}/versions", json={"name": " 默认版本 "})
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "VERSION_NAME_TAKEN"
+
+    # 模板不存在 404
+    assert client.post("/api/templates/999/versions", json={"name": "X"}).status_code == 404
+    assert client.get("/api/templates/999/versions").status_code == 404
+
+    # copy_from 不存在 404 / 跨模板 400
+    resp = client.post(f"/api/templates/{tid}/versions", json={"name": "V2", "copy_from": 999})
+    assert resp.status_code == 404
+    other = upload(client, make_docx("别的{{字段}}"))
+    resp = client.post(
+        f"/api/templates/{tid}/versions",
+        json={"name": "V3", "copy_from": other["default_version_id"]},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VERSION_INVALID"
+
+
+def test_rename_version(client: TestClient) -> None:
+    tpl = upload(client, make_docx())
+    tid, vid = tpl["id"], tpl["default_version_id"]
+
+    resp = client.patch(f"/api/versions/{vid}", json={"name": "主力版本"})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "主力版本"
+
+    # 撞同模板另一版本名 409
+    other = client.post(f"/api/templates/{tid}/versions", json={"name": "备用"}).json()
+    resp = client.patch(f"/api/versions/{other['id']}", json={"name": "主力版本"})
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "VERSION_NAME_TAKEN"
+
+    # 非法名 / 不存在
+    assert client.patch(f"/api/versions/{vid}", json={"name": "a" * 31}).status_code == 400
+    resp = client.patch("/api/versions/999", json={"name": "X"})
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "VERSION_NOT_FOUND"
+
+
+def test_delete_version_protection(client: TestClient) -> None:
+    """删除：级联删绑定；唯一版本拒绝（LAST_VERSION）；不存在 404。"""
+    tpl = upload(client, make_docx())
+    tid, vid, regions = tpl["id"], tpl["default_version_id"], tpl["regions"]
+
+    # 唯一版本不可删
+    resp = client.delete(f"/api/versions/{vid}")
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "LAST_VERSION"
+
+    # 建第二版本并绑定，删除之 → 绑定随级联消失（再访问该版本 404）
+    other = client.post(f"/api/templates/{tid}/versions", json={"name": "待删"}).json()
+    bid = make_block(client, "手机号块", "138")
+    assert bind(client, other["id"], regions[0]["id"], bid).status_code == 200
+    assert client.delete(f"/api/versions/{other['id']}").status_code == 204
+    assert client.get(f"/api/versions/{other['id']}/bindings").status_code == 404
+
+    # 删完只剩默认版本，再删仍被保护
+    assert client.delete(f"/api/versions/{vid}").status_code == 400
+
+    assert client.delete("/api/versions/999").status_code == 404

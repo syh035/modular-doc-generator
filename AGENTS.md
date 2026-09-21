@@ -80,6 +80,7 @@
 - 后端 snake_case；API RESTful：`/api/blocks`、`/api/templates`、`/api/templates/{id}/regions`、`/api/versions` 等
 - 前端组件 PascalCase；store `useXxxStore`
 - 数据表：blocks / tags / block_tags / templates / regions / versions / bindings（M1 定稿字段）
+- 名称类用户输入字段（块名 / 版本名等）长度统一 **1–30 字符**（2026-09-21 用户定，M8 起生效）
 - 区域类型枚举（后端英文标识，前端中文展示）：name / contact / objective / education / work / project / skills / summary / custom
 - 时间戳 UTC 存储，前端本地时区展示
 

@@ -58,3 +58,48 @@ export async function fetchVersionOverlay(versionId: number): Promise<OverlayReg
   )
   return body.regions
 }
+
+/** 版本信息（列表项，binding_count = active 绑定数）。 */
+export interface VersionInfo {
+  id: number
+  template_id: number
+  name: string
+  binding_count: number
+  created_at: string
+  updated_at: string
+}
+
+/** 版本管理（M8）：列表。 */
+export async function listVersions(templateId: number): Promise<VersionInfo[]> {
+  const body = await apiFetch<{ versions: VersionInfo[] }>(
+    `/api/templates/${templateId}/versions`,
+  )
+  return body.versions
+}
+
+/** 新建版本（空白 / copy_from 复制该版本 active 绑定为底稿）。 */
+export function createVersion(
+  templateId: number,
+  name: string,
+  copyFrom?: number,
+): Promise<VersionInfo> {
+  return apiFetch<VersionInfo>(`/api/templates/${templateId}/versions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, copy_from: copyFrom ?? null }),
+  })
+}
+
+/** 重命名（同模板内唯一）。 */
+export function renameVersion(versionId: number, name: string): Promise<VersionInfo> {
+  return apiFetch<VersionInfo>(`/api/versions/${versionId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+}
+
+/** 删除版本（模板至少保留一个；绑定随级联删）。 */
+export function deleteVersion(versionId: number): Promise<void> {
+  return apiFetch<void>(`/api/versions/${versionId}`, { method: 'DELETE' })
+}

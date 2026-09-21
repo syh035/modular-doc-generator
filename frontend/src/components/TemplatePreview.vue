@@ -13,6 +13,7 @@ import { usePreviewStore, type DisplayRegion } from '../stores/preview'
 import BindingDialog from './BindingDialog.vue'
 import ProofreadPopover from './ProofreadPopover.vue'
 import RegionNameDialog from './RegionNameDialog.vue'
+import VersionDialog from './VersionDialog.vue'
 
 const store = usePreviewStore()
 const blocksStore = useBlocksStore()
@@ -166,6 +167,60 @@ function jumpToRegion(region: DisplayRegion): void {
 function onTemplateChange(event: Event): void {
   const value = (event.target as HTMLSelectElement).value
   void store.selectTemplate(value === '' ? null : Number(value))
+}
+
+// ---- 版本管理（M8）：下拉切换 + 新建/重命名/删除 ----
+
+/** 版本弹层（null = 关闭；create/rename 共用 VersionDialog）。 */
+const versionDialog = ref<'create' | 'rename' | null>(null)
+const versionDialogError = ref<string | null>(null)
+const versionSubmitting = ref(false)
+
+/** 当前版本名（重命名弹层预填；列表未就绪时回退空）。 */
+const currentVersionName = computed(
+  () => store.versions.find(v => v.id === store.currentVersionId)?.name ?? '',
+)
+
+/** 版本切换：整体刷新渲染（校对模式下拉置灰，此处不再兜底）。 */
+function onVersionChange(event: Event): void {
+  const value = (event.target as HTMLSelectElement).value
+  if (value !== '') {
+    void store.selectVersion(Number(value))
+  }
+}
+
+async function onVersionSubmit(name: string, copyFrom: boolean): Promise<void> {
+  const mode = versionDialog.value
+  if (mode === null) {
+    return
+  }
+  versionSubmitting.value = true
+  versionDialogError.value = null
+  const result =
+    mode === 'create'
+      ? await store.createNewVersion(name, copyFrom)
+      : await store.renameCurrentVersion(name)
+  versionSubmitting.value = false
+  if (!result.ok) {
+    versionDialogError.value = result.error // 内联显示（重名/名称非法）
+    return
+  }
+  versionDialog.value = null
+}
+
+function onDeleteVersion(): void {
+  if (store.currentVersionId === null) {
+    return
+  }
+  if (!window.confirm(`删除版本「${currentVersionName.value}」？其绑定关系将一并删除。`)) {
+    return
+  }
+  void store.deleteCurrentVersion().then(result => {
+    // 删除失败（如最后版本 LAST_VERSION 保护）给出反馈，避免静默无响应
+    if (!result.ok) {
+      window.alert(result.error)
+    }
+  })
 }
 
 function regionsOf(pageIndex: number): DisplayRegion[] {
@@ -544,6 +599,8 @@ watch(
     nameError.value = null
     draftFrame.value = null
     adjustDraft.value = null
+    versionDialog.value = null
+    versionDialogError.value = null
   },
 )
 
@@ -649,6 +706,52 @@ onBeforeUnmount(() => {
             {{ t.filename }}
           </option>
         </select>
+        <!-- 版本控件组（M8）：下拉切换（整体刷新）+ 新建/重命名/删除；校对模式置灰 -->
+        <template v-if="store.currentVersionId !== null">
+          <select
+            class="template-select version-select"
+            :value="store.currentVersionId"
+            :disabled="store.proofreadMode"
+            title="切换内容版本（校对模式下不可用）"
+            data-testid="version-select"
+            @change="onVersionChange"
+          >
+            <option
+              v-for="v in store.versions"
+              :key="v.id"
+              :value="v.id"
+            >
+              {{ v.name }}（{{ v.binding_count }} 项绑定）
+            </option>
+          </select>
+          <button
+            class="tool-btn"
+            :disabled="store.proofreadMode"
+            title="新建版本（可复制当前绑定内容为底稿）"
+            data-testid="version-create"
+            @click="versionDialog = 'create'"
+          >
+            新建
+          </button>
+          <button
+            class="tool-btn"
+            :disabled="store.proofreadMode"
+            title="重命名当前版本"
+            data-testid="version-rename"
+            @click="versionDialog = 'rename'"
+          >
+            重命名
+          </button>
+          <button
+            class="tool-btn danger"
+            :disabled="store.proofreadMode"
+            title="删除当前版本（至少保留一个）"
+            data-testid="version-delete"
+            @click="onDeleteVersion"
+          >
+            删除
+          </button>
+        </template>
       </div>
       <span class="legend">
         <span
@@ -802,6 +905,17 @@ onBeforeUnmount(() => {
           @submit="onNameSubmit"
           @close="nameDialog = null"
         />
+        <!-- 版本弹层（M8：新建/重命名共用） -->
+        <VersionDialog
+          v-if="versionDialog"
+          :mode="versionDialog"
+          :initial-name="versionDialog === 'rename' ? currentVersionName : ''"
+          :can-copy="store.currentVersionId !== null"
+          :error="versionDialogError"
+          :submitting="versionSubmitting"
+          @submit="onVersionSubmit"
+          @close="versionDialog = null"
+        />
       </template>
     </div>
 
@@ -896,6 +1010,39 @@ onBeforeUnmount(() => {
   padding: 2px 4px;
   font-size: 12px;
   color: #1f2329;
+}
+
+/* 版本下拉：名称（N 项绑定）比文件名短，收窄留白给操作按钮 */
+.version-select {
+  max-width: 200px;
+  min-width: 120px;
+}
+
+/* 版本操作小按钮（M8）：与 library-expand 同风格 */
+.tool-btn {
+  padding: 3px 8px;
+  font-size: 12px;
+  color: #646a73;
+  background: none;
+  border: 1px solid #d0d3d6;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.tool-btn:hover:not(:disabled) {
+  color: #3370ff;
+  border-color: #3370ff;
+}
+
+.tool-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tool-btn.danger:hover:not(:disabled) {
+  color: #f54a45;
+  border-color: #f54a45;
 }
 
 .legend {

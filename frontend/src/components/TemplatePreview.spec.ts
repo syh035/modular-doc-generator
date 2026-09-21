@@ -377,6 +377,96 @@ describe('块库展开按钮（UI 调整②批）', () => {
   })
 })
 
+describe('TemplatePreview 版本控件（M8）', () => {
+  it('当前版本存在：工具条渲染版本下拉与新建/重命名/删除', async () => {
+    const { wrapper, store } = await readyWith([])
+    store.currentVersionId = 5
+    store.versions = [
+      { id: 5, template_id: 1, name: '默认版本', binding_count: 1, created_at: '', updated_at: '' },
+      { id: 6, template_id: 1, name: '投递B岗', binding_count: 0, created_at: '', updated_at: '' },
+    ]
+    await flushPromises()
+
+    const select = wrapper.find('[data-testid="version-select"]')
+    expect(select.exists()).toBe(true)
+    expect(select.text()).toContain('默认版本（1 项绑定）')
+    expect(wrapper.find('[data-testid="version-create"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="version-rename"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="version-delete"]').exists()).toBe(true)
+  })
+
+  it('无版本（历史模板兜底）：不渲染版本控件', async () => {
+    const { wrapper } = await readyWith([])
+    expect(wrapper.find('[data-testid="version-select"]').exists()).toBe(false)
+  })
+
+  it('校对模式：版本控件全部置灰', async () => {
+    const { wrapper, store } = await readyWith([])
+    store.currentVersionId = 5
+    store.versions = [
+      { id: 5, template_id: 1, name: '默认版本', binding_count: 0, created_at: '', updated_at: '' },
+    ]
+    store.proofreadMode = true
+    await flushPromises()
+    expect((wrapper.find('[data-testid="version-select"]').element as HTMLSelectElement).disabled).toBe(true)
+    expect((wrapper.find('[data-testid="version-create"]').element as HTMLButtonElement).disabled).toBe(true)
+    expect((wrapper.find('[data-testid="version-delete"]').element as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('切换版本触发 store.selectVersion', async () => {
+    const { wrapper, store } = await readyWith([])
+    store.currentVersionId = 5
+    store.versions = [
+      { id: 5, template_id: 1, name: '默认版本', binding_count: 0, created_at: '', updated_at: '' },
+      { id: 6, template_id: 1, name: '投递B岗', binding_count: 0, created_at: '', updated_at: '' },
+    ]
+    await flushPromises()
+    const spy = vi.spyOn(store, 'selectVersion').mockResolvedValue(undefined)
+    await wrapper.find('[data-testid="version-select"]').setValue('6')
+    expect(spy).toHaveBeenCalledWith(6)
+  })
+
+  it('新建弹层：版本弹层出现（create 模式）；重命名弹层预填当前名', async () => {
+    const { wrapper, store } = await readyWith([])
+    store.currentVersionId = 5
+    store.versions = [
+      { id: 5, template_id: 1, name: '默认版本', binding_count: 0, created_at: '', updated_at: '' },
+    ]
+    await flushPromises()
+
+    await wrapper.find('[data-testid="version-create"]').trigger('click')
+    let dialog = wrapper.find('[data-testid="version-dialog"]')
+    expect(dialog.exists()).toBe(true)
+    expect(dialog.text()).toContain('新建内容版本')
+    await dialog.find('.ghost').trigger('click') // 取消关闭
+    expect(wrapper.find('[data-testid="version-dialog"]').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="version-rename"]').trigger('click')
+    dialog = wrapper.find('[data-testid="version-dialog"]')
+    expect(dialog.text()).toContain('重命名版本')
+    expect(
+      (dialog.find('[data-testid="version-name-input"]').element as HTMLInputElement).value,
+    ).toBe('默认版本')
+  })
+
+  it('删除：confirm 确认后调用 store.deleteCurrentVersion', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const { wrapper, store } = await readyWith([])
+    store.currentVersionId = 5
+    store.versions = [
+      { id: 5, template_id: 1, name: '默认版本', binding_count: 0, created_at: '', updated_at: '' },
+    ]
+    await flushPromises()
+    const spy = vi
+      .spyOn(store, 'deleteCurrentVersion')
+      .mockResolvedValue({ ok: true, error: null })
+
+    await wrapper.find('[data-testid="version-delete"]').trigger('click')
+    expect(confirmSpy).toHaveBeenCalled()
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('TemplatePreview 溢出分级（M7）', () => {
   const LARGE = {
     orig_height: 20,

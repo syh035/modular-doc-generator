@@ -21,11 +21,16 @@ import {
 } from '../api/templates'
 import {
   bindRegion,
+  createVersion as createVersionApi,
+  deleteVersion as deleteVersionApi,
   fetchVersionOverlay,
+  listVersions,
+  renameVersion as renameVersionApi,
   unbindRegion,
   versionPreviewUrl,
   type BindingInfo,
   type OverflowInfo,
+  type VersionInfo,
 } from '../api/versions'
 import {
   createRegion as createRegionApi,
@@ -60,6 +65,8 @@ export const usePreviewStore = defineStore('preview', () => {
   )
   /** 当前模板的默认版本（上传即建，M6a；null = 历史模板走模板预览兜底）。 */
   const currentVersionId = ref<number | null>(null)
+  /** 当前模板的版本列表（M8：下拉数据源，创建正序）。 */
+  const versions = ref<VersionInfo[]>([])
 
   /** 当前预览状态机：idle（未选）→ loading → ready | error。 */
   const status = ref<PreviewStatus>('idle')
@@ -120,6 +127,7 @@ export const usePreviewStore = defineStore('preview', () => {
     const seq = sequencer.next()
     currentTemplateId.value = id
     currentVersionId.value = null
+    versions.value = []
     regions.value = []
     pdfData.value = null
     error.value = null
@@ -136,6 +144,7 @@ export const usePreviewStore = defineStore('preview', () => {
       }
       const versionId = detail.default_version_id ?? null
       currentVersionId.value = versionId
+      void loadVersionList() // 版本下拉数据源（失败置空不阻断预览）
       if (proofreadMode.value || versionId === null) {
         // 校对模式：看模板本体（原始区域 + 落库 bbox），不看替换成品
         await _fetchTemplateRender(seq, id)
@@ -183,6 +192,108 @@ export const usePreviewStore = defineStore('preview', () => {
       if (sequencer.isCurrent(seq)) {
         refreshing.value = false
       }
+    }
+  }
+
+  /** 版本下拉数据源（当前模板）。失败静默置空，不阻断预览。 */
+  async function loadVersionList(): Promise<void> {
+    const templateId = currentTemplateId.value
+    if (templateId === null) {
+      versions.value = []
+      return
+    }
+    try {
+      versions.value = await listVersions(templateId)
+    } catch {
+      versions.value = []
+    }
+  }
+
+  /** 切换版本（M8）：整体刷新渲染（P7 序号）。校对模式看模板本体，不响应。 */
+  async function selectVersion(id: number): Promise<void> {
+    if (proofreadMode.value || id === currentVersionId.value) {
+      return
+    }
+    const seq = sequencer.next()
+    currentVersionId.value = id
+    regions.value = []
+    pdfData.value = null
+    error.value = null
+    status.value = 'loading'
+    try {
+      await _fetchVersionRender(seq, id)
+      status.value = 'ready'
+    } catch (err) {
+      if (err instanceof CancelledError) {
+        return
+      }
+      status.value = 'error'
+      error.value = err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  /** 新建版本（M8）：copyFrom=true 复制当前版本 active 绑定为底稿；成功后切到新版本。 */
+  async function createNewVersion(name: string, copyFrom: boolean): Promise<ProofreadResult> {
+    const templateId = currentTemplateId.value
+    if (templateId === null) {
+      return { ok: false, error: '未选择模板，无法新建版本' }
+    }
+    try {
+      const ver = await createVersionApi(
+        templateId,
+        name,
+        copyFrom ? (currentVersionId.value ?? undefined) : undefined,
+      )
+      await loadVersionList()
+      await selectVersion(ver.id)
+      return { ok: true, error: null }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /** 重命名当前版本（同模板内唯一）；成功同步列表显示。 */
+  async function renameCurrentVersion(name: string): Promise<ProofreadResult> {
+    const versionId = currentVersionId.value
+    if (versionId === null) {
+      return { ok: false, error: '当前无内容版本，无法重命名' }
+    }
+    try {
+      const updated = await renameVersionApi(versionId, name)
+      const idx = versions.value.findIndex(v => v.id === versionId)
+      if (idx >= 0) {
+        versions.value[idx] = { ...versions.value[idx], name: updated.name }
+      }
+      return { ok: true, error: null }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /** 删除当前版本；删后切相邻（同位下个，无则前个；后端保证至少留一）。 */
+  async function deleteCurrentVersion(): Promise<ProofreadResult> {
+    const versionId = currentVersionId.value
+    if (versionId === null) {
+      return { ok: false, error: '当前无内容版本，无法删除' }
+    }
+    try {
+      await deleteVersionApi(versionId)
+      const idx = versions.value.findIndex(v => v.id === versionId)
+      const rest = versions.value.filter(v => v.id !== versionId)
+      versions.value = rest
+      const target = rest[Math.min(idx, rest.length - 1)] ?? null
+      if (target !== null) {
+        await selectVersion(target.id)
+      } else {
+        // 后端至少留一，理论不达；兜底走模板选择路径
+        const templateId = currentTemplateId.value
+        if (templateId !== null) {
+          await selectTemplate(templateId)
+        }
+      }
+      return { ok: true, error: null }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
   }
 
@@ -316,6 +427,7 @@ export const usePreviewStore = defineStore('preview', () => {
     currentTemplateId,
     currentTemplate,
     currentVersionId,
+    versions,
     status,
     error,
     regions,
@@ -326,6 +438,11 @@ export const usePreviewStore = defineStore('preview', () => {
     selectTemplate,
     toggleProofreadMode,
     refreshVersionRender,
+    loadVersionList,
+    selectVersion,
+    createNewVersion,
+    renameCurrentVersion,
+    deleteCurrentVersion,
     bindRegionToBlock,
     unbindRegionFromBlock,
     confirmRegion,
