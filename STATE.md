@@ -1,5 +1,35 @@
 # STATE.md — 会话状态摘要（累积写入，不新建）
 
+## 2026-09-21 · M10 换模板迁移会话（Playwright 验收 13/13，已提交 26ce9cc）
+
+### 一句话快照
+
+M10 换模板迁移交付并验收通过（同类型按序自动匹配 + 三清单确认弹层 + 可跳过，提交 26ce9cc）；里程碑 3 仅剩 ▲模板换装场景验收；下一步 = M9 导出（里程碑 4 首项）或先走里程碑 3 验收。
+
+### 本次完成
+
+- 后端 services/migration_service.py（新建）：build_plan（纯计算不落库）/ apply_migration（整包落库）；D7 匹配 = 同类型区域按 list_regions 文档流序 zip 对齐——|S|==|R| 全自动；|S|>|R| 前 N 自动多出进③；|S|<|R| 进②多候选（不自动猜）；目标无同类型 → ③；custom 永不自动（有同类型目标 → ②每个源绑定各出一行，占用冲突由前端互斥解决；无 → ③）；excluded 目标区域不参与；missing 态绑定不迁移
+- 后端 api/migrations.py：POST /api/templates/{tid}/migrate/plan + /migrate/apply（201）；apply 服务端边界校验（重复/归属/excluded/块存活），事务整体回滚
+- 新错误码：MIGRATION_SAME_TEMPLATE(400) / MIGRATION_TARGET_NOT_BLANK(409)
+- 前端 preview store：selectTemplate 捕获切换前上下文（会话内、版本模式、active 绑定 ≥1）→ _maybeOfferMigration 守门（目标模板 ready + 默认版本 binding_count==0）；loadVersionList 由 void 改 await（迁移判定依赖 binding_count 就绪）；loadMigrationPlan / confirmMigration（成功后清提示+刷版本列表+refreshVersionRender）/ dismissMigration
+- 前端 MigrationDialog.vue：两段式弹层——prompt（迁移/跳过）→ plan（①自动只读 ②候选下拉按序预选首个可用 ③手动指定或留空；跨行互斥占用；底部计数 = ①全部+②③已选）
+- 验证：后端 ruff/mypy/pytest 218 绿（+18）；前端 eslint/vue-tsc/vitest 140 绿（+22：MigrationDialog 11 + store 迁移域 11）
+- Playwright 浏览器验收 13/13：触发/跳过/再触发/三清单内容与计数/②互斥预选（44 vs 45）/确认落库后「已绑定 3」/B 非空白守门不复弹/控制台零错误；截图 /tmp/m10_step{2,4,6}*.png（验收后清理）
+- 测试遗留数据：模板「迁移源模板.docx/迁移目标模板.docx」+ 块「姓名块/工作块一/工作块二」多批残留（/tmp/m10_seed.py 每跑一批新增，可批量删）
+
+### 接口契约（M9/里程碑 3 验收直接消费）
+
+- POST /api/templates/{tid}/migrate/plan `{source_version_id}` → 200 `{source_version_id, source_version_name, source_template_id, target_template_id, target_version_id, auto[], candidates[], unmatched[]}`；auto 项含 source/target region_id+label+block_id+block_name；candidates 项含 options[]；unmatched 项含 manual_options[]（全部未被 auto 占用目标区域）
+- POST /api/templates/{tid}/migrate/apply `{source_version_id, bindings: [{region_id, block_id}]}` → 201 `{version_id, created}`；空白守门（409）+ 逐对校验（400/404）
+- 迁移触发是纯前端守门（store），后端 plan/apply 双重兜底；v1 跳过后无补迁移入口
+- selectTemplate 现在等待 loadVersionList 完成后才置 ready + 判定迁移
+
+### 用户偏好（本次新增）
+
+- 无新增；沿用「按推荐方案执行」+ Playwright 自动化验收（/usr/bin/python3 有 playwright，backend/.venv 有 docx+httpx，分工使用）
+
+### 变更原则（本次无变更，沿用既有）
+
 ## 2026-09-21 · M7 溢出处理会话（浏览器验收通过，已提交）
 
 ### 一句话快照
