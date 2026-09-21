@@ -1,5 +1,35 @@
 # STATE.md — 会话状态摘要（累积写入，不新建）
 
+## 2026-09-21 · M7 溢出处理会话（浏览器验收通过，已提交）
+
+### 一句话快照
+
+M7 溢出处理交付并验收通过（高度对比分级 + P6 固定行高裁剪检测 + 状态条跳转）；下一步 = 里程碑 2 验收（素模板端到端：校对 → 绑定 → 溢出分级正确）或 M8 版本管理。
+
+### 本次完成
+
+- 后端 services/overflow.py（新建）：measure_overflow（ratio=(新高−原高)/原高，仅 >0.5 为 large，D4 边界确认；clipped 强制 large）/ detect_fixed_rows（w:trPr/w:trHeight hRule="exact"，P6）/ detect_clipped（块内容非空行归一化后不在成品 PDF 全文 → 裁剪）
+- replacement.py：ReplacementOutcome 增 region_clone_paths（region_id → 多行克隆段落新 path 列表）——region_paths 只含首行，克隆行不计入会低估 ratio（验收期实修）
+- render_service.render_version：有绑定且模板 bbox 缺失 → ensure_template_preview 补齐再重读区域；溢出测量范围 = 首行 + 克隆行几何并集（_region_extent，跨页虚拟 bbox 只保 y 向）；overlay items 增 overflow 字段
+- 前端 TemplatePreview：溢出着色覆盖绑定绿框（橙=small/红=large 或 clipped）+ title（+N% / 固定行高裁剪提示）+ 底部固定状态条（overflow-bar，large 在前同级 ratio 降序）+ chip 点击跳转（scrollTo + 闪烁 1.8s）+ 校对模式不显示溢出（确认决策④）
+- 验证：后端 ruff/mypy/pytest 194 绿（+15，含 2 个真实 LO 端到端：重排 large 与 exact 行裁剪）；前端 eslint/vue-tsc/vitest 100 绿（+4）
+- 浏览器自动化验收（两轮 + MutationObserver 精确复核）：红/橙/绿框、title +289%、状态条「溢出区域 2 个（大超出 1）」+ 排序、chip 点击闪烁（Observer 捕获 large/small 各一次）、校对模式隐藏恢复、控制台零错误
+- 跳转滚动定性：单页模板 fit-width 后预览容器 maxScroll≈3px（整页在视口内），scrollTo 无效果属正常，非 bug；闪烁兜底定位
+- 测试遗留数据：模板 11（区域 27←块13 large / 28←块12 无溢出 / 29←块15 small）；块 13/14/15「M7长内容块/中内容块/两行块」残留可删
+
+### 接口契约（M8/M9 直接消费）
+
+- overlay（GET /api/versions/{id}/overlay）regions[].overflow：`{orig_height, new_height, ratio, level: "small"|"large", clipped: bool, fixed_row: bool} | null`；仅 active 绑定区域计算，未绑定/无绑定恒 null
+- 分级口径：ratio > threshold（config.overflow_threshold=0.5）→ large；clipped=true 强制 large（内容已丢，最高警示）；orig_height 来自 regions.bbox（模板原文高度）
+- ReplacementOutcome(data, region_paths, region_clone_paths) 三元组——M9 导出消费 data；溢出/几何消费后两者
+- render_version 对「有绑定但模板 bbox 缺失」自动 ensure_template_preview（幂等，LO 内容缓存吸收）
+
+### 用户偏好（本次新增）
+
+- 无新增；沿用浏览器自动化验收 + AI 代提交惯例
+
+### 变更原则（本次无变更，沿用既有）
+
 ## 2026-09-18 · M5b 校对完整会话（浏览器验收批 1–5 全 PASS，已提交 c2c3832）
 
 ### 一句话快照

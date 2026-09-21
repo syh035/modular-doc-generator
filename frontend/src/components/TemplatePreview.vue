@@ -105,6 +105,63 @@ const proofreadProgress = computed(() => {
   return { done, total }
 })
 
+// ---- 溢出（M7）：状态条汇总 + 点击跳转闪烁 ----
+
+/** 溢出区域清单：大超出在前，同级按溢出比例降序。 */
+const overflowRegions = computed(() =>
+  store.regions
+    .filter(r => r.overflow != null)
+    .sort((a, b) => {
+      const la = a.overflow!.level === 'large' ? 0 : 1
+      const lb = b.overflow!.level === 'large' ? 0 : 1
+      if (la !== lb) return la - lb
+      return b.overflow!.ratio - a.overflow!.ratio
+    }),
+)
+
+/** 状态条 chip 视图模型（模板内免非空断言）。 */
+const overflowChips = computed(() =>
+  overflowRegions.value.map(r => ({
+    id: r.id,
+    label: r.label,
+    level: r.overflow!.level,
+    ratioPct: Math.round(r.overflow!.ratio * 100),
+    clipped: r.overflow!.clipped,
+    page: (r.bbox?.page ?? 0) + 1,
+    region: r,
+  })),
+)
+
+const largeOverflowCount = computed(
+  () => overflowChips.value.filter(c => c.level === 'large').length,
+)
+
+/** 闪烁定位中的区域 id（null = 无）；定时器句柄防重复点击堆叠。 */
+const flashRegionId = ref<number | null>(null)
+let flashTimer: number | null = null
+
+/** 状态条 chip 点击：滚动到区域所在页顶部并闪烁高亮该区域。 */
+function jumpToRegion(region: DisplayRegion): void {
+  const page = region.bbox?.page
+  const container = scrollRef.value
+  const el =
+    page === undefined || container === null
+      ? null
+      : container.querySelector<HTMLElement>(`[data-page="${page}"]`)
+  if (!el || !container) {
+    return
+  }
+  container.scrollTo({ top: el.offsetTop - 16, behavior: 'smooth' })
+  flashRegionId.value = region.id
+  if (flashTimer !== null) {
+    window.clearTimeout(flashTimer)
+  }
+  flashTimer = window.setTimeout(() => {
+    flashRegionId.value = null
+    flashTimer = null
+  }, 1800)
+}
+
 /** 模板下拉（UI 调整③：从顶栏挪到本工具条，idle 态也要可选）。 */
 function onTemplateChange(event: Event): void {
   const value = (event.target as HTMLSelectElement).value
@@ -148,14 +205,32 @@ function proofreadClass(region: DisplayRegion): string {
   return (region.confidence ?? 0) >= 0.9 ? 'cand-high' : 'cand-low'
 }
 
+/** 正常模式着色（M7 溢出优先级最高）：大超出红 / 小超出橙 / 绿=已绑定 / 黄=待校对。 */
+function normalClass(region: DisplayRegion): string {
+  const ov = region.overflow
+  if (ov) {
+    return ov.level === 'large' ? 'overflow-large' : 'overflow-small'
+  }
+  return overlayKind(region)
+}
+
 function overlayTitle(region: DisplayRegion): string {
+  let state: string
   if (region.binding?.status === 'active') {
-    return `${region.label}（已绑定：${region.binding.block_name ?? `块 #${region.binding.block_id}`}）`
+    state = `已绑定：${region.binding.block_name ?? `块 #${region.binding.block_id}`}`
+  } else if (region.binding?.status === 'missing') {
+    state = '绑定块已删除，待重新绑定'
+  } else {
+    state = '未绑定，点击选择字符块'
   }
-  if (region.binding?.status === 'missing') {
-    return `${region.label}（绑定块已删除，待重新绑定）`
+  const ov = region.overflow
+  if (ov) {
+    const hint = ov.clipped
+      ? '固定行高裁剪内容，请缩短内容或调整模板行高'
+      : `溢出 +${Math.round(ov.ratio * 100)}%（超出区域原高度）`
+    return `${region.label}（${hint}；${state}）`
   }
-  return `${region.label}（未绑定，点击选择字符块）`
+  return `${region.label}（${state}）`
 }
 
 /** 区域点击（PRD 4.4）：左栏已选块 → 直接绑定/换绑；否则浮层选块/换绑/解绑。 */
@@ -491,6 +566,10 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onCancelAdjust)
   window.removeEventListener('mousemove', onDragMove)
   window.removeEventListener('mouseup', onDragEnd)
+  if (flashTimer !== null) {
+    window.clearTimeout(flashTimer)
+    flashTimer = null
+  }
   rebuildSeq++
   for (const p of activePages) {
     p.cancel()
@@ -660,7 +739,10 @@ onBeforeUnmount(() => {
             <div
               v-else
               class="overlay"
-              :class="store.proofreadMode ? proofreadClass(region) : overlayKind(region)"
+              :class="[
+                store.proofreadMode ? proofreadClass(region) : normalClass(region),
+                { flashing: flashRegionId === region.id },
+              ]"
               :style="overlayStyle(region, page)"
               :title="overlayTitle(region)"
               role="button"
@@ -721,6 +803,33 @@ onBeforeUnmount(() => {
           @close="nameDialog = null"
         />
       </template>
+    </div>
+
+    <!-- M7 溢出状态条：固定预览区底部汇总；chip 点击跳转所在页并闪烁定位 -->
+    <div
+      v-if="overflowChips.length > 0"
+      class="overflow-bar"
+      data-testid="overflow-bar"
+    >
+      <span class="overflow-title">
+        溢出区域 {{ overflowChips.length }} 个（大超出 {{ largeOverflowCount }}）：
+      </span>
+      <button
+        v-for="chip in overflowChips"
+        :key="chip.id"
+        class="overflow-chip"
+        :class="chip.level"
+        :title="`点击定位到第 ${chip.page} 页`"
+        @click="jumpToRegion(chip.region)"
+      >
+        {{ chip.label
+        }}<template v-if="chip.clipped">
+          （裁剪）
+        </template>
+        <template v-else>
+          +{{ chip.ratioPct }}%
+        </template>
+      </button>
     </div>
   </section>
 </template>
@@ -906,6 +1015,35 @@ onBeforeUnmount(() => {
   background: rgba(255, 196, 0, 0.18);
 }
 
+/* ---- 溢出分级（M7，正常模式，优先级高于绑定态着色）---- */
+
+/* 大超出 = 红 */
+.overlay.overflow-large {
+  border: 1.5px solid #f54a45;
+  background: rgba(245, 74, 69, 0.15);
+}
+
+/* 小超出 = 橙（覆盖绑定态绿：分级警示优先于绑定语义） */
+.overlay.overflow-small {
+  border: 1.5px solid #ff7d00;
+  background: rgba(255, 125, 0, 0.15);
+}
+
+/* 状态条 chip 跳转后的闪烁定位（蓝色环，与分级色无关） */
+.overlay.flashing {
+  animation: region-flash 0.5s ease-in-out 3;
+}
+
+@keyframes region-flash {
+  0%,
+  100% {
+    box-shadow: none;
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(51, 112, 255, 0.5);
+  }
+}
+
 .overlay:hover {
   border-color: #3370ff;
 }
@@ -1058,5 +1196,48 @@ onBeforeUnmount(() => {
   border-radius: 3px;
   padding: 1px 6px;
   color: #909399;
+}
+
+/* ---- 溢出状态条（M7）：固定预览区底部 ---- */
+
+.overflow-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: #646a73;
+  background: #fff;
+  border-top: 1px solid #e2e3e5;
+}
+
+.overflow-title {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.overflow-chip {
+  padding: 1px 8px;
+  font-size: 12px;
+  color: #1f2329;
+  background: #fff;
+  border: 1px solid #d0d3d6;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.overflow-chip.large {
+  border-color: #f54a45;
+  color: #f54a45;
+}
+
+.overflow-chip.small {
+  border-color: #ff7d00;
+  color: #ff7d00;
+}
+
+.overflow-chip:hover {
+  background: #f5f6f7;
 }
 </style>

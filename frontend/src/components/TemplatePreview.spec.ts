@@ -41,7 +41,12 @@ vi.mock('../pdf/viewer', () => {
   }
 })
 
-function region(id: number, bbox: Region['bbox'], binding: DisplayRegion['binding'] = null): DisplayRegion {
+function region(
+  id: number,
+  bbox: Region['bbox'],
+  binding: DisplayRegion['binding'] = null,
+  overflow: DisplayRegion['overflow'] = null,
+): DisplayRegion {
   return {
     id,
     template_id: 1,
@@ -56,6 +61,7 @@ function region(id: number, bbox: Region['bbox'], binding: DisplayRegion['bindin
     created_at: '',
     updated_at: '',
     binding,
+    overflow,
   }
 }
 
@@ -368,5 +374,111 @@ describe('块库展开按钮（UI 调整②批）', () => {
     expect(btn.find('svg').exists()).toBe(true)
     await btn.trigger('click')
     expect(blocksStore.libraryOpen).toBe(true)
+  })
+})
+
+describe('TemplatePreview 溢出分级（M7）', () => {
+  const LARGE = {
+    orig_height: 20,
+    new_height: 60,
+    ratio: 2.0,
+    level: 'large' as const,
+    clipped: false,
+    fixed_row: false,
+  }
+  const SMALL = {
+    orig_height: 20,
+    new_height: 25,
+    ratio: 0.25,
+    level: 'small' as const,
+    clipped: false,
+    fixed_row: false,
+  }
+  const CLIPPED = {
+    orig_height: 12,
+    new_height: 12.5,
+    ratio: 0.0417,
+    level: 'large' as const,
+    clipped: true,
+    fixed_row: true,
+  }
+
+  it('大超出红框 / 小超出橙框（覆盖绑定态绿），无溢出区域不受影响', async () => {
+    const { wrapper } = await readyWith([
+      region(
+        1,
+        { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 },
+        { block_id: 9, block_name: '块A', status: 'active' },
+        LARGE,
+      ),
+      region(
+        2,
+        { page: 0, x0: 10, y0: 20, x1: 30, y1: 25 },
+        { block_id: 8, block_name: '块B', status: 'active' },
+        SMALL,
+      ),
+      region(3, { page: 0, x0: 40, y0: 50, x1: 60, y1: 55 }),
+    ])
+    const large = wrapper.find('.overlay.overflow-large')
+    expect(large.exists()).toBe(true)
+    expect(large.classes()).not.toContain('bound') // 溢出着色优先于绑定态
+    expect(large.attributes('title')).toContain('溢出 +200%')
+    expect(wrapper.find('.overlay.overflow-small').exists()).toBe(true)
+    expect(wrapper.find('.overlay.pending').exists()).toBe(true)
+  })
+
+  it('clipped：title 提示固定行高裁剪', async () => {
+    const { wrapper } = await readyWith([
+      region(
+        1,
+        { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 },
+        { block_id: 9, block_name: '块A', status: 'active' },
+        CLIPPED,
+      ),
+    ])
+    expect(wrapper.find('.overlay.overflow-large').attributes('title')).toContain('固定行高裁剪')
+  })
+
+  it('无溢出数据（模板预览/未测量）：不显示溢出状态条', async () => {
+    const { wrapper } = await readyWith([region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 })])
+    expect(wrapper.find('[data-testid="overflow-bar"]').exists()).toBe(false)
+  })
+
+  it('状态条：汇总计数、大超出在前，chip 点击滚动定位并闪烁 1.8s', async () => {
+    vi.useFakeTimers()
+    try {
+      const { wrapper } = await readyWith([
+        region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 }, null, SMALL),
+        region(2, { page: 0, x0: 5, y0: 6, x1: 7, y1: 8 }, null, LARGE),
+      ])
+      const bar = wrapper.find('[data-testid="overflow-bar"]')
+      expect(bar.exists()).toBe(true)
+      expect(bar.text()).toContain('溢出区域 2 个')
+      expect(bar.text()).toContain('大超出 1')
+
+      const chips = bar.findAll('.overflow-chip')
+      expect(chips).toHaveLength(2)
+      expect(chips[0].classes()).toContain('large') // 大超出排序在前
+      expect(chips[0].text()).toContain('字段2')
+      expect(chips[0].text()).toContain('+200%')
+      expect(chips[1].classes()).toContain('small')
+      expect(chips[1].text()).toContain('+25%')
+
+      // 点击 chip → scrollTo 定位 + flashing 类；1.8s 后闪烁清除
+      const scrollTo = vi.fn()
+      const container = wrapper.find('.preview-scroll').element as HTMLElement
+      container.scrollTo = scrollTo
+      const pageEl = wrapper.find('[data-page="0"]').element as HTMLElement
+      Object.defineProperty(pageEl, 'offsetTop', { value: 100, configurable: true })
+      await chips[0].trigger('click')
+      expect(scrollTo).toHaveBeenCalledWith({ top: 84, behavior: 'smooth' })
+      expect(wrapper.find('.overlay.flashing').exists()).toBe(true)
+
+      vi.advanceTimersByTime(1800)
+      await flushPromises()
+      expect(wrapper.find('.overlay.flashing').exists()).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

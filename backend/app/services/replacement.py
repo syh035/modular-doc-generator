@@ -13,7 +13,7 @@
 import copy
 import json
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 
 from docx import Document
@@ -34,6 +34,9 @@ class ReplacementOutcome:
     # region_id → 首行段落的新文档流 path（多行克隆会推挤后续段落索引，
     # 故必须以替换后重新枚举的结果为准）；anchor 失配的区域不出现在映射中
     region_paths: dict[int, list[int]]
+    # region_id → 多行内容的克隆段落新 path 列表（文档序）。M7 溢出测量
+    # 需把克隆行计入区域高度——region_paths 只覆盖首行段落
+    region_clone_paths: dict[int, list[list[int]]] = field(default_factory=dict)
 
 
 def _resolve_paragraph(body: etree._Element, anchor: dict[str, object]) -> etree._Element | None:
@@ -125,33 +128,36 @@ def _replace_in_paragraph(
     para: etree._Element,
     entries: list[tuple[Region, int]],
     block_contents: dict[int, str],
-) -> None:
+) -> dict[int, list[etree._Element]]:
     """按区域类型路由段落内替换（M6a 占位符 / M3b 整段）。
 
     - 有占位符的区域：span 替换（占位符优先——同段混合时整段替换会吞掉
       占位符语义，整段区域让位；混合只可能来自 M5b 手动框选）
     - 无占位符的区域（M3b 词表/成段候选）：整段替换
+    返回 region_id → 本段产出的克隆段落元素（M7 溢出测量用）。
     """
     entries.sort(key=lambda e: e[1])
     ph_entries = [(r, o) for r, o in entries if (r.placeholder or "").strip()]
     whole_entries = [(r, o) for r, o in entries if not (r.placeholder or "").strip()]
     if ph_entries:
-        _replace_placeholder_spans(para, ph_entries, block_contents)
-    elif whole_entries:
+        return _replace_placeholder_spans(para, ph_entries, block_contents)
+    if whole_entries:
         # 同段多个整段区域绑定不同块属语义冲突（一段只能有一份内容），
         # 防御性只处理文档序第一个
-        _replace_whole_paragraph(para, whole_entries[0][0], block_contents)
+        return _replace_whole_paragraph(para, whole_entries[0][0], block_contents)
+    return {}
 
 
 def _replace_placeholder_spans(
     para: etree._Element,
     entries: list[tuple[Region, int]],
     block_contents: dict[int, str],
-) -> None:
+) -> dict[int, list[etree._Element]]:
     """替换段落内全部已绑定占位符；多行内容在段落后方追加克隆段落。
 
     entries: (region, 段内 order)——按文档流 order_index 排序即段内
     占位符出现顺序；block_contents 缺失的区域保留原文。
+    返回 region_id → 克隆段落元素列表（文档序）。
     """
     runs = para.findall(f"{_W}r")
     texts = [_run_text(r) for r in runs]
@@ -173,7 +179,7 @@ def _replace_placeholder_spans(
         spans.append((region, start, start + len(ph)))
         cursor = start + len(ph)
     if not spans:
-        return
+        return {}
 
     def _covering_run(char_pos: int) -> int:
         """覆盖合并文本第 char_pos 字符的 run 下标（文本连续必有解）。"""
@@ -182,17 +188,17 @@ def _replace_placeholder_spans(
                 return i
         return len(runs) - 1
 
-    # 先按文档序收集克隆行（区域顺序 × 行序；此时文本未动，定位准确），
+    # 先按文档序收集克隆行（区域 × 行序；此时文本未动，定位准确），
     # 再逆序替换文本。texts 跟随每次写入更新——右侧 span 的替换成果
     # 不会被左侧 span 处理时的陈旧文本覆盖（同段多占位符核心陷阱）
-    clone_lines: list[tuple[etree._Element, str]] = []  # (style_run, line)
+    clone_lines: list[tuple[int, etree._Element, str]] = []  # (region_id, style_run, line)
     for region, s, _e in spans:
         content = block_contents.get(region.id)
         if content is None or "\n" not in content:
             continue
         style_run = runs[_covering_run(s)]
         for line in content.split("\n")[1:]:
-            clone_lines.append((style_run, line))
+            clone_lines.append((region.id, style_run, line))
 
     for region, s, e in reversed(spans):
         content = block_contents.get(region.id)
@@ -219,39 +225,46 @@ def _replace_placeholder_spans(
             _set_run_text(last_run, tail)
             texts[last_idx] = tail
 
-    # 克隆行按文档序链式插入段落后方
+    # 克隆行按文档序链式插入段落后方，并按区域归属记录（M7 溢出测量）
+    clones_by_region: dict[int, list[etree._Element]] = {}
     anchor_el = para
-    for style_run, line in clone_lines:
+    for region_id, style_run, line in clone_lines:
         clone = _clone_line_paragraph(para, style_run, line)
         anchor_el.addnext(clone)
         anchor_el = clone
+        clones_by_region.setdefault(region_id, []).append(clone)
+    return clones_by_region
 
 
 def _replace_whole_paragraph(
     para: etree._Element, region: Region, block_contents: dict[int, str]
-) -> None:
+) -> dict[int, list[etree._Element]]:
     """无占位符区域（M3b 词表/成段候选）→ 整段替换。
 
     - P5 同款规则：新文本由区域首 run 承载（继承区域首 run 属性），
       其余 run 文本清空（保留 run 节点，防段落结构变化）
     - D9：多行内容首行留位、后续行克隆段落（P4 剥离编号属性）
     - 未绑定保留原文；无 run 段落（理论不可达：候选区域必有文本）跳过
+    返回 region_id → 克隆段落元素列表（文档序）。
     """
     content = block_contents.get(region.id)
     if content is None:
-        return  # 未绑定 → 保留原文
+        return {}  # 未绑定 → 保留原文
     runs = para.findall(f"{_W}r")
     if not runs:
-        return
+        return {}
     lines = content.split("\n")
     _set_run_text(runs[0], lines[0])
     for run in runs[1:]:
         _set_run_text(run, "")
+    clones: list[etree._Element] = []
     anchor_el = para
     for line in lines[1:]:
         clone = _clone_line_paragraph(para, runs[0], line)
         anchor_el.addnext(clone)
         anchor_el = clone
+        clones.append(clone)
+    return {region.id: clones}
 
 
 _FIXED_ZIP_DATE = (1980, 1, 1, 0, 0, 0)  # zip 规范允许的最早时间戳
@@ -305,8 +318,12 @@ def apply_replacements(
         id_to_para[id(para)] = para
         region_paras.append((region, para))
 
+    clone_els: dict[int, list[etree._Element]] = {}
     for para_id, entries in para_groups.items():
-        _replace_in_paragraph(id_to_para[para_id], entries, block_contents)
+        for region_id, els in _replace_in_paragraph(
+            id_to_para[para_id], entries, block_contents
+        ).items():
+            clone_els.setdefault(region_id, []).extend(els)
 
     # 替换后重新枚举文档流：元素身份 → 新 path（多行插入已推挤索引）
     path_by_element = {
@@ -319,6 +336,20 @@ def apply_replacements(
             assert isinstance(new_path, list)
             region_paths[region.id] = list(new_path)
 
+    # 克隆段落 → 新 path（M7 溢出测量：区域高度须计入克隆行）
+    region_clone_paths: dict[int, list[list[int]]] = {}
+    for region_id, els in clone_els.items():
+        found: list[list[int]] = []
+        for el in els:
+            p = path_by_element.get(id(el))
+            if p is not None:
+                assert isinstance(p, list)
+                found.append(list(p))
+        if found:
+            region_clone_paths[region_id] = found
+
     buf = BytesIO()
     doc.save(buf)
-    return ReplacementOutcome(_serialize_deterministic(buf.getvalue()), region_paths)
+    return ReplacementOutcome(
+        _serialize_deterministic(buf.getvalue()), region_paths, region_clone_paths
+    )

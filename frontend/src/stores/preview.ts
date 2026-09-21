@@ -25,6 +25,7 @@ import {
   unbindRegion,
   versionPreviewUrl,
   type BindingInfo,
+  type OverflowInfo,
 } from '../api/versions'
 import {
   createRegion as createRegionApi,
@@ -36,8 +37,11 @@ import {
 
 export type PreviewStatus = 'idle' | 'loading' | 'ready' | 'error'
 
-/** 当前展示的区域：无版本 = 模板区域（binding 恒 null）；有版本 = overlay 区域。 */
-export type DisplayRegion = Region & { binding: BindingInfo | null }
+/** 当前展示的区域：无版本 = 模板区域（binding 恒 null、无溢出报告）；有版本 = overlay 区域。 */
+export type DisplayRegion = Region & {
+  binding: BindingInfo | null
+  overflow?: OverflowInfo | null
+}
 
 /** 校对动作返回：ok=false 时 error 为可读信息（如空区域拦截）。 */
 export interface ProofreadResult {

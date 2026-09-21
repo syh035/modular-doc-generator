@@ -32,7 +32,7 @@ from app.models.repositories import blocks as blocks_repo
 from app.models.repositories import regions as regions_repo
 from app.models.repositories import templates as templates_repo
 from app.models.repositories import versions as versions_repo
-from app.services import libreoffice
+from app.services import libreoffice, overflow
 from app.services.docx_parser import iter_flow_paragraphs
 from app.services.pdf_geometry import RegionGeometry, align_flow_to_lines, extract_pdf_lines
 from app.services.replacement import apply_replacements
@@ -133,6 +133,30 @@ class VersionRender:
         self.items = items
 
 
+def _region_extent(
+    geometry: dict[tuple[int, ...], RegionGeometry], paths: list[list[int]]
+) -> tuple[float, float, float, float] | None:
+    """区域多段落（首行 + 多行克隆段）的渲染范围 bbox，任一段未匹配 → None。
+
+    同页取并集；跨页（已知局限，见 RegionGeometry）按片段高度求和构造
+    虚拟 bbox（x 恒 0）——溢出测量只消费 y 向高度，保证长内容单调可测。
+    """
+    matched = [
+        g for g in (geometry.get(tuple(p)) for p in paths) if g is not None
+    ]
+    if not matched:
+        return None
+    if len({g.page for g in matched}) == 1:
+        return (
+            min(g.bbox[0] for g in matched),
+            min(g.bbox[1] for g in matched),
+            max(g.bbox[0] for g in matched),
+            max(g.bbox[3] for g in matched),
+        )
+    total = sum(g.bbox[3] - g.bbox[1] for g in matched)
+    return (0.0, 0.0, 0.0, total)
+
+
 def render_version(version_id: int) -> VersionRender:
     """渲染内容版本：替换 → LO 转 PDF（sha 缓存）→ 几何对齐。
 
@@ -175,6 +199,15 @@ def render_version(version_id: int) -> VersionRender:
             status_code=500,
         )
 
+    # M7：溢出测量需要模板原 bbox（regions.bbox，ensure 时落库）——有绑定时
+    # 缺失即触发模板渲染补齐（幂等，LO 内容缓存吸收重复开销），再重读区域
+    if block_contents and any(
+        r.id in block_contents and r.bbox_json is None for r in regions
+    ):
+        ensure_template_preview(tpl.id)
+        with get_conn() as conn:
+            regions = regions_repo.list_regions(conn, tpl.id)
+
     outcome = apply_replacements(docx_path.read_bytes(), regions, block_contents)
 
     # 成品 DOCX 走 LO 缓存：临时文件（uuid 防并发碰撞）→ convert → 即删
@@ -188,8 +221,16 @@ def render_version(version_id: int) -> VersionRender:
         tmp_docx.unlink(missing_ok=True)
 
     # 几何对齐：成品文档流 ↔ 成品 PDF；region_paths 给出首行段落新 path
+    pdf_lines = extract_pdf_lines(pdf_path)
     flow = list(iter_flow_paragraphs(outcome.data))
-    geometry = align_flow_to_lines(flow, extract_pdf_lines(pdf_path))
+    geometry = align_flow_to_lines(flow, pdf_lines)
+    # M7 溢出：固定行高检测（P6，裁剪判定仅对有效绑定区域）+ 高度对比分级（D4）
+    fixed_rows = (
+        overflow.detect_fixed_rows(outcome.data, outcome.region_paths)
+        if block_contents
+        else set()
+    )
+    clipped = overflow.detect_clipped(pdf_lines, block_contents, fixed_rows)
     items: list[dict[str, object]] = []
     for region in regions:
         anchor = json.loads(region.anchor)
@@ -199,6 +240,19 @@ def render_version(version_id: int) -> VersionRender:
         geo: RegionGeometry | None = geometry.get(tuple(new_path)) if new_path else None
         binding = binding_by_region.get(region.id)
         block = block_by_id.get(binding.block_id) if binding else None
+        ov = None
+        if binding is not None and binding.status == "active":
+            # 溢出测量范围 = 首行段落 + 多行克隆段落（region_paths 只含首行）
+            first_path = outcome.region_paths.get(region.id)
+            clone_paths = outcome.region_clone_paths.get(region.id, [])
+            paths = [first_path, *clone_paths] if first_path else []
+            ov = overflow.measure_overflow(
+                overflow.overflow_from_json(region.bbox_json),
+                _region_extent(geometry, paths) if paths else None,
+                settings.overflow_threshold,
+                fixed_row=region.id in fixed_rows,
+                clipped=region.id in clipped,
+            )
         items.append(
             {
                 "id": region.id,
@@ -211,6 +265,7 @@ def render_version(version_id: int) -> VersionRender:
                 "bbox": _bbox_dict(geo.bbox, geo.page) if geo else None,
                 "confidence": region.confidence,
                 "review_status": region.review_status,
+                "overflow": ov.to_dict() if ov else None,
                 "binding": (
                     {
                         "block_id": binding.block_id,

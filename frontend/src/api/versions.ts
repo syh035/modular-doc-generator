@@ -10,9 +10,20 @@ export interface BindingInfo {
   status: string // active / missing
 }
 
-/** 版本 overlay 区域：模板区域 + 替换后 bbox + 绑定态。 */
+/** 区域溢出报告（M7，D4/P6）：高度对比分级 + 固定行高裁剪；null = 未测量。 */
+export interface OverflowInfo {
+  orig_height: number
+  new_height: number
+  ratio: number
+  level: 'small' | 'large'
+  clipped: boolean
+  fixed_row: boolean
+}
+
+/** 版本 overlay 区域：模板区域 + 替换后 bbox + 绑定态 + 溢出报告。 */
 export interface OverlayRegion extends Region {
   binding: BindingInfo | null
+  overflow: OverflowInfo | null
 }
 
 /** 绑定（正/反向点选产物；换绑 = 同端点覆盖）。 */

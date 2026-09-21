@@ -165,11 +165,15 @@ def test_version_preview_and_overlay(
     assert bind(client, vid, by_label["手机号"]["id"], b_phone).status_code == 200
     # 姓名不绑 → 保留占位符
 
-    # 假 PDF 需含替换后文本（几何对齐源）：绑定行 + 保留的占位符行
+    # 假 PDF 需含替换后文本（几何对齐源）：绑定行 + 保留的占位符行；
+    # 模板本体转换（M7 溢出测量触发 ensure 补 bbox）用原文假 PDF
     fake = fake_pdf_with(
         tmp_path, "电话：13800138000，姓名：{{姓名}}"
     )
-    _patch_fake_convert(monkeypatch, {"电话：13800138000": fake})
+    fake_tpl = fake_pdf_with(tmp_path, "电话：{{手机号}}，姓名：{{姓名}}")
+    _patch_fake_convert(
+        monkeypatch, {"电话：13800138000": fake, "电话：{{手机号}}": fake_tpl}
+    )
 
     resp = client.get(f"/api/versions/{vid}/preview")
     assert resp.status_code == 200
