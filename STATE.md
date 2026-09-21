@@ -375,3 +375,26 @@ M0 完成并验收全绿；下一步 = 新会话执行 M1 数据层（TODO.md �
 - 区域身份锚定文档流元素，不锚页面坐标
 - 推翻 D1–D13 任何一项须先与用户确认
 - 每模块完成判据：类型检查 + lint + 模块测试全绿
+
+## 2026-09-21 · M8 版本管理（完结）
+
+### 一句话快照
+
+M0–M8 全部完成（里程碑 2 仅剩「素模板端到端验收」未打勾，里程碑 3 剩 M10+验收）；下一步 = M9 导出 或 M10 换模板迁移（TODO.md 顶部里程碑 3/4，依赖 M6+M7→M9 已满足、M5+M8→M10 已满足）。
+
+### 接口契约（M8 新增）
+
+- `GET /api/templates/{tid}/versions` → `{versions: [{id, template_id, name, binding_count, created_at, updated_at}]}`（创建正序；binding_count = active 绑定数）
+- `POST /api/templates/{tid}/versions` `{name, copy_from?}` → 201 Version（copy_from 复制该版本 active 绑定为底稿，missing 不迁移）；重名 → 409 `VERSION_NAME_TAKEN`
+- `PATCH /api/versions/{vid}` `{name}` → 200 Version；`DELETE /api/versions/{vid}` → 204（唯一版本 → 400 `LAST_VERSION`；绑定随级联删）
+- 错误码新增：`VERSION_INVALID(400)` / `VERSION_NAME_TAKEN(409)` / `LAST_VERSION(400)`；版本名 1–30 字符
+- 前端 preview store：`versions` / `selectVersion(id)`（P7 序号整体刷新）/ `createNewVersion(name, copyFrom)`（成功后自动切新版本）/ `renameCurrentVersion(name)` / `deleteCurrentVersion()`（删当前切相邻）
+- 工具条版本控件（模板下拉右侧）：版本下拉「名字（N 项绑定）」+ 新建/重命名/删除；校对模式全部置灰（校对对象是模板本体，与版本无关）
+
+### 用户偏好（本次新明确）
+
+- 名称类用户输入字段（块名/版本名等）长度全局统一 **1–30 字符**（已入 AGENTS.md 命名约定，M8 起生效）
+
+### 变更原则
+
+（沿用既有，无新增）

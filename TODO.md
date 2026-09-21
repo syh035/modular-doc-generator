@@ -25,9 +25,7 @@
 
 ## 里程碑 3 — 资产化
 
-- [ ] M8 版本管理：新建（空白/复制当前为底稿）+ 切换整体刷新 + 重命名（同模板内唯一）+ 删除保护（删当前切相邻、至少留一）
-  - [x] 后端：错误码（VERSION_INVALID/VERSION_NAME_TAKEN 409/LAST_VERSION 400）+ services/version_service.py + 4 端点 + pytest（2026-09-21，200 绿 +6）
-  - [x] 前端：api/versions.ts 扩充 + preview store（versions/selectVersion/createNewVersion/renameCurrentVersion/deleteCurrentVersion）+ 工具条版本下拉与 VersionDialog + vitest 120 绿 +20（2026-09-21）
+- [x] M8 版本管理：新建（空白/复制当前为底稿）+ 切换整体刷新 + 重命名（同模板内唯一）+ 删除保护（删当前切相邻、至少留一）✅ 2026-09-21（后端 ruff/mypy/pytest 200 绿（+6：versions 列表/新建复制/校验/重命名/删除保护）；前端 eslint/vue-tsc/vitest 120 绿（+20：store 8/弹层 6/控件 6）；Playwright 浏览器验收 16/16 通过无 console 错误；工具条版本下拉「名字（N 项绑定）」+ 新建/重命名/删除，校对模式置灰；删除失败 alert 反馈；版本名 1–30 字全局约定入 AGENTS.md）
 - [ ] M10 换模板迁移：按区域类型自动匹配（文档流顺序，D7）+ 三类结果清单（自动匹配/多候选点选/无匹配手动指定或留空）+ 手动指定持久化 + 可跳过
 - [ ] ▲ 里程碑 3 验收：模板换装场景走通（同内容新样式，零重录）
 
