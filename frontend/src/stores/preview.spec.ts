@@ -584,3 +584,239 @@ describe('版本管理（M8）', () => {
     expect(store.currentVersionId).toBe(5)
   })
 })
+
+describe('换模板迁移（M10）', () => {
+  const PLAN = {
+    source_version_id: 5,
+    source_version_name: '默认版本',
+    source_template_id: 1,
+    target_template_id: 2,
+    target_version_id: 6,
+    auto: [
+      {
+        source_region_id: 11,
+        source_label: '姓名',
+        target_region_id: 21,
+        target_label: '名字',
+        block_id: 31,
+        block_name: '姓名块',
+      },
+    ],
+    candidates: [],
+    unmatched: [],
+  }
+
+  /**
+   * 双模板场景：模板 1（源，默认版本 5 带 1 个 active 绑定）→ 模板 2（目标，
+   * 默认版本 6 空白）。opts 可覆盖任意路由（守门负例注入）。
+   */
+  function migrationRoutes(opts: Record<string, (init?: RequestInit) => Response> = {}) {
+    const fn = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET').toUpperCase()
+      const handlers: Record<string, (init?: RequestInit) => Response> = {
+        'GET /api/templates': () =>
+          Response.json({
+            templates: [
+              { id: 1, filename: 'old.docx', status: 'ready', regions_count: 1 },
+              { id: 2, filename: 'new.docx', status: 'ready', regions_count: 1 },
+            ],
+          }),
+        'GET /api/templates/1': () =>
+          Response.json({ id: 1, filename: 'old.docx', default_version_id: 5, regions: [] }),
+        'GET /api/templates/2': () =>
+          Response.json({ id: 2, filename: 'new.docx', default_version_id: 6, regions: [] }),
+        'GET /api/templates/2/preview': () => new Response(new ArrayBuffer(9)),
+        'GET /api/templates/1/versions': () =>
+          Response.json({
+            versions: [
+              { id: 5, template_id: 1, name: '默认版本', binding_count: 1, created_at: '', updated_at: '' },
+            ],
+          }),
+        'GET /api/templates/2/versions': () =>
+          Response.json({
+            versions: [
+              { id: 6, template_id: 2, name: '默认版本', binding_count: 0, created_at: '', updated_at: '' },
+            ],
+          }),
+        'GET /api/versions/5/preview': () => new Response(new ArrayBuffer(5)),
+        'GET /api/versions/5/overlay': () =>
+          Response.json({
+            regions: [
+              {
+                ...region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 }),
+                binding: { block_id: 9, block_name: '姓名块', status: 'active' },
+              },
+            ],
+          }),
+        'GET /api/versions/6/preview': () => new Response(new ArrayBuffer(6)),
+        'GET /api/versions/6/overlay': () => Response.json({ regions: [] }),
+        'POST /api/templates/2/migrate/plan': () => Response.json(PLAN),
+        'POST /api/templates/2/migrate/apply': () =>
+          Response.json({ version_id: 6, created: 1 }, { status: 201 }),
+        ...opts,
+      }
+      const handler = handlers[`${method} ${String(input)}`]
+      if (handler === undefined) {
+        return Promise.resolve(
+          Response.json({ error: { code: 'NOT_FOUND', message: 'nope' } }, { status: 404 }),
+        )
+      }
+      return Promise.resolve(handler(init))
+    })
+    vi.stubGlobal('fetch', fn)
+    return fn
+  }
+
+  it('切到 ready 空白新模板：触发迁移提示（源上下文完整）', async () => {
+    migrationRoutes()
+    const store = usePreviewStore()
+    await store.loadTemplates()
+    await store.selectTemplate(1)
+    expect(store.migrationSource).toBeNull() // 首次选择不触发
+    await store.selectTemplate(2)
+    expect(store.migrationSource).toEqual({
+      sourceVersionId: 5,
+      sourceVersionName: '默认版本',
+      sourceTemplateName: 'old.docx',
+      sourceBindingCount: 1,
+    })
+  })
+
+  it('不触发：源版本无 active 绑定', async () => {
+    migrationRoutes({
+      'GET /api/versions/5/overlay': () => Response.json({ regions: [] }),
+    })
+    const store = usePreviewStore()
+    await store.loadTemplates()
+    await store.selectTemplate(1)
+    await store.selectTemplate(2)
+    expect(store.migrationSource).toBeNull()
+  })
+
+  it('不触发：目标默认版本非空白（后端 plan 亦守门）', async () => {
+    migrationRoutes({
+      'GET /api/templates/2/versions': () =>
+        Response.json({
+          versions: [
+            { id: 6, template_id: 2, name: '默认版本', binding_count: 2, created_at: '', updated_at: '' },
+          ],
+        }),
+    })
+    const store = usePreviewStore()
+    await store.loadTemplates()
+    await store.selectTemplate(1)
+    await store.selectTemplate(2)
+    expect(store.migrationSource).toBeNull()
+  })
+
+  it('不触发：目标模板未完成校对（status != ready）', async () => {
+    migrationRoutes({
+      'GET /api/templates': () =>
+        Response.json({
+          templates: [
+            { id: 1, filename: 'old.docx', status: 'ready', regions_count: 1 },
+            { id: 2, filename: 'new.docx', status: 'pending_review', regions_count: 1 },
+          ],
+        }),
+    })
+    const store = usePreviewStore()
+    await store.loadTemplates()
+    await store.selectTemplate(1)
+    await store.selectTemplate(2)
+    expect(store.migrationSource).toBeNull()
+  })
+
+  it('不触发：校对模式下（迁移只发生在版本模式）', async () => {
+    migrationRoutes()
+    const store = usePreviewStore()
+    await store.loadTemplates()
+    await store.selectTemplate(1)
+    store.proofreadMode = true
+    await store.selectTemplate(2)
+    expect(store.migrationSource).toBeNull()
+  })
+
+  it('loadMigrationPlan：成功填充方案', async () => {
+    migrationRoutes()
+    const store = usePreviewStore()
+    await store.loadTemplates()
+    await store.selectTemplate(1)
+    await store.selectTemplate(2)
+    const ok = await store.loadMigrationPlan()
+    expect(ok).toBe(true)
+    expect(store.migrationPlan?.auto).toHaveLength(1)
+    expect(store.migrationBusy).toBe(false)
+    expect(store.migrationError).toBeNull()
+  })
+
+  it('loadMigrationPlan：失败写入 migrationError 并返回 false', async () => {
+    migrationRoutes({
+      'POST /api/templates/2/migrate/plan': () =>
+        Response.json(
+          { error: { code: 'MIGRATION_TARGET_NOT_BLANK', message: '目标默认版本已有绑定' } },
+          { status: 409 },
+        ),
+    })
+    const store = usePreviewStore()
+    await store.loadTemplates()
+    await store.selectTemplate(1)
+    await store.selectTemplate(2)
+    const ok = await store.loadMigrationPlan()
+    expect(ok).toBe(false)
+    expect(store.migrationError).toBe('目标默认版本已有绑定')
+  })
+
+  it('confirmMigration：成功后清提示、刷新版本列表与预览', async () => {
+    const fetchFn = migrationRoutes()
+    const store = usePreviewStore()
+    await store.loadTemplates()
+    await store.selectTemplate(1)
+    await store.selectTemplate(2)
+    const result = await store.confirmMigration([{ region_id: 21, block_id: 31 }])
+    expect(result.ok).toBe(true)
+    const post = fetchFn.mock.calls.find(
+      c =>
+        String(c[0]) === '/api/templates/2/migrate/apply' &&
+        (c[1] as RequestInit | undefined)?.method === 'POST',
+    )
+    expect(post).toBeDefined()
+    expect(JSON.parse((post?.[1] as RequestInit).body as string)).toEqual({
+      source_version_id: 5,
+      bindings: [{ region_id: 21, block_id: 31 }],
+    })
+    expect(store.migrationSource).toBeNull()
+    expect(store.migrationPlan).toBeNull()
+    expect(store.status).toBe('ready')
+    expect(store.pdfData?.byteLength).toBe(6) // 迁移后版本渲染已刷新
+  })
+
+  it('confirmMigration：apply 409 → ok=false，提示保留可重试', async () => {
+    migrationRoutes({
+      'POST /api/templates/2/migrate/apply': () =>
+        Response.json(
+          { error: { code: 'MIGRATION_TARGET_NOT_BLANK', message: '目标默认版本非空白' } },
+          { status: 409 },
+        ),
+    })
+    const store = usePreviewStore()
+    await store.loadTemplates()
+    await store.selectTemplate(1)
+    await store.selectTemplate(2)
+    const result = await store.confirmMigration([{ region_id: 21, block_id: 31 }])
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('目标默认版本非空白')
+    expect(store.migrationSource).not.toBeNull() // 弹层不关，可调整后重试
+  })
+
+  it('dismissMigration：跳过后清空全部迁移状态', async () => {
+    migrationRoutes()
+    const store = usePreviewStore()
+    await store.loadTemplates()
+    await store.selectTemplate(1)
+    await store.selectTemplate(2)
+    expect(store.migrationSource).not.toBeNull()
+    store.dismissMigration()
+    expect(store.migrationSource).toBeNull()
+    expect(store.migrationPlan).toBeNull()
+  })
+})

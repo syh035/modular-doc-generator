@@ -6,6 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from app.api.blocks import router as blocks_router
 from app.api.guide import router as guide_router
 from app.api.health import router as health_router
+from app.api.migrations import router as migrations_router
 from app.api.regions import router as regions_router
 from app.api.tags import router as tags_router
 from app.api.templates import router as templates_router
@@ -26,6 +27,7 @@ def create_app() -> FastAPI:
     app.include_router(blocks_router)
     app.include_router(tags_router)
     app.include_router(versions_router)
+    app.include_router(migrations_router)
     app.include_router(guide_router)
     app.add_exception_handler(AppError, app_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]

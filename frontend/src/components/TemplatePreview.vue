@@ -11,6 +11,7 @@ import { openDocument, preparePage, type OpenedPdf, type RenderedPage } from '..
 import { useBlocksStore } from '../stores/blocks'
 import { usePreviewStore, type DisplayRegion } from '../stores/preview'
 import BindingDialog from './BindingDialog.vue'
+import MigrationDialog from './MigrationDialog.vue'
 import ProofreadPopover from './ProofreadPopover.vue'
 import RegionNameDialog from './RegionNameDialog.vue'
 import VersionDialog from './VersionDialog.vue'
@@ -221,6 +222,39 @@ function onDeleteVersion(): void {
       window.alert(result.error)
     }
   })
+}
+
+// ---- 换模板迁移（M10）：切换触发提示 → 三清单确认 → 整包落库 ----
+
+/** 弹层阶段（null = 关闭）；migrationSource 变化驱动 prompt 出现。 */
+const migrationStage = ref<'prompt' | 'plan' | null>(null)
+
+watch(
+  () => store.migrationSource,
+  src => {
+    migrationStage.value = src ? 'prompt' : null
+  },
+)
+
+async function onMigrationProceed(): Promise<void> {
+  const ok = await store.loadMigrationPlan()
+  if (ok) {
+    migrationStage.value = 'plan' // 失败保持 prompt，错误经 store.migrationError 内联显示
+  }
+}
+
+async function onMigrationApply(bindings: { region_id: number; block_id: number }[]): Promise<void> {
+  const result = await store.confirmMigration(bindings)
+  if (!result.ok) {
+    return // 失败弹层保持，错误内联显示
+  }
+  migrationStage.value = null // 成功后 watch 已因 migrationSource 清空触发，此处兜底
+}
+
+/** 关闭/跳过同语义：清掉本次迁移提示（v1 不补迁）。 */
+function onMigrationClose(): void {
+  store.dismissMigration()
+  migrationStage.value = null
 }
 
 function regionsOf(pageIndex: number): DisplayRegion[] {
@@ -601,6 +635,8 @@ watch(
     adjustDraft.value = null
     versionDialog.value = null
     versionDialogError.value = null
+    migrationStage.value = null
+    store.dismissMigration()
   },
 )
 
@@ -915,6 +951,22 @@ onBeforeUnmount(() => {
           :submitting="versionSubmitting"
           @submit="onVersionSubmit"
           @close="versionDialog = null"
+        />
+        <!-- 迁移弹层（M10：切到新模板时提示/三清单确认） -->
+        <MigrationDialog
+          v-if="migrationStage && store.migrationSource"
+          :stage="migrationStage"
+          :source-template-name="store.migrationSource.sourceTemplateName"
+          :source-version-name="store.migrationSource.sourceVersionName"
+          :source-binding-count="store.migrationSource.sourceBindingCount"
+          :target-template-name="store.currentTemplate?.filename ?? ''"
+          :plan="store.migrationPlan"
+          :error="store.migrationError"
+          :submitting="store.migrationBusy"
+          @proceed="onMigrationProceed"
+          @skip="onMigrationClose"
+          @apply="onMigrationApply"
+          @close="onMigrationClose"
         />
       </template>
     </div>

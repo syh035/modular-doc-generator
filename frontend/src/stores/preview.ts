@@ -39,6 +39,11 @@ import {
   type RegionFramePayload,
   type RegionPatchPayload,
 } from '../api/regions'
+import {
+  applyMigration,
+  fetchMigrationPlan,
+  type MigrationPlan,
+} from '../api/migrations'
 
 export type PreviewStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -78,6 +83,20 @@ export const usePreviewStore = defineStore('preview', () => {
   const refreshing = ref(false)
   /** 校对模式（M5b）：开启时预览切到模板本体（校对对象是模板区域，非版本成品）。 */
   const proofreadMode = ref(false)
+
+  // ---- 换模板迁移（M10，PRD 4.7 / D7）----
+
+  /** 迁移提示源上下文（null = 无提示）：切换模板时检测到可迁移绑定即置位。 */
+  const migrationSource = ref<{
+    sourceVersionId: number
+    sourceVersionName: string
+    sourceTemplateName: string
+    sourceBindingCount: number
+  } | null>(null)
+  /** 迁移方案（进入确认界面后填充）。 */
+  const migrationPlan = ref<MigrationPlan | null>(null)
+  const migrationBusy = ref(false)
+  const migrationError = ref<string | null>(null)
 
   const sequencer = new RequestSequencer()
 
@@ -124,6 +143,15 @@ export const usePreviewStore = defineStore('preview', () => {
   }
 
   async function selectTemplate(id: number | null): Promise<void> {
+    // M10 迁移触发：捕获切换前上下文（会话内、版本模式、active 绑定 ≥1 才有可迁移源）
+    const prevTemplateId = currentTemplateId.value
+    const prevVersionId = currentVersionId.value
+    const prevTemplateName = currentTemplate.value?.filename ?? ''
+    const prevVersionName = versions.value.find(v => v.id === prevVersionId)?.name ?? ''
+    const prevBindingCount =
+      prevVersionId !== null && !proofreadMode.value
+        ? regions.value.filter(r => r.binding?.status === 'active').length
+        : 0
     const seq = sequencer.next()
     currentTemplateId.value = id
     currentVersionId.value = null
@@ -131,6 +159,7 @@ export const usePreviewStore = defineStore('preview', () => {
     regions.value = []
     pdfData.value = null
     error.value = null
+    _clearMigration()
     if (id === null) {
       status.value = 'idle'
       return
@@ -144,7 +173,7 @@ export const usePreviewStore = defineStore('preview', () => {
       }
       const versionId = detail.default_version_id ?? null
       currentVersionId.value = versionId
-      void loadVersionList() // 版本下拉数据源（失败置空不阻断预览）
+      await loadVersionList() // 版本下拉数据源；迁移触发判定依赖 binding_count，须先就绪
       if (proofreadMode.value || versionId === null) {
         // 校对模式：看模板本体（原始区域 + 落库 bbox），不看替换成品
         await _fetchTemplateRender(seq, id)
@@ -152,6 +181,13 @@ export const usePreviewStore = defineStore('preview', () => {
         await _fetchVersionRender(seq, versionId)
       }
       status.value = 'ready'
+      _maybeOfferMigration(
+        prevTemplateId,
+        prevVersionId,
+        prevTemplateName,
+        prevVersionName,
+        prevBindingCount,
+      )
     } catch (err) {
       if (err instanceof CancelledError) {
         return // 过期响应静默丢弃（P7）
@@ -159,6 +195,101 @@ export const usePreviewStore = defineStore('preview', () => {
       status.value = 'error'
       error.value = err instanceof Error ? err.message : String(err)
     }
+  }
+
+  /** 迁移触发判定（M10）：切到 ready 新模板且其默认版本空白、源有绑定 → 置提示。 */
+  function _maybeOfferMigration(
+    prevTemplateId: number | null,
+    prevVersionId: number | null,
+    prevTemplateName: string,
+    prevVersionName: string,
+    prevBindingCount: number,
+  ): void {
+    const templateId = currentTemplateId.value
+    if (
+      prevTemplateId === null ||
+      prevVersionId === null ||
+      templateId === null ||
+      templateId === prevTemplateId ||
+      prevBindingCount < 1
+    ) {
+      return
+    }
+    // 目标模板须已完成解析校对（pending_review 不能作为迁移目标）
+    const target = templates.value.find(t => t.id === templateId)
+    if (!target || target.status !== 'ready') {
+      return
+    }
+    // 目标默认版本须空白（0 active 绑定）——后端 plan/apply 双重守门
+    const defaultVersion = versions.value.find(v => v.id === currentVersionId.value)
+    if (!defaultVersion || defaultVersion.binding_count !== 0) {
+      return
+    }
+    migrationSource.value = {
+      sourceVersionId: prevVersionId,
+      sourceVersionName: prevVersionName,
+      sourceTemplateName: prevTemplateName,
+      sourceBindingCount: prevBindingCount,
+    }
+  }
+
+  function _clearMigration(): void {
+    migrationSource.value = null
+    migrationPlan.value = null
+    migrationError.value = null
+  }
+
+  /** 拉取迁移方案（确认按钮 → 三清单界面）；失败返回 false，错误在 migrationError。 */
+  async function loadMigrationPlan(): Promise<boolean> {
+    const src = migrationSource.value
+    const templateId = currentTemplateId.value
+    if (src === null || templateId === null) {
+      return false
+    }
+    migrationBusy.value = true
+    migrationError.value = null
+    try {
+      migrationPlan.value = await fetchMigrationPlan(templateId, src.sourceVersionId)
+      return true
+    } catch (err) {
+      migrationError.value = err instanceof Error ? err.message : String(err)
+      return false
+    } finally {
+      migrationBusy.value = false
+    }
+  }
+
+  /** 确认迁移：整包提交三清单结果 → 清提示 → 刷新版本列表与预览渲染。 */
+  async function confirmMigration(
+    bindings: { region_id: number; block_id: number }[],
+  ): Promise<ProofreadResult> {
+    const src = migrationSource.value
+    const templateId = currentTemplateId.value
+    if (src === null || templateId === null) {
+      return { ok: false, error: '当前无进行中的迁移' }
+    }
+    migrationBusy.value = true
+    migrationError.value = null
+    try {
+      await applyMigration(templateId, src.sourceVersionId, bindings)
+      _clearMigration()
+      await loadVersionList()
+      if (!proofreadMode.value && status.value === 'ready') {
+        await refreshVersionRender()
+      }
+      return { ok: true, error: null }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      migrationError.value = msg
+      return { ok: false, error: msg }
+    } finally {
+      migrationBusy.value = false
+    }
+  }
+
+  /** 跳过迁移：新模板从空白版本开始（v1 不提供补迁移入口）。 */
+  function dismissMigration(): void {
+    _clearMigration()
   }
 
   /**
@@ -451,5 +582,12 @@ export const usePreviewStore = defineStore('preview', () => {
     adjustRegionBBox,
     removeRegion,
     createFrameRegion,
+    migrationSource,
+    migrationPlan,
+    migrationBusy,
+    migrationError,
+    loadMigrationPlan,
+    confirmMigration,
+    dismissMigration,
   }
 })
