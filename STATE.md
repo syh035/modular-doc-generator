@@ -1,5 +1,34 @@
 # STATE.md — 会话状态摘要（累积写入，不新建）
 
+## 2026-09-22 · 启动与运行说明 + 导入模板入口会话（v1 全部必做项完成，提交 f388abd）
+
+### 一句话快照
+
+里程碑 4「启动与运行说明」交付（README.md + 顶栏导入模板入口转正），**v1 全部必做模块完成**；下一步 = 产品命名 D13（用户定）→ 全局替换占位「文档助手」（README.md、frontend/index.html），或按需从加分项/TODO 开放问题取任务。
+
+### 本次完成
+
+- README.md（新建）：功能总览 / 环境要求 + LibreOffice 安装指引（brew cask + 启动自动检测 + 首转冷缓存说明）/ 快速开始（dev.sh 端口预检查）/ 数据目录逐项说明（app.db、templates、render_cache、exports、fontconfig、lo_profile，备份=拷贝 data/）/ 使用流程 / 自验工具（consistency_check + run_e2e + 单测）/ 常见问题；产品名占位「文档助手」
+- TopBar 占位按钮转正（M9 验收开放项收口）：「导入模板」= 隐藏 file input（accept .docx）→ preview store uploadTemplate → POST /api/templates → 成功刷新列表并自动选中新模板（新模板 pending_review 进校对流程）；「导出 DOCX」占位删除；失败 alert 可读错误（同 M8 口径）； uploading 态按钮置灰文案「导入中…」
+- 窗口标题「简历助手」→「文档助手」（frontend/index.html）
+- 验证：前端 eslint/vue-tsc/vitest 155 绿（+6：TopBar 上传 3 + store uploadTemplate 3）+ 后端 ruff/mypy/pytest 238 绿（零改动纯回归）；Playwright 浏览器冒烟 10/10（占位删除/新内容上传自动选中+canvas 渲染/D10 重传 reused 不新增/损坏文件 alert/控制台零功能错误）
+- 提交与清理：f388abd；残留 8740/5173 进程已 kill（dev.sh trap 清理不彻底，P20 再实锤）；readme_smoke×2 测试模板（DB+落盘）已删；/tmp 冒烟脚本与 fixture 已删
+
+### 接口契约（新增）
+
+- POST /api/templates 前端消费：api/templates.ts `uploadTemplate(file: File) → {template: TemplateDetail, reused: boolean}`（multipart 字段名 file；201 新建 / 200 reused）；FormData 不手动设 Content-Type（浏览器自动带 boundary）
+- preview store 新动作：`uploadTemplate(file: File) → UploadResult{ok, error, templateId?, reused?}`；成功语义 = 刷新模板列表 + selectTemplate(新 id)；测试注意：upload 链路 POST/GET 同路径不同义，stub 需按「方法+URL」双键路由（preview.spec.ts stubMethodFetch）
+- jsdom 事实：`vi.spyOn(input.element, 'click')` 需先 as HTMLInputElement（Element 类型无 click）；window.alert 须 spyOn mock，否则 jsdom 抛 not implemented
+- Playwright 冒烟事实：工具条定位用 `.preview-toolbar select.template-select:not(.version-select)`（模板与版本下拉同类名）；console error 过滤「Failed to load resource」（浏览器对非 2xx 一律记 error，预期 400 错误路径属噪音，同 ERR_ABORTED）
+
+### 用户偏好（本次新增）
+
+- D13 占位定名「文档助手」（用户 2026-09-22 拍板，正式名仍开放）；模板上传 UI 入口选「顺带实现」（方案 A）
+
+### 变更原则
+
+- 无新增；沿用既有
+
 ## 2026-09-22 · 三大场景 E2E 会话（全量 all 三场景 PASS）
 
 ### 一句话快照
