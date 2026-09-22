@@ -20,7 +20,7 @@ def create_app() -> FastAPI:
     settings.ensure_dirs()
     with get_conn() as conn:  # 建表幂等：启动即初始化 schema
         init_db(conn)
-    app = FastAPI(title="简历助手 backend")
+    app = FastAPI(title="模块化文档生成助手 backend")
     app.include_router(health_router)
     app.include_router(templates_router)
     app.include_router(regions_router)

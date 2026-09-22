@@ -1,4 +1,4 @@
-# AGENTS.md — 简历助手（本地简历编辑器，命名待定）
+# AGENTS.md — 模块化文档生成助手（本地简历/文档内容资产管理器）
 
 ## 项目定位
 
@@ -51,6 +51,7 @@
 
 - 本地 skill：`docx`（OOXML 结构知识）、`pdf`（PDF 处理）、`webapp-testing`（Playwright E2E）
 - 开源借鉴：docxtemplater（占位符替换与 run 碎片处理思路）、python-docx、Reactive Resume（交互布局参考）
+- **前端布局相关工作（布局/间距/响应式/视觉审查）必须先调用 `trae-remote-official:web-app-development` 插件**（uicraft skill，2026-09-22 用户全局规则）
 
 ## 目录结构（M0 落地时按此创建）
 
