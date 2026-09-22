@@ -428,3 +428,26 @@ M0–M8 全部完成（里程碑 2 仅剩「素模板端到端验收」未打勾
 ### 变更原则
 
 （沿用既有，无新增）
+
+## 2026-09-22 · M9 导出（完结）
+
+### 一句话快照
+
+M0–M10 全部完成；下一步 = 里程碑 4 收尾：一致性专项（预览 PDF vs 导出重转 PDF 逐页 diff，TODO.md 顶部，前置 M9 已满足）。
+
+### 接口契约（M9 新增）
+
+- `POST /api/versions/{id}/export` `{confirm_large_overflow?: bool}` → 无大超出或已确认 → 200 FileResponse（docx，`Cache-Control: no-store`，非 ASCII 文件名走 RFC 5987 `filename*=utf-8''`）；存在大超出且未确认 → 409 `{"error": {...}, "warnings": [{region_id, label, ratio, clipped, fixed_row}]}`（统一错误结构外附加 warnings 数组）
+- 错误码新增：`EXPORT_LARGE_OVERFLOW(409)` / `EXPORT_WRITE_FAILED(500)`
+- `VersionRender` 增 `data` 字段 = apply_replacements 产物（预览 PDF 同源 DOCX，单管线铁律），导出直接落盘该产物，预览导出零差异
+- 文件名「简历-{版本名}-{YYYYMMDD}.docx」（本地时区；版本名清洗文件系统非法字符→`_`）；后端落盘 `data/exports/`，同名覆盖不累积
+- 前端：store `requestExport(confirm)`——本地 overlay overflow 即时判定弹警示层（零往返），服务端 409 兜底防本地状态过期；blob 下载触发在组件（createObjectURL，jsdom 无此 API，测试需 stub）；`ExportDialog.vue` 警示清单弹层；导出按钮挂版本控件组（校对模式置灰）
+
+### 用户偏好（本次新明确）
+
+（无新增）
+
+### 变更原则
+
+- 「URL 不随内容变化」的动态产物响应一律显式 `no-store`（P25 口径延伸到导出端点）
+- 大超出确认数据源 = M7 overlay overflow 同口径（level=large 含 clipped），前端即时判定 + 服务端现算兜底，不另设判定路径
