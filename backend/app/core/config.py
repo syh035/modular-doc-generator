@@ -20,6 +20,8 @@ class Settings:
     db_path: Path = data_dir / "app.db"
     # 渲染管线（M4）：转换缓存与 LO 独立 profile（避开单实例锁，P8）
     render_cache_dir: Path = data_dir / "render_cache"
+    # 导出落盘（M9）：成品 DOCX 后端留存目录（同名覆盖，反复导出不累积）
+    exports_dir: Path = data_dir / "exports"
     lo_profile_dir: Path = data_dir / "lo_profile"
     # LO fontconfig（P17）：cask 版 LO 缺主字体配置，系统字体全不可见致中文空白
     fontconfig_dir: Path = data_dir / "fontconfig"
@@ -34,6 +36,7 @@ class Settings:
         """创建运行时目录（幂等）。"""
         self.templates_dir.mkdir(parents=True, exist_ok=True)
         self.render_cache_dir.mkdir(parents=True, exist_ok=True)
+        self.exports_dir.mkdir(parents=True, exist_ok=True)
         self.lo_profile_dir.mkdir(parents=True, exist_ok=True)
         self.fontconfig_dir.mkdir(parents=True, exist_ok=True)
 

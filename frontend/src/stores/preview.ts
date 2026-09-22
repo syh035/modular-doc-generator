@@ -44,6 +44,11 @@ import {
   fetchMigrationPlan,
   type MigrationPlan,
 } from '../api/migrations'
+import {
+  exportVersion,
+  ExportBlockedError,
+  type ExportWarning,
+} from '../api/exports'
 
 export type PreviewStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -57,6 +62,14 @@ export type DisplayRegion = Region & {
 export interface ProofreadResult {
   ok: boolean
   error: string | null
+}
+
+/** 导出动作结果：needConfirm=true 表示被大超出拦截、警示清单已就绪待确认。 */
+export interface ExportActionResult {
+  ok: boolean
+  needConfirm: boolean
+  blob?: Blob
+  fileName?: string
 }
 
 export const usePreviewStore = defineStore('preview', () => {
@@ -97,6 +110,70 @@ export const usePreviewStore = defineStore('preview', () => {
   const migrationPlan = ref<MigrationPlan | null>(null)
   const migrationBusy = ref(false)
   const migrationError = ref<string | null>(null)
+
+  // ---- 导出（M9，PRD 4.8 / D5）----
+
+  const exportBusy = ref(false)
+  const exportError = ref<string | null>(null)
+  /** 大超出警示清单（非空 = 弹确认弹层；本地即时判定与 409 兜底共用）。 */
+  const exportWarnings = ref<ExportWarning[]>([])
+
+  /** 本地大超出清单（overlay 现有 overflow 数据，零往返预判）。 */
+  function _localLargeWarnings(): ExportWarning[] {
+    const out: ExportWarning[] = []
+    for (const r of regions.value) {
+      if (r.overflow && r.overflow.level === 'large') {
+        out.push({
+          region_id: r.id,
+          label: r.label,
+          ratio: r.overflow.ratio,
+          clipped: r.overflow.clipped,
+          fixed_row: r.overflow.fixed_row,
+        })
+      }
+    }
+    return out
+  }
+
+  /**
+   * 导出当前版本：无大超出 → 直接请求落盘下载；有大超出且未确认 → 置警示
+   * 清单弹层（本地即时判定，服务端 409 兜底防本地状态过期）。确认后仍按
+   * 重排结果导出（D5 默认行为）。blob 下载触发由组件负责（浏览器副作用）。
+   */
+  async function requestExport(confirm: boolean): Promise<ExportActionResult> {
+    const versionId = currentVersionId.value
+    if (versionId === null) {
+      return { ok: false, needConfirm: false }
+    }
+    if (!confirm) {
+      const local = _localLargeWarnings()
+      if (local.length > 0) {
+        exportWarnings.value = local
+        return { ok: false, needConfirm: true }
+      }
+    }
+    exportBusy.value = true
+    exportError.value = null
+    try {
+      const { blob, fileName } = await exportVersion(versionId, confirm)
+      return { ok: true, needConfirm: false, blob, fileName }
+    } catch (err) {
+      if (err instanceof ExportBlockedError) {
+        // 本地判定过期（绑定刚变更）：以服务端现算清单为准，再走确认弹层
+        exportWarnings.value = err.warnings
+        return { ok: false, needConfirm: true }
+      }
+      exportError.value = err instanceof Error ? err.message : String(err)
+      return { ok: false, needConfirm: false }
+    } finally {
+      exportBusy.value = false
+    }
+  }
+
+  /** 关闭大超出警示弹层（返回修改）。 */
+  function dismissExportWarnings(): void {
+    exportWarnings.value = []
+  }
 
   const sequencer = new RequestSequencer()
 
@@ -589,5 +666,10 @@ export const usePreviewStore = defineStore('preview', () => {
     loadMigrationPlan,
     confirmMigration,
     dismissMigration,
+    exportBusy,
+    exportError,
+    exportWarnings,
+    requestExport,
+    dismissExportWarnings,
   }
 })

@@ -7,12 +7,13 @@
 """
 
 from fastapi import APIRouter, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from app.core.errors import (
     BINDING_NOT_FOUND,
     BLOCK_NOT_FOUND,
+    EXPORT_LARGE_OVERFLOW,
     REGION_EXCLUDED,
     REGION_NOT_FOUND,
     REGION_TEMPLATE_MISMATCH,
@@ -28,7 +29,7 @@ from app.models.repositories import blocks as blocks_repo
 from app.models.repositories import regions as regions_repo
 from app.models.repositories import templates as templates_repo
 from app.models.repositories import versions as versions_repo
-from app.services import render_service, version_service
+from app.services import export_service, render_service, version_service
 
 router = APIRouter(prefix="/api")
 
@@ -161,6 +162,52 @@ def get_version_overlay(version_id: int) -> dict[str, object]:
         "version_id": version_id,
         "regions": rendered.items,
     }
+
+
+# ---- 导出（M9，PRD 4.8 / D5）----
+
+_DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+class ExportRequest(BaseModel):
+    confirm_large_overflow: bool = False
+
+
+@router.post("/versions/{version_id}/export")
+def export_version(version_id: int, payload: ExportRequest) -> Response:
+    """导出当前版本成品 DOCX（预览同源产物落盘 + 下载，单管线铁律）。
+
+    D5：存在大超出（level=large，含固定行高裁剪）且未确认 → 409 附警示清单；
+    确认后默认仍按重排结果导出。响应 no-store（P25：URL 不随内容变化）。
+    """
+    with get_conn() as conn:
+        version = versions_repo.get_version(conn, version_id)
+        if version is None:
+            raise AppError(
+                VERSION_NOT_FOUND, f"内容版本不存在（id={version_id}）", status_code=404
+            )
+        version_name = version.name
+    rendered = render_service.render_version(version_id)
+    warnings = export_service.extract_large_overflow_warnings(rendered.items)
+    if warnings and not payload.confirm_large_overflow:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": {
+                    "code": EXPORT_LARGE_OVERFLOW,
+                    "message": f"存在 {len(warnings)} 处大超出，确认后将按重排结果导出",
+                },
+                "warnings": warnings,
+            },
+        )
+    file_name = export_service.export_file_name(version_name)
+    path = export_service.write_export(rendered.data, file_name)
+    return FileResponse(
+        path,
+        media_type=_DOCX_MEDIA_TYPE,
+        filename=file_name,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # ---- 版本管理（M8：新建 / 重命名 / 删除保护）----

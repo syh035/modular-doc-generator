@@ -820,3 +820,141 @@ describe('换模板迁移（M10）', () => {
     expect(store.migrationPlan).toBeNull()
   })
 })
+
+describe('导出（M9，PRD 4.8 / D5）', () => {
+  const FILE_NAME = '简历-默认版本-20260921.docx'
+  const DISPOSITION = `attachment; filename*=utf-8''%E7%AE%80%E5%8E%86-%E9%BB%98%E8%AE%A4%E7%89%88%E6%9C%AC-20260921.docx`
+
+  function exportRoutes(opts: {
+    exportStatus?: number
+    exportBody?: unknown
+    overflow?: object | null
+  } = {}) {
+    const region1 = {
+      ...region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 }),
+      binding: { block_id: 9, block_name: '姓名块', status: 'active' },
+    }
+    if (opts.overflow !== undefined) {
+      ;(region1 as Record<string, unknown>).overflow = opts.overflow
+    }
+    const fn = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET').toUpperCase()
+      const key = `${method} ${String(input)}`
+      if (key === 'POST /api/versions/5/export') {
+        if (opts.exportStatus === 409) {
+          return Promise.resolve(
+            Response.json(opts.exportBody, { status: 409 }),
+          )
+        }
+        if (opts.exportStatus !== undefined && opts.exportStatus !== 200) {
+          return Promise.resolve(
+            Response.json(opts.exportBody, { status: opts.exportStatus }),
+          )
+        }
+        return Promise.resolve(
+          new Response(new ArrayBuffer(11), {
+            status: 200,
+            headers: { 'content-disposition': DISPOSITION },
+          }),
+        )
+      }
+      const routes: Record<string, () => Response> = {
+        'GET /api/templates': () =>
+          Response.json({
+            templates: [{ id: 1, filename: 'a.docx', status: 'ready', regions_count: 1 }],
+          }),
+        'GET /api/templates/1': () =>
+          Response.json({ id: 1, filename: 'a.docx', default_version_id: 5, regions: [] }),
+        'GET /api/templates/1/versions': () =>
+          Response.json({
+            versions: [
+              { id: 5, template_id: 1, name: '默认版本', binding_count: 1, created_at: '', updated_at: '' },
+            ],
+          }),
+        'GET /api/versions/5/preview': () => new Response(new ArrayBuffer(5)),
+        'GET /api/versions/5/overlay': () => Response.json({ regions: [region1] }),
+      }
+      const handler = routes[key]
+      return Promise.resolve(
+        handler ? handler() : Response.json({ error: { code: 'NOT_FOUND', message: 'nope' } }, { status: 404 }),
+      )
+    })
+    vi.stubGlobal('fetch', fn)
+    return fn
+  }
+
+  it('无大超出：直接 POST 导出，返回 blob 与解析后的文件名', async () => {
+    const fn = exportRoutes({ overflow: null })
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    const r = await store.requestExport(false)
+    expect(r.ok).toBe(true)
+    expect(r.needConfirm).toBe(false)
+    expect(r.blob?.size).toBe(11)
+    expect(r.fileName).toBe(FILE_NAME)
+    const calls = fn.mock.calls.filter(c => String(c[0]).includes('/export'))
+    expect(calls).toHaveLength(1)
+    expect((calls[0][1] as RequestInit).body).toBe('{"confirm_large_overflow":false}')
+  })
+
+  it('有大超出（本地判定）：不发请求直接弹警示清单', async () => {
+    const fn = exportRoutes({
+      overflow: { orig_height: 20, new_height: 70, ratio: 2.5, level: 'large', clipped: false, fixed_row: false },
+    })
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    const r = await store.requestExport(false)
+    expect(r.ok).toBe(false)
+    expect(r.needConfirm).toBe(true)
+    expect(store.exportWarnings).toEqual([
+      { region_id: 1, label: '字段1', ratio: 2.5, clipped: false, fixed_row: false },
+    ])
+    expect(fn.mock.calls.filter(c => String(c[0]).includes('/export'))).toHaveLength(0)
+  })
+
+  it('确认后带 confirm_large_overflow:true 重发导出', async () => {
+    const fn = exportRoutes({
+      overflow: { orig_height: 20, new_height: 70, ratio: 2.5, level: 'large', clipped: false, fixed_row: false },
+    })
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    const r = await store.requestExport(true)
+    expect(r.ok).toBe(true)
+    expect(r.fileName).toBe(FILE_NAME)
+    const calls = fn.mock.calls.filter(c => String(c[0]).includes('/export'))
+    expect((calls[0][1] as RequestInit).body).toBe('{"confirm_large_overflow":true}')
+    store.dismissExportWarnings()
+    expect(store.exportWarnings).toEqual([])
+  })
+
+  it('服务端 409 兜底（本地判定过期）：以响应 warnings 弹清单', async () => {
+    exportRoutes({
+      overflow: null, // 本地无大超出
+      exportStatus: 409,
+      exportBody: {
+        error: { code: 'EXPORT_LARGE_OVERFLOW', message: '存在 1 处大超出，确认后将按重排结果导出' },
+        warnings: [{ region_id: 1, label: '字段1', ratio: 1.5, clipped: false, fixed_row: false }],
+      },
+    })
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    const r = await store.requestExport(false)
+    expect(r.ok).toBe(false)
+    expect(r.needConfirm).toBe(true)
+    expect(store.exportWarnings).toHaveLength(1)
+    expect(store.exportError).toBeNull()
+  })
+
+  it('导出失败（写盘 500）：ok=false，exportError 可读', async () => {
+    exportRoutes({
+      exportStatus: 500,
+      exportBody: { error: { code: 'EXPORT_WRITE_FAILED', message: '导出文件写入失败' } },
+    })
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    const r = await store.requestExport(false)
+    expect(r.ok).toBe(false)
+    expect(r.needConfirm).toBe(false)
+    expect(store.exportError).toBe('导出文件写入失败')
+  })
+})

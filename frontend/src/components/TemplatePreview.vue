@@ -11,6 +11,7 @@ import { openDocument, preparePage, type OpenedPdf, type RenderedPage } from '..
 import { useBlocksStore } from '../stores/blocks'
 import { usePreviewStore, type DisplayRegion } from '../stores/preview'
 import BindingDialog from './BindingDialog.vue'
+import ExportDialog from './ExportDialog.vue'
 import MigrationDialog from './MigrationDialog.vue'
 import ProofreadPopover from './ProofreadPopover.vue'
 import RegionNameDialog from './RegionNameDialog.vue'
@@ -255,6 +256,39 @@ async function onMigrationApply(bindings: { region_id: number; block_id: number 
 function onMigrationClose(): void {
   store.dismissMigration()
   migrationStage.value = null
+}
+
+// ---- 导出（M9，PRD 4.8 / D5）：大超出先确认，产物落盘 + 浏览器下载 ----
+
+/** 浏览器下载触发（blob → 临时对象 URL → a[download]；jsdom 无此 API，测试 stub）。 */
+function downloadBlob(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+/** 点导出：无大超出直接下载；有 → 弹警示清单（本地即时判定，服务端 409 兜底）。 */
+async function onExport(): Promise<void> {
+  const r = await store.requestExport(false)
+  if (r.ok && r.blob && r.fileName) {
+    downloadBlob(r.blob, r.fileName)
+    return
+  }
+  if (!r.needConfirm && store.exportError) {
+    window.alert(store.exportError) // 直接导出路径失败（无弹层可内联），alert 反馈
+  }
+}
+
+/** 弹层确认：带 confirm 重发，成功下载并关弹层；失败弹层保持、错误内联。 */
+async function onExportConfirm(): Promise<void> {
+  const r = await store.requestExport(true)
+  if (r.ok && r.blob && r.fileName) {
+    downloadBlob(r.blob, r.fileName)
+    store.dismissExportWarnings()
+  }
 }
 
 function regionsOf(pageIndex: number): DisplayRegion[] {
@@ -637,6 +671,7 @@ watch(
     versionDialogError.value = null
     migrationStage.value = null
     store.dismissMigration()
+    store.dismissExportWarnings()
   },
 )
 
@@ -786,6 +821,15 @@ onBeforeUnmount(() => {
             @click="onDeleteVersion"
           >
             删除
+          </button>
+          <button
+            class="tool-btn primary"
+            :disabled="store.proofreadMode || store.exportBusy"
+            title="导出当前版本成品 DOCX（存在大超出时先确认）"
+            data-testid="export-btn"
+            @click="onExport"
+          >
+            导出 DOCX
           </button>
         </template>
       </div>
@@ -968,6 +1012,15 @@ onBeforeUnmount(() => {
           @apply="onMigrationApply"
           @close="onMigrationClose"
         />
+        <!-- 导出大超出警示弹层（M9：清单确认后重排导出） -->
+        <ExportDialog
+          v-if="store.exportWarnings.length > 0"
+          :warnings="store.exportWarnings"
+          :error="store.exportError"
+          :submitting="store.exportBusy"
+          @confirm="onExportConfirm"
+          @close="store.dismissExportWarnings()"
+        />
       </template>
     </div>
 
@@ -1095,6 +1148,19 @@ onBeforeUnmount(() => {
 .tool-btn.danger:hover:not(:disabled) {
   color: #f54a45;
   border-color: #f54a45;
+}
+
+/* 导出主按钮（M9）：强调色实底，与次要操作按钮区分 */
+.tool-btn.primary {
+  color: #fff;
+  background: #3370ff;
+  border-color: #3370ff;
+}
+
+.tool-btn.primary:hover:not(:disabled) {
+  color: #fff;
+  border-color: #3370ff;
+  opacity: 0.9;
 }
 
 .legend {

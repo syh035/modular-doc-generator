@@ -126,9 +126,16 @@ def ensure_template_preview(template_id: int) -> Path:
 
 
 class VersionRender:
-    """版本渲染产物：成品 PDF 路径 + 覆盖层数据（区域 × 替换后 bbox × 绑定态）。"""
+    """版本渲染产物：成品 DOCX 字节 + PDF 路径 + 覆盖层数据（区域 × 替换后 bbox × 绑定态）。
 
-    def __init__(self, pdf_path: Path, items: list[dict[str, object]]) -> None:
+    data 即预览 PDF 的同源 DOCX（apply_replacements 产物，单管线铁律 P2），
+    M9 导出直接落盘该产物，保证预览与导出零差异。
+    """
+
+    def __init__(
+        self, data: bytes, pdf_path: Path, items: list[dict[str, object]]
+    ) -> None:
+        self.data = data
         self.pdf_path = pdf_path
         self.items = items
 
@@ -277,4 +284,4 @@ def render_version(version_id: int) -> VersionRender:
                 ),
             }
         )
-    return VersionRender(pdf_path, items)
+    return VersionRender(outcome.data, pdf_path, items)
