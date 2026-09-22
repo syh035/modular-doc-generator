@@ -37,21 +37,28 @@
 - [x] 三大场景 E2E（前置 M9：定向投递场景含导出步骤）：日常沉淀 / 定向投递 / 模板换装 ✅ 2026-09-22（scripts/e2e 三件套 seed.py/verify.py/run_e2e.py：fixture 播种（venv）+ 产物断言（venv，行提取用 extract_pdf_lines 修 P18 乱序）+ Playwright 浏览器流（/usr/bin/python3）；全量 all 三场景 PASS——替换文本生效无 {{ 残留 / 导出文件名「简历-{版本名}-{日期}.docx」+ 产物内容 / 迁移绑定零重录 + 预览校验；runner 含 FAIL 诊断输出）
 - [x] 启动与运行说明（最后执行；产品名 D13 未定则先占位「文档助手」，影响 README/窗口标题）：README.md（LibreOffice 安装指引、数据目录位置、快速开始、使用流程、自验工具、常见问题）✅ 2026-09-22（前端 eslint/vue-tsc/vitest 155 绿（+6）+ 后端 238 绿纯回归；顺带收口 TopBar 占位按钮开放项——「导入模板」转正为真实上传入口（POST /api/templates → 自动选中新模板）、「导出 DOCX」占位删除；Playwright 浏览器冒烟 10/10；提交 f388abd）
 
-## 加分项（时间允许，勿挤占必做）
+## v1.1 路线（2026-09-22 定稿，用户确认；每模块一个会话，完成打勾注明日期）
 
-- [ ] 渲染缓存与增量刷新优化（只重渲染受影响页）
-- [ ] 字段词表扩充（手机/电话/Tel、教育背景/教育经历等变体；另 2026-09-21 M10 验收发现：`{{工作经历一}}` 中文数字后缀未命中 work 变体 → 识别为 custom，迁移路径等价不受影响，但词表宜补「工作经历/项目经历+中文数字」变体）
-- [ ] 软回车换行选项（D9）
-- [ ] 绑定操作一步撤销（D11 加分部分）
-- [ ] 解析进度反馈（超 5s 基线时）
+> 排序原则：前端审查债（P1/P2）→ 加分项 → 新功能 → 观察项/技术债 → 增量刷新垫底。
+> 依赖：M11→M12→M13→M14 前端体验串行（M13 依赖 M12 弹层定位收敛）；M15–M18 相互独立可乱序；M19/M20 独立（M20 建议在 M12 后做，复用弹层基建）；M21/M22 独立随时可插；M23 必须最后（依赖 M13 布局稳定 + 功能冻结）。
+> 本轮已确认决策（2026-09-22 用户拍板）：D13=「模块化文档生成助手」；在线编辑=编辑渲染文本+已绑块可选同步+未绑块快捷建块；批量管理=块库批量模式+模板管理弹窗；溢出 chips 并入 StatusBar（A 方案）。
 
-## 开放问题（不阻塞）
+- [ ] M11 产品定名落地（D13 定案「模块化文档生成助手」）：README.md、frontend/index.html 窗口标题、AGENTS.md 标题与项目定位段；目录名「简历助手」与导出文件名「简历-{版本名}-{日期}.docx」语义不动。微模块，可与 M12 同会话合并提交
+- [ ] M12 弹层模态化 + 交互基础（前端审查 P1①②+P3⑥）：6 弹层遮罩 absolute→fixed 全窗真模态（当前锚定 .template-preview，块库/StatusBar 模态期间仍可点）；抽 useModalEsc（Esc 关闭 + 焦点 trap + 归还；MigrationDialog Esc 语义=跳过，与点遮罩一致）；块库 resizer 键盘化（tabindex + 左右方向键 ±16px + role=separator + aria-valuenow，命中区 8→12px）
+- [ ] M13 布局重排（P2③A+P2⑤+P3⑦，一次提交）：溢出 chips 并入 StatusBar（点 chip 保留滚页+闪烁 1.8s；.overflow-bar 移除，画布高度恒定不再跳动）；工具条分组重排「[≡] | 模板⌄ 版本⌄(+收编新建) | 导出(主按钮) | ?图例」（≤620px 图例改「?」出口不再直接消失）；块库头部固定骨架（折叠/展开只变宽度不变结构，消除跳变）
+- [ ] M14 token 化（P2④）：main.css :root 语义 token（primary/danger/success/warning/border/text-1/2/3/bg-muted 起步），13 组件 hex→var() 机械替换；前后端门禁全绿验证
+- [ ] M15 字段词表扩充：手机/电话/Tel、教育背景/教育经历、工作经历/项目经历+中文数字变体等（field_lexicon.py 数据 + 单测；词表命中提置信度，回归校对着色）
+- [ ] M16 绑定一步撤销（D11 加分）：绑定/解绑/迁移 apply 后提供一步撤销（前端快照回滚 + Undo 反馈；后端最小改动或不改）
+- [ ] M17 解析进度反馈（D12）：上传链路阶段化反馈（上传中→解析中→转换渲染中）+ 超 5s 基线提示；不引 SSE
+- [ ] M18 软回车换行选项（D9 加分）：replacement.py 换段/软回车（w:br）双形态 + 选项 UI + 单测
+- [ ] M19 批量管理：块库批量模式（进入批量→勾选→批量软删除 / 批量打换标签=「移动」）+ 工具条「管理模板」弹窗（全模板列表勾选批量删除，存在绑定的模板自动跳过并提示，复用删除保护语义）
+- [ ] M20 区域在线编辑：点击预览区域 → 编辑弹窗（当前渲染文本）；已绑块：保存时可勾选「同步修改块内容」（块更新 API 落库，触发绑定刷新链）；未绑块：弹窗内「新建块并绑定」一步完成（不留悬空编辑）
+- [ ] M21 观察项清理：① selectTemplate 成功路径清 exportWarnings（ExportDialog 旧弹层重现，修法一行）② 解绑 204 ERR_ABORTED（评估 DELETE 改 200+JSON 契约 vs 保留观察，会话内定夺）③ E2E 整页重载（未复现无主动修法，仅维持 run_e2e 诊断，再遇即查）
+- [ ] M22 mypy tests 门禁：清理 tests/ 存量 ~66 类型错误 → 门禁扩为 `mypy app tests`
+- [ ] M23 渲染缓存与增量刷新（最后）：绑定变更仅重渲染受影响页（页级 diff）；注意 P21 bbox 生命周期、P22 渲染竞态、P24 序列化确定性三陷阱
 
-- [ ] 观察项（E2E，2026-09-22）：一轮全量 s3 曾现「迁移 apply 后页面整页重载回初始态」（后端日志见双份 tags/blocks/templates/health 启动请求签名、预期 preview 请求未发出；前端代码 grep 零 location/reload/SW，疑 Vite full-reload 或浏览器层外部因素；单跑复测与下一轮全量复测均 PASS 未再现）。run_e2e.py 已加 console 全量/整页导航/崩溃诊断采集（FAIL 时输出尾部，[vite] 消息可定位），再遇即查
-- [ ] 边缘场景（cosmetic，2026-09-22 一致性专项 UI 冒烟发现）：大超出警示弹层（ExportDialog）开着时切换模板，store.exportWarnings 未随 selectTemplate 清空 → 新模板 ready 后旧警示弹层重现；正常操作流遇不到，修法：selectTemplate 成功路径顺带清 exportWarnings
+## 已解决归档
 
-- [ ] UI：~~TopBar 右上占位按钮~~ ✅ 已解决 2026-09-22（提交 f388abd）：「导入模板」转正为真实上传入口（文件选择 → POST /api/templates → 自动选中新模板，成功复用 D10 reused 关联；失败 alert 可读报错），「导出 DOCX」占位删除（导出在预览工具条）
-- [ ] 产品命名（D13，用户定，影响 README/窗口标题；当前占位「文档助手」，全局替换点：README.md、frontend/index.html）
-- [x] ~~建议：将 PRD 副本纳入项目目录~~ ✅ 已解决 2026-09-21：项目副本 `docs/PRD.md` 已存在（M10 会话确认，v1.0 2026-09-04 定稿版），桌面原件丢失风险已对冲
-- [ ] 技术债：tests/ 未纳入 mypy 门禁（M1/M3a 存量 ~66 个类型标注错误：no-untyped-def/union-attr/Document 误当类型），待专门清理后门禁扩为 `mypy app tests`
-- [ ] 观察项（cosmetic，2026-09-18 M6a 自动化测试发现）：解绑 DELETE 的 204 响应经 Vite 代理时 Chromium 网络层记 `net::ERR_ABORTED` 并在控制台打 [error]（JS 层 fetch 正常 resolve、status=204、UI 状态正确；直连 uvicorn 无此现象，代理补了 connection: close）。修法备选：DELETE 改返回 200+JSON（需同步契约/测试）或忽略
+- [x] ~~UI：TopBar 右上占位按钮~~ ✅ 2026-09-22（提交 f388abd）：「导入模板」转正为真实上传入口（POST /api/templates → 自动选中新模板，复用 D10 reused 关联；失败 alert 可读报错），「导出 DOCX」占位删除（导出在预览工具条）
+- [x] ~~产品命名 D13~~ ✅ 2026-09-22 定案「模块化文档生成助手」，落地替换入 M11
+- [x] ~~建议：将 PRD 副本纳入项目目录~~ ✅ 2026-09-21：项目副本 `docs/PRD.md` 已存在（M10 会话确认，v1.0 2026-09-04 定稿版），桌面原件丢失风险已对冲
