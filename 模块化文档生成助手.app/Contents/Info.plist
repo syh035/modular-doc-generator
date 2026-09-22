@@ -20,6 +20,8 @@
 	<string>APPL</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>需要访问项目目录（文稿文件夹下）以读写数据库、模板与运行日志</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
 </dict>
