@@ -10,8 +10,19 @@ PY="$BACKEND/.venv/bin/python"
 
 # ---- 环境自检 ----
 if [ ! -x "$PY" ]; then
-  echo "后端 venv 不存在，正在初始化（首次约 1–2 分钟）…"
-  python3.12 -m venv "$BACKEND/.venv"
+  # Python 3.11+ 探测：优先 python3.12，逐级降级
+  PY_BIN=""
+  for cand in python3.12 python3.11 python3; do
+    if command -v "$cand" >/dev/null 2>&1 && "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+      PY_BIN="$cand"; break
+    fi
+  done
+  if [ -z "$PY_BIN" ]; then
+    echo "错误：未找到 Python 3.11+，请安装后重试（brew install python@3.12）"
+    exit 1
+  fi
+  echo "后端 venv 不存在，正在初始化（首次约 1–2 分钟，Python: $PY_BIN）…"
+  "$PY_BIN" -m venv "$BACKEND/.venv"
   "$BACKEND/.venv/bin/pip" install --quiet --upgrade pip
   "$BACKEND/.venv/bin/pip" install --quiet -e "$BACKEND[dev]"
 fi
@@ -60,4 +71,16 @@ FRONTEND_PID=$!
 
 echo ""
 echo "就绪：浏览器访问 http://127.0.0.1:5173"
+
+# 前端就绪后自动打开浏览器（轮询最多 30s；非 macOS 或 headless 下静默跳过）
+(
+  for _ in $(seq 1 30); do
+    if curl -sf http://127.0.0.1:5173 >/dev/null 2>&1; then
+      command -v open >/dev/null 2>&1 && open "http://127.0.0.1:5173"
+      break
+    fi
+    sleep 1
+  done
+) &
+
 wait

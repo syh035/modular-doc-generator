@@ -36,10 +36,12 @@ brew install --cask libreoffice
 ## 快速开始
 
 ```sh
+git clone https://github.com/<user>/modular-doc-generator.git
+cd modular-doc-generator
 ./scripts/dev.sh
 ```
 
-脚本自动完成：后端 venv 与依赖初始化（首次约 1–2 分钟）→ 前端依赖安装 → **端口预检查**（8740/5173 被占用即报错退出）→ 启动双进程（Ctrl-C 同时结束）。
+脚本自动完成：后端 venv 与依赖初始化（首次约 1–2 分钟，自动探测 Python 3.11+）→ 前端依赖安装 → **端口预检查**（8740/5173 被占用即报错退出）→ 启动双进程（Ctrl-C 同时结束）→ 前端就绪后**自动打开浏览器**。
 
 浏览器访问 <http://127.0.0.1:5173>；验证后端：`curl http://127.0.0.1:8740/api/health`。
 
@@ -93,3 +95,13 @@ cd frontend && npm run test       # vitest
 - **中文渲染空白**：确认 LibreOffice 已安装（cask 版）；本产品已内置字体配置自产逻辑，正常无需手动处理
 - **预览与 Word 原机效果有字体差异**：一致性口径指「本产品预览 = 本产品导出」（同一管线产物）；模板字体本机未装时发生字体替换属预期
 - **导入模板报损坏 / 加密**：损坏 zip、加密 DOCX、纯图片模板（无文本层）均明确拒绝并提示，不支持人工修复
+
+## 项目文档
+
+| 文档 | 内容 |
+|------|------|
+| [CHANGELOG.md](CHANGELOG.md) | 版本更新日志 |
+| [AGENTS.md](AGENTS.md) | 开发规则：技术决策（D1–D13）、架构铁律、已知陷阱（P1–P25） |
+| [TODO.md](TODO.md) | 任务路线图（v1.1：M11–M24）与已解决归档 |
+| [docs/PRD.md](docs/PRD.md) | 产品需求文档 v1.0 |
+| [scripts/](scripts/) | dev.sh 一键启动、consistency_check.py 一致性自检、e2e/ 三大场景 Playwright 测试 |

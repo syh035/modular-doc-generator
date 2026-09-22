@@ -21,3 +21,5 @@ frontend/dist/
 
 # 本地环境
 .env
+# AI 协作会话状态（本地保留，不入库）
+STATE.md
