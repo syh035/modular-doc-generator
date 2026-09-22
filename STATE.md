@@ -1,5 +1,34 @@
 # STATE.md — 会话状态摘要（累积写入，不新建）
 
+## 2026-09-22 · 一致性专项会话（API 11/11 + UI 13/13，AI 代验收）
+
+### 一句话快照
+
+一致性专项交付并验收通过（diff 工具 + 五类模板端到端三层口径全绿）；里程碑 4 剩三大场景 E2E 与启动说明；下一步 = 三大场景 E2E（TODO.md 里程碑 4 区，前置已满足）。
+
+### 本次完成
+
+- services/consistency.py（新建）：diff_pdfs——行提取复用 extract_pdf_lines（P18 视觉行内建），逐页按文本分组、位置就近配对，missing/extra/moved 三类差异，coord_tol 默认 1pt；DiffReport.consistent = 页数一致且零行差异
+- scripts/consistency_check.py（新建）：命令行薄壳（--tol/--json），exit 0 一致 / 1 差异；真实模板人工比对自验工具
+- tests/test_consistency.py（新建 9 条）：diff 单测 4（自比/文本变化/位移被大容差吸收/页数不同整页 extra）+ 五类模板端到端 5（纯文本单栏整段替换 / 表格占位符 / 双栏 / 文本框 D6 保留 / 多占位符+多行克隆 D5 确认导出）
+- 端到端三层断言：①导出 DOCX sha == render_version().data sha（单管线+P24）②重转 PDF sha == 预览 PDF sha（LO 内容寻址缓存命中）③容差 diff 零差异——五类模板实测字节级一致
+- 验证：ruff ✓ / mypy 41 文件 ✓ / pytest 238 绿（+9）；ruff format 18 个存量文件不符为历史遗留（非本次引入），未越界重排
+- 验收测试（AI 代跑）：API 全链 11/11（占位符型 409→确认导出流 + 素模板表格型）+ Playwright UI 13/13（canvas 墨迹/覆盖层着色/警示弹层/下载文件名/console 零错误）
+- 测试遗留：模板 15/16（一致性A/B）+ 块「验收xx块」6 个残留可删；/tmp/consistency_accept* 已清理
+- UI 边缘观察记 TODO.md（cosmetic）：警示弹层开着切模板 exportWarnings 不清空
+
+### 接口契约（新增）
+
+- diff_pdfs(pdf_a, pdf_b, coord_tol=1.0) → DiffReport{pages_equal, page_count_a/b, diffs, coord_tol, consistent, to_dict()}；LineDiff{kind: missing|extra|moved, page(0基), text, bbox_a, bbox_b, delta}
+- 一致性判定口径：字节级（强口径，理论恒成立）> 容差 diff（兜底）；LO/依赖升级后回归先跑 `backend/.venv/bin/python scripts/consistency_check.py <预览.pdf> <重转.pdf>`
+- 文本框事实：VML 文本框（w:pict + v:txbxContent，python-docx nsmap 无 v 前缀需手写 xmlns）LO 渲染保留、解析跳过（D6）；其浮动文字在 PDF 内容流乱序拆片（P18 同源），断言用字符全集而非按序子串
+
+### 用户偏好（本次新增）
+
+- 「你帮我测试」= AI 代跑全部验收（API 全链 + 浏览器冒烟），用户不再手动点测；沿用
+
+### 变更原则（本次无变更，沿用既有）
+
 ## 2026-09-21 · M10 换模板迁移会话（Playwright 验收 13/13，已提交 26ce9cc）
 
 ### 一句话快照
