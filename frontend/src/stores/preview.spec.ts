@@ -958,3 +958,87 @@ describe('导出（M9，PRD 4.8 / D5）', () => {
     expect(store.exportError).toBe('导出文件写入失败')
   })
 })
+
+describe('uploadTemplate（顶栏「导入模板」）', () => {
+  /** 方法+URL 双键路由 stub（上传链路 POST/GET 同路径不同义，stubFetch 按 URL 单键不够用）。 */
+  function stubMethodFetch(routes: Record<string, () => unknown>) {
+    const fn = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const key = `${init?.method ?? 'GET'} ${String(input)}`
+      const handler = routes[key]
+      if (handler === undefined) {
+        return Promise.resolve(
+          Response.json({ error: { code: 'NOT_FOUND', message: 'nope' } }, { status: 404 }),
+        )
+      }
+      const body = handler()
+      if (body instanceof ArrayBuffer) {
+        return Promise.resolve(new Response(body, { status: 200 }))
+      }
+      return Promise.resolve(Response.json(body, { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fn)
+    return fn
+  }
+
+  function uploadRoutes(reused: boolean) {
+    return stubMethodFetch({
+      'POST /api/templates': () => ({
+        id: 7,
+        filename: 'new.docx',
+        storage_name: '7_new.docx',
+        sha256: 'abc',
+        status: 'pending_review',
+        created_at: '',
+        updated_at: '',
+        regions: [],
+        default_version_id: 9,
+        reused,
+      }),
+      'GET /api/templates': () => ({
+        templates: [{ id: 7, filename: 'new.docx', regions_count: 0 }],
+      }),
+      'GET /api/templates/7': () => ({
+        id: 7,
+        filename: 'new.docx',
+        default_version_id: 9,
+        regions: [],
+      }),
+      'GET /api/templates/7/versions': () => ({ versions: [] }),
+      'GET /api/versions/9/preview': () => new ArrayBuffer(3),
+      'GET /api/versions/9/overlay': () => ({ regions: [] }),
+    })
+  }
+
+  it('成功：multipart POST → 刷新列表并选中新模板，返回 templateId', async () => {
+    const fn = uploadRoutes(false)
+    const store = usePreviewStore()
+    const r = await store.uploadTemplate(new File(['docx'], 'new.docx'))
+    expect(r).toEqual({ ok: true, error: null, templateId: 7, reused: false })
+    expect(store.templates.map(t => t.id)).toEqual([7])
+    expect(store.currentTemplateId).toBe(7)
+    expect(store.status).toBe('ready')
+    const post = fn.mock.calls.find(
+      c => String(c[0]) === '/api/templates' && c[1]?.method === 'POST',
+    )
+    expect(post?.[1]?.body).toBeInstanceOf(FormData)
+  })
+
+  it('同内容重传（D10）：reused=true 仍选中原模板', async () => {
+    uploadRoutes(true)
+    const store = usePreviewStore()
+    const r = await store.uploadTemplate(new File(['docx'], 'new.docx'))
+    expect(r.reused).toBe(true)
+    expect(store.currentTemplateId).toBe(7)
+    expect(store.status).toBe('ready')
+  })
+
+  it('失败：返回可读错误且不动当前选择', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('boom')))
+    const store = usePreviewStore()
+    const r = await store.uploadTemplate(new File(['x'], 'a.docx'))
+    expect(r.ok).toBe(false)
+    expect(r.error).toBe('无法连接本地服务，请确认后端已启动')
+    expect(store.currentTemplateId).toBeNull()
+    expect(store.status).toBe('idle')
+  })
+})

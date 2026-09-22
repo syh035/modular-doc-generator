@@ -47,6 +47,23 @@ export interface TemplateDetail extends Template {
   default_version_id: number | null
 }
 
+/** 上传结果：201 新建（reused=false）/ 200 同内容重传关联已有模板（reused=true，D10）。 */
+export interface UploadTemplateResult {
+  template: TemplateDetail
+  reused: boolean
+}
+
+/** 上传 DOCX 模板（multipart，字段名 file）。同步解析完成（D12）。 */
+export async function uploadTemplate(file: File): Promise<UploadTemplateResult> {
+  const form = new FormData()
+  form.append('file', file, file.name)
+  const body = await apiFetch<TemplateDetail & { reused: boolean }>('/api/templates', {
+    method: 'POST',
+    body: form,
+  })
+  return { template: body, reused: body.reused }
+}
+
 /** 模板列表（最新上传在前）。 */
 export async function listTemplates(): Promise<TemplateListItem[]> {
   const body = await apiFetch<{ templates: TemplateListItem[] }>('/api/templates')

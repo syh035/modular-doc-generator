@@ -16,6 +16,7 @@ import {
   fetchTemplate,
   listTemplates,
   previewUrl,
+  uploadTemplate as uploadTemplateApi,
   type Region,
   type TemplateListItem,
 } from '../api/templates'
@@ -62,6 +63,14 @@ export type DisplayRegion = Region & {
 export interface ProofreadResult {
   ok: boolean
   error: string | null
+}
+
+/** 上传动作结果：成功带新模板 id（reused=true = 同内容重传关联，D10）。 */
+export interface UploadResult {
+  ok: boolean
+  error: string | null
+  templateId?: number
+  reused?: boolean
 }
 
 /** 导出动作结果：needConfirm=true 表示被大超出拦截、警示清单已就绪待确认。 */
@@ -183,6 +192,18 @@ export const usePreviewStore = defineStore('preview', () => {
       templatesError.value = null
     } catch (err) {
       templatesError.value = err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  /** 上传模板（顶栏「导入模板」）：成功后刷新列表并选中新模板（新模板进待校对流程）。 */
+  async function uploadTemplate(file: File): Promise<UploadResult> {
+    try {
+      const { template, reused } = await uploadTemplateApi(file)
+      await loadTemplates()
+      await selectTemplate(template.id)
+      return { ok: true, error: null, templateId: template.id, reused }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
   }
 
@@ -644,6 +665,7 @@ export const usePreviewStore = defineStore('preview', () => {
     proofreadMode,
     loadTemplates,
     selectTemplate,
+    uploadTemplate,
     toggleProofreadMode,
     refreshVersionRender,
     loadVersionList,

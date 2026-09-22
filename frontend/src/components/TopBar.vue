@@ -1,11 +1,37 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useAppStore } from '../stores/app'
+import { usePreviewStore } from '../stores/preview'
 
 const appStore = useAppStore()
+const previewStore = usePreviewStore()
+const fileInput = ref<HTMLInputElement | null>(null)
+const uploading = ref(false)
+
 onMounted(() => {
   void appStore.refreshHealth()
 })
+
+/** 打开系统文件选择框（仅 .docx）。 */
+function pickFile(): void {
+  fileInput.value?.click()
+}
+
+/** 选中文件 → 上传解析 → 成功自动选中新模板；失败 alert 可读错误（同 M8 删除失败口径）。 */
+async function onFileChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0] ?? null
+  input.value = '' // 允许连续导入同一文件
+  if (file === null) {
+    return
+  }
+  uploading.value = true
+  const result = await previewStore.uploadTemplate(file)
+  uploading.value = false
+  if (!result.ok) {
+    alert(result.error ?? '导入失败')
+  }
+}
 </script>
 
 <template>
@@ -28,11 +54,19 @@ onMounted(() => {
       </button>
     </nav>
     <div class="actions">
-      <button disabled>
-        导入模板
-      </button>
-      <button disabled>
-        导出 DOCX
+      <!-- 导入模板（占位按钮转正，M9 验收开放项）：导出功能在预览工具条，顶栏不再放导出占位 -->
+      <input
+        ref="fileInput"
+        type="file"
+        accept=".docx"
+        hidden
+        @change="onFileChange"
+      >
+      <button
+        :disabled="uploading"
+        @click="pickFile"
+      >
+        {{ uploading ? '导入中…' : '导入模板' }}
       </button>
     </div>
   </header>
