@@ -1,0 +1,53 @@
+#!/bin/bash
+# 模块化文档生成助手——macOS 桌面启动器（.app 壳）
+# 双击：未运行则后台启动服务并打开浏览器；已运行则弹窗选择「打开页面 / 停止服务」
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy 2>/dev/null
+NAME="模块化文档生成助手"
+PORT_API=8740
+PORT_WEB=5173
+ROOT="$HOME/Documents/trae_projects/简历助手"
+
+is_running() { lsof -nP -iTCP:$PORT_API -sTCP:LISTEN >/dev/null 2>&1; }
+
+if is_running; then
+  BTN=$(osascript \
+    -e "display dialog \"$NAME 服务正在运行。\" buttons {\"停止服务\", \"打开页面\"} default button \"打开页面\" with title \"$NAME\"" \
+    -e 'button returned of result' 2>/dev/null || echo "打开页面")
+  if [ "$BTN" = "停止服务" ]; then
+    lsof -ti :$PORT_WEB 2>/dev/null | xargs kill 2>/dev/null
+    lsof -ti :$PORT_API 2>/dev/null | xargs kill 2>/dev/null
+    osascript -e "display notification \"服务已停止\" with title \"$NAME\""
+  else
+    open "http://localhost:$PORT_WEB" 2>/dev/null || true
+  fi
+  exit 0
+fi
+
+if [ ! -d "$ROOT" ]; then
+  osascript -e "display dialog \"未找到项目目录：$ROOT\" buttons {\"好\"} default button \"好\" with title \"$NAME\"" 2>/dev/null
+  exit 1
+fi
+
+cd "$ROOT" || exit 1
+mkdir -p data
+osascript -e "display notification \"正在启动服务…\" with title \"$NAME\"" 2>/dev/null
+nohup ./scripts/dev.sh > data/launcher.log 2>&1 &
+
+# 就绪轮询：lsof 检测端口监听（协议栈无关；vite 默认绑 localhost，本机解析为 ::1，
+# 探 http://127.0.0.1:5173 会永远失败）。依赖齐全时秒级；冷启动上限 180s
+web_ready() { lsof -nP -iTCP:$PORT_WEB -sTCP:LISTEN >/dev/null 2>&1; }
+api_ready() { curl -sf "http://127.0.0.1:$PORT_API/api/health" >/dev/null 2>&1; }
+
+OK=0
+for _ in $(seq 1 180); do
+  if web_ready && api_ready; then OK=1; break; fi
+  sleep 1
+done
+
+if [ "$OK" = "1" ]; then
+  open "http://localhost:$PORT_WEB" 2>/dev/null || true
+  osascript -e "display notification \"已启动，浏览器已打开\" with title \"$NAME\"" 2>/dev/null
+else
+  osascript -e "display dialog \"启动超时或失败，日志见 $ROOT/data/launcher.log\" buttons {\"好\"} default button \"好\" with title \"$NAME\"" 2>/dev/null
+fi

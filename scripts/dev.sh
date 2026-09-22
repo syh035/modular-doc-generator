@@ -65,18 +65,19 @@ echo "启动后端 http://127.0.0.1:8740 …"
 (cd "$BACKEND" && "$PY" -m uvicorn app.main:app --host 127.0.0.1 --port 8740) &
 BACKEND_PID=$!
 
-echo "启动前端 http://127.0.0.1:5173 …"
+echo "启动前端 http://localhost:5173 …"
 (cd "$FRONTEND" && npm run dev) &
 FRONTEND_PID=$!
 
 echo ""
-echo "就绪：浏览器访问 http://127.0.0.1:5173"
+echo "就绪：浏览器访问 http://localhost:5173"
 
-# 前端就绪后自动打开浏览器（轮询最多 30s；非 macOS 或 headless 下静默跳过）
+# 前端就绪后自动打开浏览器（lsof 检测端口监听，协议栈无关；curl 探 127.0.0.1 会因
+# vite 绑 localhost(::1) 永远失败。轮询最多 30s；非 macOS 或 headless 下静默跳过）
 (
   for _ in $(seq 1 30); do
-    if curl -sf http://127.0.0.1:5173 >/dev/null 2>&1; then
-      command -v open >/dev/null 2>&1 && open "http://127.0.0.1:5173"
+    if lsof -nP -iTCP:5173 -sTCP:LISTEN >/dev/null 2>&1; then
+      command -v open >/dev/null 2>&1 && open "http://localhost:5173"
       break
     fi
     sleep 1
