@@ -6,7 +6,14 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy 2>/dev/n
 NAME="模块化文档生成助手"
 PORT_API=8740
 PORT_WEB=5173
-ROOT="$HOME/Documents/trae_projects/简历助手"
+
+# ROOT 自动探测：.app 所在目录（仓库内双击时 = 克隆的仓库根目录，任意克隆位置可用）
+# 含 scripts/dev.sh 则用之；否则回退作者本机路径（.app 已拷到桌面/应用程序的场景）
+APP_DIR="$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)"   # .app bundle 目录
+ROOT=""
+for cand in "$(dirname "$APP_DIR")" "$HOME/Documents/trae_projects/简历助手"; do
+  if [ -f "$cand/scripts/dev.sh" ]; then ROOT="$cand"; break; fi
+done
 
 is_running() { lsof -nP -iTCP:$PORT_API -sTCP:LISTEN >/dev/null 2>&1; }
 
@@ -24,8 +31,8 @@ if is_running; then
   exit 0
 fi
 
-if [ ! -d "$ROOT" ]; then
-  osascript -e "display dialog \"未找到项目目录：$ROOT\" buttons {\"好\"} default button \"好\" with title \"$NAME\"" 2>/dev/null
+if [ -z "$ROOT" ]; then
+  osascript -e "display dialog \"未找到项目目录：请将 .app 放在克隆的仓库根目录内后重试\" buttons {\"好\"} default button \"好\" with title \"$NAME\"" 2>/dev/null
   exit 1
 fi
 
