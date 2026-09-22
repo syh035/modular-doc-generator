@@ -57,9 +57,11 @@
 - [ ] M22 观察项清理：① selectTemplate 成功路径清 exportWarnings（ExportDialog 旧弹层重现，修法一行）② 解绑 204 ERR_ABORTED（评估 DELETE 改 200+JSON 契约 vs 保留观察，会话内定夺）③ E2E 整页重载（未复现无主动修法，仅维持 run_e2e 诊断，再遇即查）
 - [ ] M23 mypy tests 门禁：清理 tests/ 存量 ~66 类型错误 → 门禁扩为 `mypy app tests`
 - [ ] M24 渲染缓存与增量刷新（最后）：绑定变更仅重渲染受影响页（页级 diff）；注意 P21 bbox 生命周期、P22 渲染竞态、P24 序列化确定性三陷阱
+- [ ] M25 桌面 .app 集成（用户定 2026-09-22：待功能完善后做）：用 Platypus 等成熟方案/相关 skill 打包正规 .app（Mach-O stub 作 CFBundleExecutable，TCC 授权弹窗归因与普通 app 一致），含状态栏图标/系统通知/服务管理（打开页面/停止服务）；技术教训见 AGENTS.md P27——手搓 bash 壳的 launchd 上下文写文稿文件夹被 TCC 静默拒绝且弹窗不出现，勿再手搓
 
 ## 已解决归档
 
+- [x] ~~桌面启动器 .app 方案~~ ⤵️ 回退 2026-09-22 晚（用户定）：TCC 授权链路顽疾（launchd 上下文写文稿文件夹静默拒绝、授权弹窗对脚本型 LSUIElement app 不出现，实锤入 AGENTS.md P27）+ 交互反馈不达预期，恢复 `一键启动.command` 为启动方式；.app 从仓库移除，集成任务移入 M25
 - [x] ~~UI：TopBar 右上占位按钮~~ ✅ 2026-09-22（提交 f388abd）：「导入模板」转正为真实上传入口（POST /api/templates → 自动选中新模板，复用 D10 reused 关联；失败 alert 可读报错），「导出 DOCX」占位删除（导出在预览工具条）
 - [x] ~~产品命名 D13~~ ✅ 2026-09-22 定案「模块化文档生成助手」，落地替换入 M11
 - [x] ~~建议：将 PRD 副本纳入项目目录~~ ✅ 2026-09-21：项目副本 `docs/PRD.md` 已存在（M10 会话确认，v1.0 2026-09-04 定稿版），桌面原件丢失风险已对冲
