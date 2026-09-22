@@ -36,7 +36,7 @@ brew install --cask libreoffice
 ## 快速开始
 
 ```sh
-git clone https://github.com/<user>/modular-doc-generator.git
+git clone https://github.com/syh035/modular-doc-generator.git
 cd modular-doc-generator
 ./scripts/dev.sh
 ```
