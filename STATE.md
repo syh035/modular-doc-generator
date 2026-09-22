@@ -1,5 +1,33 @@
 # STATE.md — 会话状态摘要（累积写入，不新建）
 
+## 2026-09-22 · 三大场景 E2E 会话（全量 all 三场景 PASS）
+
+### 一句话快照
+
+三大场景 E2E 交付并全量通过（seed/verify/run_e2e 三件套，AGENTS.md 完成判据的 E2E 项落地）；里程碑 4 仅剩「启动与运行说明」；下一步 = 启动说明（TODO.md 里程碑 4 区最后一项，产品名 D13 可占位）。
+
+### 本次完成
+
+- scripts/e2e/seed.py（backend/.venv 运行）：三场景 DOCX fixture 生成（内嵌时间戳保 sha256 恒新）+ API 上传，stdout 末行输出 JSON 模板 id 清单
+- scripts/e2e/verify.py（backend/.venv 运行）：预览 PDF / 导出 DOCX 文本断言（expect/absent）；行提取复用 extract_pdf_lines（P18 视觉行聚类，断言不受内容流乱序影响）
+- scripts/e2e/run_e2e.py（/usr/bin/python3 运行，Playwright）：端口预检+缺服务自动拉起（atexit 只清自拉）+ 三场景浏览器流（headless chromium 1440x900）+ FAIL 时输出诊断尾部
+- 诊断增强（本会话追加）：console 全量 + 整页导航（framenavigated）+ 渲染进程崩溃采集（_diag，单场景一清，上限 500 条）
+- 全量 all 三场景 PASS：①日常沉淀（校对→建块→绑定×2→预览替换生效无 {{ 残留）②定向投递（长内容大超出红框+状态条→新建版本→版本切换→导出警示弹层→文件名「简历-{版本名}-{日期}.docx」+产物校验）③模板换装（目标校对 ready→源绑定×2→切模板触发迁移→三清单确认→绑定零重录+预览校验）
+- 诊断插曲（未复现，记 TODO.md 观察项）：一轮全量 s3 曾现「迁移 apply 后整页重载回初始态」——后端日志双份启动请求签名、预期 preview 请求未发出；前端代码零 location/reload，疑 Vite full-reload/浏览器层；单跑与复跑均 PASS。已排除：前端代码、路由、SW；并发 runner 干扰（轮 A 已确认解除）
+
+### 接口契约（新增）
+
+- E2E 用法：`/usr/bin/python3 scripts/e2e/run_e2e.py [1|2|3|all]`（默认 all）；服务未起自动拉起并在退出时清理自拉部分，已起则复用
+- 分工惯例：浏览器流走 /usr/bin/python3（playwright 所在）；fixture 播种与产物断言走 backend/.venv（httpx/docx/PyMuPDF）
+- runner 超时：CANVAS_TIMEOUT=180s（LO 冷转换余量）/ RENDER_TIMEOUT=120s（绑定/迁移后局部刷新）/ DEFAULT_TIMEOUT=15s
+- 测试数据累加不清：模板/块逐轮新增；下载产物在 /tmp/e2e_downloads/；失败截图 /tmp/e2e_fail_s{1,2,3}.png
+
+### 用户偏好（本次新增）
+
+（无新增）
+
+### 变更原则（本次无变更，沿用既有）
+
 ## 2026-09-22 · 一致性专项会话（API 11/11 + UI 13/13，AI 代验收）
 
 ### 一句话快照

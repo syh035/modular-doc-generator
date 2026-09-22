@@ -34,7 +34,7 @@
 
 - [x] M9 导出（里程碑 4 首项，前置已全部满足）：当前模板+版本渲染 DOCX 落盘 + 未绑定区域保留原文 + 大超出警示清单确认（D5）+ 文件名「简历-{版本名}-{日期}.docx」+ 写盘失败可读报错 ✅ 2026-09-22（后端 ruff/mypy/pytest 229 绿（+11）+ 前端 eslint/vue-tsc/vitest 149 绿（+9）；curl 层 409 警示结构/200 落盘/产物内容验证 + Playwright UI 验收 15/15：基础直接下载、大超出弹层确认/返回修改、同名覆盖不累积、校对置灰、控制台零错误；提交见 git log feat(M9)）
 - [x] 一致性专项（前置 M9：导出产物重转 PDF 才有 diff 对象）：预览 PDF vs 导出重转 PDF 逐页文本+坐标 diff（容差内）+ 真实模板比对脚本 ✅ 2026-09-22（后端 ruff/mypy/pytest 238 绿（+9：diff 工具单测 4 + 五类模板端到端 5）；AI 代验收 API 全链 11/11 + Playwright UI 13/13；五类模板（纯文本单栏/表格/双栏/文本框/占位符+多行克隆）三层口径全过：导出DOCX==渲染产物 sha、重转PDF==预览PDF sha、容差 diff 零差异；真实模板自验工具 scripts/consistency_check.py）
-- [ ] 三大场景 E2E（前置 M9：定向投递场景含导出步骤）：日常沉淀 / 定向投递 / 模板换装
+- [x] 三大场景 E2E（前置 M9：定向投递场景含导出步骤）：日常沉淀 / 定向投递 / 模板换装 ✅ 2026-09-22（scripts/e2e 三件套 seed.py/verify.py/run_e2e.py：fixture 播种（venv）+ 产物断言（venv，行提取用 extract_pdf_lines 修 P18 乱序）+ Playwright 浏览器流（/usr/bin/python3）；全量 all 三场景 PASS——替换文本生效无 {{ 残留 / 导出文件名「简历-{版本名}-{日期}.docx」+ 产物内容 / 迁移绑定零重录 + 预览校验；runner 含 FAIL 诊断输出）
 - [ ] 启动与运行说明（最后执行；产品名 D13 未定则先占位）：含 LibreOffice 安装指引、数据目录位置说明
 
 ## 加分项（时间允许，勿挤占必做）
@@ -47,6 +47,7 @@
 
 ## 开放问题（不阻塞）
 
+- [ ] 观察项（E2E，2026-09-22）：一轮全量 s3 曾现「迁移 apply 后页面整页重载回初始态」（后端日志见双份 tags/blocks/templates/health 启动请求签名、预期 preview 请求未发出；前端代码 grep 零 location/reload/SW，疑 Vite full-reload 或浏览器层外部因素；单跑复测与下一轮全量复测均 PASS 未再现）。run_e2e.py 已加 console 全量/整页导航/崩溃诊断采集（FAIL 时输出尾部，[vite] 消息可定位），再遇即查
 - [ ] 边缘场景（cosmetic，2026-09-22 一致性专项 UI 冒烟发现）：大超出警示弹层（ExportDialog）开着时切换模板，store.exportWarnings 未随 selectTemplate 清空 → 新模板 ready 后旧警示弹层重现；正常操作流遇不到，修法：selectTemplate 成功路径顺带清 exportWarnings
 
 - [ ] UI：TopBar 右上「导出 DOCX」「导入模板」仍是 M0 的 disabled 占位按钮——导出功能 M9 已落在预览工具条，同名占位按钮造成混淆应删除；「导入模板」（上传 UI 入口）至今未实现，删留一并定夺（2026-09-22 M9 验收发现）
