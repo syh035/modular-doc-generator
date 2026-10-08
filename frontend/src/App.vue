@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { onBeforeUnmount } from 'vue'
 import { useAppStore } from './stores/app'
 import {
   LIBRARY_MAX_WIDTH,
@@ -17,10 +18,19 @@ const blocksStore = useBlocksStore()
 /** UI 调整②批：分割线拖拽调宽——按下记录起点，拖动实时跟随，松开收敛落库。 */
 let resizeStartX = 0
 let resizeStartWidth = 0
+let resizing = false
+let previousCursor = ''
+let previousUserSelect = ''
 
 function startResize(e: MouseEvent): void {
+  if (e.button !== 0) return
+  e.preventDefault()
+  ;(e.currentTarget as HTMLElement).focus()
+  resizing = true
   resizeStartX = e.clientX
   resizeStartWidth = blocksStore.libraryWidth
+  previousCursor = document.body.style.cursor
+  previousUserSelect = document.body.style.userSelect
   document.body.style.cursor = 'col-resize'
   document.body.style.userSelect = 'none'
   document.addEventListener('mousemove', onResizing)
@@ -37,12 +47,22 @@ function onResizing(e: MouseEvent): void {
 }
 
 function stopResize(): void {
+  if (!resizing) return
+  resizing = false
   blocksStore.setLibraryWidth(blocksStore.libraryWidth) // 收敛 + localStorage 记忆
-  document.body.style.cursor = ''
-  document.body.style.userSelect = ''
+  document.body.style.cursor = previousCursor
+  document.body.style.userSelect = previousUserSelect
   document.removeEventListener('mousemove', onResizing)
   document.removeEventListener('mouseup', stopResize)
 }
+
+function onResizeKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+  e.preventDefault()
+  blocksStore.setLibraryWidth(blocksStore.libraryWidth + (e.key === 'ArrowRight' ? 16 : -16))
+}
+
+onBeforeUnmount(stopResize)
 </script>
 
 <template>
@@ -59,8 +79,16 @@ function stopResize(): void {
       <div
         v-show="blocksStore.libraryOpen"
         class="drawer-resizer"
-        title="拖动调整块库宽度"
+        role="separator"
+        tabindex="0"
+        aria-label="块库宽度"
+        aria-orientation="vertical"
+        :aria-valuemin="LIBRARY_MIN_WIDTH"
+        :aria-valuemax="LIBRARY_MAX_WIDTH"
+        :aria-valuenow="blocksStore.libraryWidth"
+        title="拖动或使用左右方向键调整块库宽度"
         @mousedown="startResize"
+        @keydown="onResizeKeydown"
       />
       <TemplatePreview />
     </div>
@@ -82,8 +110,8 @@ function stopResize(): void {
 }
 
 .drawer-resizer {
-  width: 8px;
-  margin-left: -4px; /* 骑缝：覆盖抽屉右缘分割线，不改布局 */
+  width: 12px;
+  margin-left: -6px; /* 骑缝：覆盖抽屉右缘分割线，不改布局 */
   flex-shrink: 0;
   z-index: 5;
   cursor: col-resize;
@@ -92,6 +120,12 @@ function stopResize(): void {
 
 .drawer-resizer:hover,
 .drawer-resizer:active {
+  background: #d6e2ff;
+}
+
+.drawer-resizer:focus-visible {
+  outline: 2px solid #3370ff;
+  outline-offset: -2px;
   background: #d6e2ff;
 }
 </style>

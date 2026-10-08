@@ -56,7 +56,7 @@
 
 - 本地 skill：`docx`（OOXML 结构知识）、`pdf`（PDF 处理）、`webapp-testing`（Playwright E2E）
 - 开源借鉴：docxtemplater（占位符替换与 run 碎片处理思路）、python-docx、Reactive Resume（交互布局参考）
-- **前端布局相关工作（布局/间距/响应式/视觉审查）必须先调用 `trae-remote-official:web-app-development` 插件**（uicraft skill，2026-09-22 用户全局规则）
+- 前端布局相关工作（布局/间距/响应式/视觉审查）优先使用合适的 skill/MCP；`trae-remote-official:web-app-development`（uicraft）可用且适用时优先采用。插件缺失或能力可替代时，使用现有工具和浏览器验证，说明替代方案与验证结果，不因单一插件缺失停止任务（2026-10-08 用户更新，替代 2026-09-22 的强制插件规则）。
 
 ## 当前目录职责
 

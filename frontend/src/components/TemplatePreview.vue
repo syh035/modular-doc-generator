@@ -957,7 +957,7 @@ onBeforeUnmount(() => {
             {{ region.label }}
           </span>
         </div>
-        <!-- 绑定浮层（区域内遮罩定位，M6a，正常模式） -->
+        <!-- 绑定弹层（全窗模态，正常模式） -->
         <BindingDialog
           v-if="dialogRegion"
           :region="dialogRegion"

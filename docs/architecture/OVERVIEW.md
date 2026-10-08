@@ -1,6 +1,6 @@
 # 当前架构总览
 
-状态：Existing。基于仓库 `fdc8dbe` 的实现核对，整理日期 2026-10-08。本文描述已有架构；下一阶段安排见 [下期规划](../product/NEXT_PLAN.md)，现行约束见 [AGENTS](../../AGENTS.md)。
+状态：Existing。以仓库 `fdc8dbe` 为架构基线，补充 M12 的已实现前端交互，更新日期 2026-10-08。本文描述已有架构；下一阶段安排见 [下期规划](../product/NEXT_PLAN.md)，现行约束见 [AGENTS](../../AGENTS.md)。
 
 ## 组件与目录
 
@@ -31,7 +31,10 @@ Vite `/api` 代理是现有开发启动方式的一部分，不代表生产部�
 | [frontend/src/api](../../frontend/src/api/) | API 请求与响应处理 |
 | [frontend/src/stores](../../frontend/src/stores/) | 工作台、块库和预览状态 |
 | [frontend/src/components](../../frontend/src/components/) | 块库、模板预览、校对、版本与导出交互 |
+| [frontend/src/composables](../../frontend/src/composables/) | 共享弹层键盘与焦点生命周期 |
 | [frontend/src/pdf](../../frontend/src/pdf/) | pdfjs 渲染及坐标换算 |
+
+六类弹层使用原生 `dialog.showModal()` 进入浏览器顶层并隔离背景，遮罩覆盖全窗。[useModalEsc](../../frontend/src/composables/useModalEsc.ts) 统一处理 Esc、Tab 循环、动态内容的焦点保留及关闭后归还焦点；迁移关闭沿用跳过语义。块库分隔条支持鼠标和左右键调宽，沿用现有 store 的边界与持久化。
 
 ## 内容资产和持久化
 

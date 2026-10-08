@@ -6,6 +6,7 @@
  * - 已绑定区域：显示当前绑定块 + 可换绑（点其他块）+ 可解绑
  */
 
+import { useModalEsc } from '../composables/useModalEsc'
 import { computed } from 'vue'
 import type { Block } from '../api/blocks'
 import type { DisplayRegion } from '../stores/preview'
@@ -24,12 +25,17 @@ const emit = defineEmits<{
 const currentBinding = computed(() =>
   props.region.binding?.status === 'active' ? props.region.binding : null,
 )
+useModalEsc(() => emit('close'))
 </script>
 
 <template>
   <!-- 遮罩：点击关闭；卡片阻止冒泡 -->
-  <div
+  <dialog
+    ref="modal"
     class="dialog-mask"
+    aria-label="区域绑定"
+    aria-modal="true"
+    tabindex="-1"
     data-testid="binding-dialog"
     @click.self="emit('close')"
   >
@@ -84,14 +90,14 @@ const currentBinding = computed(() =>
         </button>
       </div>
     </div>
-  </div>
+  </dialog>
 </template>
 
 <style scoped>
 .dialog-mask {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 10;
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;

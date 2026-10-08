@@ -3,6 +3,7 @@
  * 校对命名弹层（M5b）：框选新建区域后命名 + 选类型。
  * 后端校验错误（REGION_FRAME_EMPTY / REGION_FRAME_MULTI）经 error prop 内联显示。
  */
+import { useModalEsc } from '../composables/useModalEsc'
 import { ref } from 'vue'
 import { REGION_TYPE_OPTIONS } from '../constants/regionTypes'
 
@@ -26,12 +27,17 @@ function onSubmit(): void {
   }
   emit('submit', name, type.value)
 }
+useModalEsc(() => emit('close'))
 </script>
 
 <template>
   <!-- 遮罩：点击关闭；卡片阻止冒泡（复用 BindingDialog 布局） -->
-  <div
+  <dialog
+    ref="modal"
     class="dialog-mask"
+    aria-label="新建区域"
+    aria-modal="true"
+    tabindex="-1"
     data-testid="region-name-dialog"
     @click.self="emit('close')"
   >
@@ -54,6 +60,7 @@ function onSubmit(): void {
         <span class="field-label">区域名称</span>
         <input
           v-model="label"
+          data-modal-autofocus
           maxlength="50"
           placeholder="如：姓名、工作经历一（1–50 字）"
           data-testid="region-name-input"
@@ -98,14 +105,14 @@ function onSubmit(): void {
         </button>
       </div>
     </form>
-  </div>
+  </dialog>
 </template>
 
 <style scoped>
 .dialog-mask {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 10;
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;

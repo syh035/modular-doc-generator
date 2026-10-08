@@ -6,6 +6,7 @@
  * ③无匹配手动指定或留空。②③选项跨行互斥占用（同一目标区域只认一处）。
  * 确认时把三清单最终结果整包 emit 给 store 落库。
  */
+import { useModalEsc } from '../composables/useModalEsc'
 import { computed, ref, watch } from 'vue'
 import type {
   MigrationAutoItem,
@@ -116,12 +117,17 @@ function onApply(): void {
   ]
   emit('apply', bindings)
 }
+useModalEsc(() => emit('close'))
 </script>
 
 <template>
   <!-- 遮罩：点击关闭 = 跳过；卡片阻止冒泡（复用 VersionDialog 布局） -->
-  <div
+  <dialog
+    ref="modal"
     class="dialog-mask"
+    aria-label="换模板迁移"
+    aria-modal="true"
+    tabindex="-1"
     data-testid="migration-dialog"
     @click.self="emit('close')"
   >
@@ -308,14 +314,14 @@ function onApply(): void {
         </div>
       </div>
     </div>
-  </div>
+  </dialog>
 </template>
 
 <style scoped>
 .dialog-mask {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 10;
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;

@@ -4,6 +4,7 @@
  * 存在未处理大超出时先展示清单，用户确认后仍按重排结果导出（默认行为）。
  * 警示项与 M7 状态条同口径：大超出红色，固定行高裁剪单独提示。
  */
+import { useModalEsc } from '../composables/useModalEsc'
 import type { ExportWarning } from '../api/exports'
 
 defineProps<{
@@ -16,12 +17,17 @@ const emit = defineEmits<{
   confirm: []
   close: []
 }>()
+useModalEsc(() => emit('close'))
 </script>
 
 <template>
   <!-- 遮罩：点击关闭；卡片阻止冒泡（复用 VersionDialog 布局） -->
-  <div
+  <dialog
+    ref="modal"
     class="dialog-mask"
+    aria-label="导出警示"
+    aria-modal="true"
+    tabindex="-1"
     data-testid="export-dialog"
     @click.self="emit('close')"
   >
@@ -82,14 +88,14 @@ const emit = defineEmits<{
         </button>
       </div>
     </div>
-  </div>
+  </dialog>
 </template>
 
 <style scoped>
 .dialog-mask {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 10;
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;

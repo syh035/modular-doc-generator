@@ -18,7 +18,7 @@
 
 ### 交互基础与界面体验（M12—M14）
 
-- [ ] M12 弹层模态化 + 交互基础（前端审查 P1①②+P3⑥）：6 弹层遮罩 absolute→fixed 全窗真模态（当前锚定 .template-preview，块库/StatusBar 模态期间仍可点）；抽 useModalEsc（Esc 关闭 + 焦点 trap + 归还；MigrationDialog Esc 语义=跳过，与点遮罩一致）；块库 resizer 键盘化（tabindex + 左右方向键 ±16px + role=separator + aria-valuenow，命中区 8→12px）
+- [x] M12 弹层模态化 + 交互基础（前端审查 P1①②+P3⑥）：6 弹层遮罩 absolute→fixed 全窗真模态（当前锚定 .template-preview，块库/StatusBar 模态期间仍可点）；抽 useModalEsc（Esc 关闭 + 焦点 trap + 归还；MigrationDialog Esc 语义=跳过，与点遮罩一致）；块库 resizer 键盘化（tabindex + 左右方向键 ±16px + role=separator + aria-valuenow，命中区 8→12px） ✅ 2026-10-08：使用原生 dialog + useModalEsc 实现，保留原有关闭/跳过语义；前端类型、lint、166 项测试、构建与 3 个业务 E2E 通过，六弹层及分隔条原生浏览器回归通过。实现与验证完成。
 - [ ] M13 布局重排（P2③A+P2⑤+P3⑦，一次提交）：溢出 chips 并入 StatusBar（点 chip 保留滚页+闪烁 1.8s；.overflow-bar 移除，画布高度恒定不再跳动）；工具条分组重排「[≡] | 模板⌄ 版本⌄(+收编新建) | 导出(主按钮) | ?图例」（≤620px 图例改「?」出口不再直接消失）；块库头部固定骨架（折叠/展开只变宽度不变结构，消除跳变）
 - [ ] M14 token 化（P2④）：main.css :root 语义 token（primary/danger/success/warning/border/text-1/2/3/bg-muted 起步），13 组件 hex→var() 机械替换；前后端门禁全绿验证
 

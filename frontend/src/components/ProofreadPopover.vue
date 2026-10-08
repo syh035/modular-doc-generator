@@ -4,6 +4,7 @@
  * 按钮组随 review_status 变化（PRD 4.3 状态流转）：
  * pending → 确认/排除/微调/删除；confirmed → 重新校对/微调/删除；excluded → 重新校对/删除。
  */
+import { useModalEsc } from '../composables/useModalEsc'
 import { computed } from 'vue'
 import { REVIEW_STATUS_LABELS } from '../constants/regionTypes'
 import type { DisplayRegion } from '../stores/preview'
@@ -22,12 +23,17 @@ const emit = defineEmits<{
 }>()
 
 const status = computed(() => props.region.review_status)
+useModalEsc(() => emit('close'))
 </script>
 
 <template>
   <!-- 遮罩：点击关闭；卡片阻止冒泡（复用 BindingDialog 布局） -->
-  <div
+  <dialog
+    ref="modal"
     class="dialog-mask"
+    aria-label="区域校对"
+    aria-modal="true"
+    tabindex="-1"
     data-testid="proofread-popover"
     @click.self="emit('close')"
   >
@@ -91,14 +97,14 @@ const status = computed(() => props.region.review_status)
         </button>
       </div>
     </div>
-  </div>
+  </dialog>
 </template>
 
 <style scoped>
 .dialog-mask {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 10;
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;

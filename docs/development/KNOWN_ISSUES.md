@@ -42,4 +42,10 @@
 | P27 | 手搓 .app（bash 脚本作 CFBundleExecutable）双击启动时，launchd 派生进程对 `~/Documents` 写操作被 TCC **静默拒绝**（EPERM，无授权弹窗——脚本型 LSUIElement app 的弹窗归因不可靠），dev.sh 拉起即死 → 用户视角「双击没反应」；加 NSDocumentsFolderUsageDescription + ad-hoc 签名后弹窗仍不出现（实锤）；终端直跑正常是因继承终端授权 | 已回退为 `一键启动.command`（Terminal 上下文有授权，链路可靠）；.app 集成移入 TODO M25——须用 Platypus 等成熟方案生成正规 Mach-O stub，TCC 弹窗归因才与普通 app 一致；如再遇 .app 排障：`log show --predicate 'eventMessage CONTAINS "modudoc"'` 看 LAUNCH/CHECKIN/ExitStatus，进程拉起成功但无反应先查 TCC 写权限 |
 
 
+## M12 补充
+
+| # | 陷阱 | 规避 |
+|---|------|------|
+| P28 | 预览容器内的 absolute 遮罩只隔离局部鼠标操作，背景块库和状态栏仍可交互；仅改 fixed 也不能阻止键盘焦点穿透 | 使用原生 dialog.showModal() 隔离背景并覆盖全窗，统一 Esc、Tab 和焦点归还；迁移阶段切换需保留焦点。jsdom 不实现原生模态隔离，需运行 verify_modals.py 的真实浏览器检查（M12 六弹层、焦点与背景隔离回归已通过） |
+
 新增经验请记录根因、触发条件、规避方法和验证依据；历史记录变更时保留替代关系。

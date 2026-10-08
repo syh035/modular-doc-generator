@@ -9,7 +9,7 @@
 - 简单任务直接执行，复杂任务拆解依赖与验收，持续报告重要发现与阻塞。一次保持主要目标，在模块或阶段边界交接。
 - 沿用既有命名和结构，优先局部改动；移动、重命名时检查引用，保护用户已有改动，不清空数据或覆盖无关文件。
 - 项目使用既有隔离 checkout；除用户要求外，不额外创建 worktree。
-- 按任务需要选择可用 skill/MCP，读取其说明。项目对前端布局插件的明确约束继续保留在 AGENTS；引用工具不代表已经调用。
+- 按任务需要选择可用 skill/MCP，读取其说明。可替代插件缺失时使用现有工具并说明替代与验证方式，按 AGENTS 的现行规则执行；引用工具不代表已经调用。
 - Git 提交、推送、合并和发布按已有授权进行；未授权时先准备可审查结果。外部消息不自行发送。
 
 ## 文档、任务与经验
@@ -35,9 +35,12 @@
 | 前端测试 | `frontend/` | `npm test` |
 | 前端构建 | `frontend/` | `npm run build` |
 | 场景 E2E | 仓库根 | `/usr/bin/python3 scripts/e2e/run_e2e.py all` |
+| 模态与键盘浏览器回归 | 仓库根 | `python scripts/e2e/verify_modals.py` |
 | 预览/导出比对 | 仓库根 | `backend/.venv/bin/python scripts/consistency_check.py <预览.pdf> <导出重转.pdf>` |
 
 CI 定义见 [.github/workflows/ci.yml](../../.github/workflows/ci.yml)：后端 Python 3.12，前端 Node 22。LibreOffice 相关 pytest 在缺失工具时可能跳过，不能将跳过描述为渲染通过。E2E runner 原本使用系统 Python 的 Playwright，需另核对实际安装与浏览器。
+
+模态回归脚本需要运行 Vite 开发服务，会在缺失时自动启动前后端并清理自己启动的进程。它使用合成 props 装载真实 Vue 弹层，验证浏览器原生背景隔离、全窗覆盖和焦点；业务流程仍由场景 E2E 验证。可加 `--chromium-executable /usr/bin/chromium` 使用环境已有浏览器，截图在 `/tmp/m12-check/`，不提交到仓库。
 
 文档维护检查链接、引用、结构、决策和历史保留；代码验证按改动范围执行。模板、替换或渲染改动还需相关真实转换与一致性检查。失败需诊断根因，不通过削弱断言或绕过 hooks 制造通过。
 

@@ -3,6 +3,7 @@
  * 版本弹层（M8）：新建（空白 / 复制当前为底稿）与重命名共用。
  * 后端校验错误（VERSION_INVALID / VERSION_NAME_TAKEN）经 error prop 内联显示。
  */
+import { useModalEsc } from '../composables/useModalEsc'
 import { ref } from 'vue'
 
 const props = defineProps<{
@@ -28,12 +29,17 @@ function onSubmit(): void {
   }
   emit('submit', trimmed, props.mode === 'create' ? copyFrom.value : false)
 }
+useModalEsc(() => emit('close'))
 </script>
 
 <template>
   <!-- 遮罩：点击关闭；卡片阻止冒泡（复用 RegionNameDialog 布局） -->
-  <div
+  <dialog
+    ref="modal"
     class="dialog-mask"
+    aria-label="内容版本"
+    aria-modal="true"
+    tabindex="-1"
     data-testid="version-dialog"
     @click.self="emit('close')"
   >
@@ -56,6 +62,7 @@ function onSubmit(): void {
         <span class="field-label">版本名称</span>
         <input
           v-model="name"
+          data-modal-autofocus
           maxlength="30"
           :placeholder="mode === 'create' ? '如：投递A岗（1–30 字）' : '版本名称（1–30 字）'"
           data-testid="version-name-input"
@@ -96,14 +103,14 @@ function onSubmit(): void {
         </button>
       </div>
     </form>
-  </div>
+  </dialog>
 </template>
 
 <style scoped>
 .dialog-mask {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 10;
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;
