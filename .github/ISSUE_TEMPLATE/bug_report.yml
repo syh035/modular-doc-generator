@@ -1,0 +1,44 @@
+name: Bug 反馈
+description: 提交可复现的问题、运行环境和预期行为。
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: "请使用脱敏或合成样本，勿提交私人文档、密钥或完整日志中的敏感内容。"
+  - type: input
+    id: task
+    attributes:
+      label: 关联任务
+      description: 如已有 M 编号或相关 Issue，请填写，避免重复记录。
+      placeholder: "例如 M20；没有则留空"
+  - type: textarea
+    id: environment
+    attributes:
+      label: 版本和运行环境
+      description: 项目版本或提交、操作系统、浏览器，以及相关 Python、Node、LibreOffice 版本。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 写明操作顺序、所用模板特点和是否稳定复现。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为和影响
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 脱敏证据
+      description: 错误码、相关日志片段、截图或合成 DOCX；请先移除个人内容。

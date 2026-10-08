@@ -58,7 +58,7 @@ cd modular-doc-generator
 
 脚本自动完成：后端 venv 与依赖初始化（首次约 1–2 分钟，自动探测 Python 3.11+）→ 前端依赖安装 → **端口预检查**（8740/5173 被占用即报错退出）→ 启动双进程（Ctrl-C 同时结束）→ 前端就绪后**自动打开浏览器**。
 
-浏览器访问 <http://localhost:5173>（vite 绑 localhost，勿用 127.0.0.1，见 AGENTS.md P26）；验证后端：`curl http://127.0.0.1:8740/api/health`。
+浏览器访问 <http://localhost:5173>（vite 绑 localhost，勿用 127.0.0.1，见 [技术经验 P26](docs/development/KNOWN_ISSUES.md)）；验证后端：`curl http://127.0.0.1:8740/api/health`。
 
 **桌面一键启动**（macOS）：双击仓库根目录的 `一键启动.command`——弹出终端窗口自动拉起前后端服务，就绪后自动打开浏览器；Ctrl-C 或关闭窗口即停止服务。脚本位置自适应：放项目根目录、`scripts/` 内或桌面均可。
 
@@ -91,21 +91,25 @@ cd frontend && npm run dev
 3. **建块绑定**：左缘展开字符块库 → 新建块 → 点选块、点预览上的区域完成绑定（或区域浮层反向绑定）
 4. **版本与导出**：预览工具条版本控件新建 / 切换 / 重命名 / 删除版本 →「导出 DOCX」下载
 
-## Roadmap（v1.1）
+## 仓库结构与下期规划
 
-| 模块 | 内容 |
-|------|------|
-| M12 | 弹层模态化：全窗遮罩、Esc / 焦点管理、分栏拖拽键盘化 |
-| M13 | 布局重排：溢出状态并入底部状态栏、工具条分组、块库头部固定 |
-| M14 | 设计 token 化：语义色变量统一全部组件 |
-| M15 | 字段词表扩充（手机 / 教育经历等变体、中文数字） |
-| M16 | 全局撤销 / 重做栈（保存点截断，作用于所有修改步骤） |
-| M17 | 解析进度反馈（超 5s 基线提示） |
-| M18 | 软回车换行选项 |
-| M19 | 批量管理：块批量删除 / 换标签、模板管理弹窗 |
-| M20 | 区域实时编辑（编辑文本 / 一键删除段落 / 空行留白） |
-| M21 | 前插 / 后插式绑定（排版调节器） |
-| M22–M24 | 观察项清理、mypy 全量门禁、渲染增量刷新 |
+当前能力见上方功能总览，下一阶段安排见 [下期规划](docs/product/NEXT_PLAN.md)，具体任务状态和依赖见 [任务池](TODO.md)。
+
+```text
+modular-doc-generator/
+├── README.md / AGENTS.md / TODO.md / CHANGELOG.md
+├── docs/
+│   ├── README.md
+│   ├── product/       # 原始需求、下期规划
+│   ├── architecture/  # 当前架构和必要设计
+│   └── development/   # 开发规范、技术经验和历史
+├── backend/           # FastAPI、SQLite、业务服务与测试
+├── frontend/          # Vue 工作台与 PDF 预览
+├── scripts/           # 启动、一致性检查、场景 E2E
+└── .github/           # CI、Bug/功能 Issue 模板
+```
+
+完整文档入口见 [docs/README.md](docs/README.md)。运行数据 `data/` 和本地交接 `STATE.md` 已被 Git 忽略。
 
 ## 自验工具（开发 / 回归）
 
@@ -133,11 +137,16 @@ cd frontend && npm run test       # vitest
 
 | 文档 | 内容 |
 |------|------|
-| [CHANGELOG.md](CHANGELOG.md) | 版本更新日志 |
-| [AGENTS.md](AGENTS.md) | 开发规则：技术决策（D1–D13）、架构铁律、已知陷阱（P1–P25） |
-| [TODO.md](TODO.md) | 任务路线图（v1.1：M11–M24）与已解决归档 |
-| [docs/PRD.md](docs/PRD.md) | 产品需求文档 v1.0 |
-| [scripts/](scripts/) | dev.sh 一键启动、consistency_check.py 一致性自检、e2e/ 三大场景 Playwright 测试 |
+| [文档导航](docs/README.md) | 分类、阅读入口与权威来源 |
+| [AGENTS.md](AGENTS.md) | 核心规则、D1—D13 及文档维护原则 |
+| [TODO.md](TODO.md) | 当前任务、M12—M26 及依赖 |
+| [下期规划](docs/product/NEXT_PLAN.md) | 下一阶段目标、范围与验收 |
+| [原始 PRD](docs/product/PRD.md) | v1.0 初始需求全文，原样保留 |
+| [架构总览](docs/architecture/OVERVIEW.md) | 当前实现与能力边界 |
+| [开发规范](docs/development/WORKFLOW.md) | 协作、验证与交接 |
+| [技术经验](docs/development/KNOWN_ISSUES.md) | P1—P27 技术陷阱与状态备注 |
+| [交付历史](docs/development/history/V1_DELIVERY.md) | 已完成任务和已解决记录 |
+| [CHANGELOG.md](CHANGELOG.md) | 发布历史 |
 
 ## License
 
