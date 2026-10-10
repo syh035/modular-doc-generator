@@ -153,3 +153,33 @@ def test_real_convert_and_cache(tmp_path: Path, _real_profile: Path) -> None:
     again = m.convert(docx)
     assert again == pdf
     assert m.conversions == 1
+
+
+@pytest.mark.parametrize(
+    "platform,directory", [("darwin", "/System/Library/Fonts"), ("linux", "/usr/share/fonts")]
+)
+def test_fontconfig_uses_platform_fonts_and_escapes_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str, directory: str
+) -> None:
+    import sys
+    from xml.etree import ElementTree
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "A&B")
+    conf = tmp_path / "A&B" / "fonts.conf"
+    manager = LibreOfficeManager(
+        "/unused",
+        profile_dir=tmp_path / "profile",
+        cache_dir=tmp_path / "cache",
+        timeout_seconds=30,
+        fontconfig_file=conf,
+    )
+    manager._ensure_fontconfig()
+    root = ElementTree.parse(conf).getroot()
+    directories = [node.text for node in root.findall("dir")]
+    assert directory in directories
+    assert any("A&B" in str(value) for value in directories)
+    assert root.findtext("cachedir") == str(conf.parent / "cache")
+    if platform == "linux":
+        assert "/System/Library/Fonts" not in directories
+        assert root.findtext("include") == "/etc/fonts/fonts.conf"

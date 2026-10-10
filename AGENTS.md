@@ -145,3 +145,7 @@ E2E 同秒 fixture 去重、全文候选及本地 CMap 资源见 P44。
 ### P52 分发 CI 环境一致性（M29）
 
 渲染／导出回归需要真实 LibreOffice；Ubuntu CI 安装 libreoffice-writer 和 CJK 字体，不依靠缺环境时跳过测试。分发验证的后端依赖须用 requirements-release.txt 约束，避免测试环境升级而安装包仍使用旧版本。
+
+### P53 fontconfig 不可跨平台套用（M29 CI）
+
+macOS cask 的自建 fontconfig 只能扫描 macOS 字体路径；在 Linux 套用会得到空字体集并导致 LibreOffice 转换崩溃。Linux 保留 /etc/fonts/fonts.conf 并扫描系统及用户字体目录，路径写 XML 时必须转义 & 等字符。新增两平台配置和 XML 路径回归，CI 使用真实转换验证。
