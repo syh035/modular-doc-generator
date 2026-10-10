@@ -22,7 +22,6 @@ from lxml import etree
 from app.services.field_lexicon import (
     CONF_PARAGRAPH,
     CONF_PLACEHOLDER,
-    PARAGRAPH_MIN_LEN,
     classify_field,
     classify_paragraph,
     truncate_label,
@@ -66,7 +65,12 @@ class ParseOutcome:
 
 def _paragraph_text(p: etree._Element) -> str:
     # 只拼直接子 w:r 的 w:t 文本（P1 合并 run；D6 天然排除文本框内文字）
-    return "".join(t.text or "" for t in p.findall(f"{_W}r/{_W}t"))
+    return "".join(
+        (child.text or "") if child.tag == f"{_W}t" else "\n"
+        for run in p.findall(f"{_W}r")
+        for child in run
+        if child.tag in (f"{_W}t", f"{_W}br", f"{_W}cr")
+    )
 
 
 _FlowElement = tuple[dict[str, object], etree._Element]
@@ -154,9 +158,9 @@ def parse_candidates(data: bytes) -> ParseOutcome:
       推断 type（决策 C，如 {{姓名}} → name），未命中为 custom
     - 字段名区域：无占位符段落匹配词表（标题行 0.9 / 「字段名：值」0.7），
       placeholder=None（替换走整段替换，replacement._replace_whole_paragraph）
-    - 成段正文：长度 ≥ PARAGRAPH_MIN_LEN 的无占位符段 → custom / 0.4
+    - 全文正文：任意非空无占位符段 → custom / 0.4，短文字也进入候选
     - 优先级：有占位符的段落不再产出段落级候选（一段不重复建区域）；
-      空段与过短非词表段（如「张三」）不产候选，但计入 has_any_text
+      空段不产候选；姓名、短句及表格短文本均纳入正文候选
     """
     candidates: list[ParsedCandidate] = []
     order = 0
@@ -202,7 +206,7 @@ def parse_candidates(data: bytes) -> ParseOutcome:
                 )
             )
             order += 1
-        elif len(stripped) >= PARAGRAPH_MIN_LEN:
+        else:
             candidates.append(
                 ParsedCandidate(
                     region_type="custom",

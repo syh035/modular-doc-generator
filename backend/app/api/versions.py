@@ -6,6 +6,8 @@
 - 块软删除 → 绑定原子置 missing（blocks repo 同事务完成），本层不重复
 """
 
+from typing import Literal
+
 from fastapi import APIRouter, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -29,7 +31,7 @@ from app.models.repositories import blocks as blocks_repo
 from app.models.repositories import regions as regions_repo
 from app.models.repositories import templates as templates_repo
 from app.models.repositories import versions as versions_repo
-from app.services import export_service, render_service, version_service
+from app.services import export_service, render_service, text_edit_service, version_service
 
 router = APIRouter(prefix="/api")
 
@@ -55,14 +57,67 @@ def _binding_dict(b: Binding, block_name: str | None) -> dict[str, object]:
         "block_id": b.block_id,
         "block_name": block_name,
         "status": b.status,
+        "line_break_mode": b.line_break_mode,
+        "position": b.position,
         "created_at": b.created_at,
         "updated_at": b.updated_at,
     }
 
 
+class RegionTextEdit(BaseModel):
+    content: str
+    sync_block: bool = False
+    expected_content: str | None = None
+
+
+@router.post("/versions/{version_id}/regions/{region_id}/text")
+def edit_region_text(version_id: int, region_id: int, payload: RegionTextEdit) -> dict[str, object]:
+    return text_edit_service.save_text(
+        version_id, region_id, payload.content, payload.sync_block, payload.expected_content
+    )
+
+
+class RegionLayoutEdit(BaseModel):
+    action: Literal["remove", "restore"]
+
+
+@router.post("/versions/{version_id}/regions/{region_id}/layout")
+def edit_region_layout(
+    version_id: int, region_id: int, payload: RegionLayoutEdit
+) -> dict[str, object]:
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        version = versions_repo.get_version(conn, version_id)
+        region = regions_repo.get_region(conn, region_id)
+        if version is None:
+            raise AppError(VERSION_NOT_FOUND, "内容版本不存在", status_code=404)
+        if region is None:
+            raise AppError(REGION_NOT_FOUND, "区域不存在", status_code=404)
+        if region.template_id != version.template_id:
+            raise AppError(REGION_TEMPLATE_MISMATCH, "区域不属于当前模板", status_code=400)
+        if payload.action == "remove":
+            conn.execute(
+                "INSERT OR REPLACE INTO version_region_actions VALUES (?, ?, 'remove')",
+                (version_id, region_id),
+            )
+        else:
+            import json
+
+            target = json.loads(region.anchor)["path"]
+            for sibling in regions_repo.list_regions(conn, version.template_id):
+                if json.loads(sibling.anchor)["path"] == target:
+                    conn.execute(
+                        "DELETE FROM version_region_actions WHERE version_id = ? AND region_id = ?",
+                        (version_id, sibling.id),
+                    )
+    return {"region_id": region_id, "action": payload.action}
+
+
 class BindingCreate(BaseModel):
     region_id: int
     block_id: int
+    line_break_mode: Literal["paragraph", "soft"] = "paragraph"
+    position: Literal["inside", "before", "after"] = "inside"
 
 
 @router.post("/versions/{version_id}/bindings")
@@ -71,9 +126,7 @@ def upsert_binding(version_id: int, payload: BindingCreate) -> dict[str, object]
     with get_conn() as conn:
         version = versions_repo.get_version(conn, version_id)
         if version is None:
-            raise AppError(
-                VERSION_NOT_FOUND, f"内容版本不存在（id={version_id}）", status_code=404
-            )
+            raise AppError(VERSION_NOT_FOUND, f"内容版本不存在（id={version_id}）", status_code=404)
         region = regions_repo.get_region(conn, payload.region_id)
         if region is None:
             raise AppError(
@@ -99,7 +152,12 @@ def upsert_binding(version_id: int, payload: BindingCreate) -> dict[str, object]
                 status_code=404,
             )
         binding = bindings_repo.upsert_binding(
-            conn, version_id, payload.region_id, payload.block_id
+            conn,
+            version_id,
+            payload.region_id,
+            payload.block_id,
+            line_break_mode=payload.line_break_mode,
+            position=payload.position,
         )
     return _binding_dict(binding, block.name)
 
@@ -110,9 +168,7 @@ def list_bindings(version_id: int) -> dict[str, object]:
     with get_conn() as conn:
         version = versions_repo.get_version(conn, version_id)
         if version is None:
-            raise AppError(
-                VERSION_NOT_FOUND, f"内容版本不存在（id={version_id}）", status_code=404
-            )
+            raise AppError(VERSION_NOT_FOUND, f"内容版本不存在（id={version_id}）", status_code=404)
         items = []
         for b in bindings_repo.list_bindings(conn, version_id):
             block = blocks_repo.get_block(conn, b.block_id, include_deleted=True)
@@ -125,9 +181,7 @@ def delete_binding(version_id: int, region_id: int) -> Response:
     """解绑；绑定不存在 → 404。"""
     with get_conn() as conn:
         if versions_repo.get_version(conn, version_id) is None:
-            raise AppError(
-                VERSION_NOT_FOUND, f"内容版本不存在（id={version_id}）", status_code=404
-            )
+            raise AppError(VERSION_NOT_FOUND, f"内容版本不存在（id={version_id}）", status_code=404)
         existing = bindings_repo.get_binding(conn, version_id, region_id)
         if existing is None:
             raise AppError(
@@ -156,11 +210,16 @@ def get_version_preview(version_id: int) -> FileResponse:
 
 @router.get("/versions/{version_id}/overlay")
 def get_version_overlay(version_id: int) -> dict[str, object]:
-    """版本覆盖层：区域 × 替换后 bbox（随渲染产物现算，不落库）× 绑定态。"""
+    """版本覆盖层与对应 PDF 的页级指纹；现算 bbox，不落库。"""
+    from app.services.page_cache import page_fingerprints
+
     rendered = render_service.render_version(version_id)
+    pdf_sha, hashes = page_fingerprints(rendered.pdf_path)
     return {
         "version_id": version_id,
         "regions": rendered.items,
+        "pdf_sha256": pdf_sha,
+        "page_fingerprints": hashes,
     }
 
 
@@ -183,9 +242,7 @@ def export_version(version_id: int, payload: ExportRequest) -> Response:
     with get_conn() as conn:
         version = versions_repo.get_version(conn, version_id)
         if version is None:
-            raise AppError(
-                VERSION_NOT_FOUND, f"内容版本不存在（id={version_id}）", status_code=404
-            )
+            raise AppError(VERSION_NOT_FOUND, f"内容版本不存在（id={version_id}）", status_code=404)
         version_name = version.name
     rendered = render_service.render_version(version_id)
     warnings = export_service.extract_large_overflow_warnings(rendered.items)
@@ -240,9 +297,7 @@ def list_versions(template_id: int) -> dict[str, object]:
     """模板版本列表（创建正序，含 active 绑定数）。"""
     with get_conn() as conn:
         if templates_repo.get_template(conn, template_id) is None:
-            raise AppError(
-                TEMPLATE_NOT_FOUND, f"模板不存在（id={template_id}）", status_code=404
-            )
+            raise AppError(TEMPLATE_NOT_FOUND, f"模板不存在（id={template_id}）", status_code=404)
         return {"versions": version_service.list_versions_with_counts(conn, template_id)}
 
 
@@ -252,9 +307,7 @@ def create_version(template_id: int, payload: VersionCreate) -> dict[str, object
     name = _version_name_or_400(payload.name)
     with get_conn() as conn:
         if templates_repo.get_template(conn, template_id) is None:
-            raise AppError(
-                TEMPLATE_NOT_FOUND, f"模板不存在（id={template_id}）", status_code=404
-            )
+            raise AppError(TEMPLATE_NOT_FOUND, f"模板不存在（id={template_id}）", status_code=404)
         ver = version_service.create_version(conn, template_id, name, payload.copy_from)
     return _version_dict(ver)
 

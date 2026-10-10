@@ -8,6 +8,8 @@ export interface BindingInfo {
   block_id: number
   block_name: string | null
   status: string // active / missing
+  line_break_mode?: 'paragraph' | 'soft'
+  position?: 'inside' | 'before' | 'after'
 }
 
 /** 区域溢出报告（M7，D4/P6）：高度对比分级 + 固定行高裁剪；null = 未测量。 */
@@ -31,11 +33,23 @@ export function bindRegion(
   versionId: number,
   regionId: number,
   blockId: number,
+  lineBreakMode: 'paragraph' | 'soft' = 'paragraph',
+  position: 'inside' | 'before' | 'after' = 'inside',
 ): Promise<BindingInfo & { version_id: number; region_id: number }> {
   return apiFetch(`/api/versions/${versionId}/bindings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ region_id: regionId, block_id: blockId }),
+    body: JSON.stringify({ region_id: regionId, block_id: blockId, ...(lineBreakMode === 'soft' ? { line_break_mode: lineBreakMode } : {}), ...(position !== 'inside' ? { position } : {}) }),
+  })
+}
+
+/** 文字微调：默认复制为当前版本使用的块，syncBlock 显式同步原块。 */
+export function saveRegionText(versionId: number, regionId: number, content: string,
+  syncBlock: boolean, expectedContent: string): Promise<BindingInfo> {
+  return apiFetch(`/api/versions/${versionId}/regions/${regionId}/text`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, sync_block: syncBlock, expected_content: expectedContent }),
   })
 }
 
@@ -52,10 +66,13 @@ export function versionPreviewUrl(versionId: number): string {
 }
 
 /** 版本 overlay：区域 × 替换后 bbox × 绑定态（随渲染现算）。 */
-export async function fetchVersionOverlay(versionId: number): Promise<OverlayRegion[]> {
-  const body = await apiFetch<{ regions: OverlayRegion[] }>(
+export interface PdfPageMetadata { pdf_sha256?: string; page_fingerprints?: string[] }
+export async function fetchVersionOverlay(versionId: number,
+  metadata?: (value: PdfPageMetadata) => void): Promise<OverlayRegion[]> {
+  const body = await apiFetch<PdfPageMetadata & { regions: OverlayRegion[] }>(
     `/api/versions/${versionId}/overlay`,
   )
+  metadata?.(body)
   return body.regions
 }
 
@@ -102,4 +119,11 @@ export function renameVersion(versionId: number, name: string): Promise<VersionI
 /** 删除版本（模板至少保留一个；绑定随级联删）。 */
 export function deleteVersion(versionId: number): Promise<void> {
   return apiFetch<void>(`/api/versions/${versionId}`, { method: 'DELETE' })
+}
+
+/** 当前版本物理删除／恢复区域所属段落，原模板不变。 */
+export function setRegionLayout(versionId: number, regionId: number, action: 'remove' | 'restore'): Promise<void> {
+  return apiFetch(`/api/versions/${versionId}/regions/${regionId}/layout`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }),
+  })
 }

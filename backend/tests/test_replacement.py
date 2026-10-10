@@ -6,6 +6,7 @@ import json
 from io import BytesIO
 
 from docx import Document
+from docx.document import Document as DocxDocument
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
@@ -16,7 +17,7 @@ from app.services.replacement import apply_replacements
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
-def docx_bytes(doc: Document) -> bytes:
+def docx_bytes(doc: DocxDocument) -> bytes:
     buf = BytesIO()
     doc.save(buf)
     return buf.getvalue()
@@ -51,7 +52,7 @@ def paragraphs_text(data: bytes) -> list[str]:
 # ---- 基础替换 ----
 
 
-def _doc_with(*texts: str) -> Document:
+def _doc_with(*texts: str) -> DocxDocument:
     doc = Document()
     for t in texts:
         doc.add_paragraph(t)
@@ -276,12 +277,12 @@ def test_whole_paragraph_replacement_single_line() -> None:
     """词表标题段绑定 → 整段替换为块内容。"""
     data = docx_bytes(_doc_with("工作经历", "其他段"))
     regions = whole_regions_of(data)
-    assert len(regions) == 1 and regions[0].placeholder is None
+    assert len(regions) == 2 and regions[0].placeholder is None
 
     outcome = apply_replacements(data, regions, {regions[0].id: "五年后端开发经验"})
     texts = paragraphs_text(outcome.data)
     assert texts[0] == "五年后端开发经验"
-    assert texts[1] == "其他段"  # 非区域段不受影响
+    assert texts[1] == "其他段"  # 未绑定区域不受影响
     assert outcome.region_paths[regions[0].id] == [0]
 
 

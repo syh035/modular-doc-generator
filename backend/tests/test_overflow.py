@@ -2,10 +2,13 @@
 
 from io import BytesIO
 
+import httpx
 import pytest
 from docx import Document
+from docx.document import Document as DocxDocument
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.text.paragraph import Paragraph
 from fastapi.testclient import TestClient
 
 from app.services.docx_parser import iter_flow_paragraph_elements
@@ -28,7 +31,7 @@ def _new_bbox(h: float) -> tuple[float, float, float, float]:
     return (10.0, 100.0, 200.0, 100.0 + h)
 
 
-_ORIG = {"y0": 100.0, "y1": 120.0}  # 原高 20
+_ORIG: dict[str, object] = {"y0": 100.0, "y1": 120.0}  # 原高 20
 
 
 def test_measure_no_overflow_returns_none() -> None:
@@ -180,18 +183,18 @@ def make_block(client: TestClient, name: str, content: str) -> int:
     return resp.json()["id"]
 
 
-def bind(client: TestClient, version_id: int, region_id: int, block_id: int):
+def bind(client: TestClient, version_id: int, region_id: int, block_id: int) -> httpx.Response:
     return client.post(
         f"/api/versions/{version_id}/bindings",
         json={"region_id": region_id, "block_id": block_id},
     )
 
 
-def _cjk_run(doc: Document, text: str):
+def _cjk_run(doc: DocxDocument, text: str) -> Paragraph:
     p = doc.add_paragraph(text)
     run = p.runs[0]
     run.font.name = "宋体"
-    run._element.rPr.rFonts.set(_EAST, "宋体")
+    run._element.get_or_add_rPr().get_or_add_rFonts().set(_EAST, "宋体")
     return p
 
 
@@ -234,7 +237,7 @@ def test_overlay_overflow_clipped_in_fixed_row(client: TestClient) -> None:
     cell_p = table.cell(0, 0).paragraphs[0]
     run = cell_p.add_run("{{自我评价}}")
     run.font.name = "宋体"
-    run._element.rPr.rFonts.set(_EAST, "宋体")
+    run._element.get_or_add_rPr().get_or_add_rFonts().set(_EAST, "宋体")
     _set_row_height(table.rows[0], "240", "exact")
     buf = BytesIO()
     doc.save(buf)
@@ -249,3 +252,39 @@ def test_overlay_overflow_clipped_in_fixed_row(client: TestClient) -> None:
     assert ov["fixed_row"] is True
     assert ov["clipped"] is True
     assert ov["level"] == "large"
+
+
+def test_cross_page_original_height_is_sum_of_fragments() -> None:
+    original = {
+        "y0": 780,
+        "y1": 800,
+        "fragments": [{"page": 0, "y0": 780, "y1": 800}, {"page": 1, "y0": 40, "y1": 60}],
+    }
+    assert measure_overflow(original, _new_bbox(40), 0.5) is None
+    info = measure_overflow(original, _new_bbox(70), 0.5)
+    assert info is not None and info.orig_height == 40 and info.level == "large"
+
+
+@pytest.mark.parametrize("height", [20.000001, 20.004, 20.0099, 20.01])
+def test_coordinate_precision_noise_is_not_overflow(height: float) -> None:
+    assert measure_overflow(_ORIG, _new_bbox(height), 0.5) is None
+
+
+def test_real_sub_percent_growth_is_preserved() -> None:
+    info = measure_overflow(_ORIG, _new_bbox(20.04), 0.5)
+    assert info is not None and info.level == "small"
+    assert info.ratio == pytest.approx(0.002)
+
+
+def test_clipping_is_not_suppressed_by_height_tolerance() -> None:
+    info = measure_overflow(_ORIG, _new_bbox(20.004), 0.5, clipped=True, fixed_row=True)
+    assert info is not None and info.clipped and info.level == "large"
+
+
+def test_cross_page_quantization_noise_is_not_overflow() -> None:
+    original = {
+        "y0": 780,
+        "y1": 800,
+        "fragments": [{"page": 0, "y0": 780, "y1": 800}, {"page": 1, "y0": 40, "y1": 60}],
+    }
+    assert measure_overflow(original, _new_bbox(40.004), 0.5) is None

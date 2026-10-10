@@ -114,10 +114,11 @@ def test_upload_sanitizes_path_in_filename(env: Path) -> None:
 
 
 def test_upload_placeholder_free_template(env: Path) -> None:
-    """无占位符模板：解析成功 0 区域，Q3 空集豁免直接 ready（框选补建区域）。"""
+    """无占位符短文字也进入全文候选校对。"""
     tpl, regions, _ = upload_template("素模板.docx", make_docx("纯文本段落"))
-    assert tpl.status == "ready"
-    assert regions == []
+    assert tpl.status == "pending_review"
+    assert len(regions) == 1
+    assert regions[0].label == "纯文本段落"
 
 
 # ---- 重复与同名 ----

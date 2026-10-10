@@ -7,6 +7,7 @@ import { useModalEsc } from '../composables/useModalEsc'
 import { ref } from 'vue'
 
 const props = defineProps<{
+  copyMode?: 'copy' | 'blank'
   mode: 'create' | 'rename'
   initialName: string
   canCopy: boolean
@@ -20,7 +21,7 @@ const emit = defineEmits<{
 }>()
 
 const name = ref(props.initialName)
-const copyFrom = ref(true)
+const copyFrom = ref(props.copyMode !== 'blank')
 
 function onSubmit(): void {
   const trimmed = name.value.trim()
@@ -69,7 +70,7 @@ useModalEsc(() => emit('close'))
         >
       </label>
       <label
-        v-if="mode === 'create' && canCopy"
+        v-if="mode === 'create' && canCopy && !copyMode"
         class="copy-row"
       >
         <input
@@ -79,6 +80,12 @@ useModalEsc(() => emit('close'))
         >
         <span>复制当前版本的绑定内容为底稿</span>
       </label>
+      <p
+        v-if="mode === 'create' && copyMode"
+        class="copy-row"
+      >
+        {{ copyMode === 'copy' ? '复制所选版本的绑定内容，作为新版本底稿。' : '创建空白内容版本，保留模板版式。' }}
+      </p>
       <p
         v-if="error"
         class="error"
@@ -114,16 +121,16 @@ useModalEsc(() => emit('close'))
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--modal-backdrop);
 }
 
 .dialog-card {
   width: min(380px, 90%);
   display: flex;
   flex-direction: column;
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 8px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 20px var(--shadow-modal);
   overflow: hidden;
 }
 
@@ -132,7 +139,7 @@ useModalEsc(() => emit('close'))
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  border-bottom: 1px solid #e2e3e5;
+  border-bottom: 1px solid var(--border);
 }
 
 .title {
@@ -144,7 +151,7 @@ useModalEsc(() => emit('close'))
   border: none;
   background: none;
   font-size: 18px;
-  color: #8f959e;
+  color: var(--text-3);
   cursor: pointer;
   line-height: 1;
 }
@@ -158,19 +165,19 @@ useModalEsc(() => emit('close'))
 
 .field-label {
   font-size: 12px;
-  color: #646a73;
+  color: var(--text-2);
 }
 
 .field input {
   padding: 6px 8px;
   font-size: 13px;
-  border: 1px solid #d0d3d6;
+  border: 1px solid var(--border-control);
   border-radius: 4px;
 }
 
 .field input:focus {
   outline: none;
-  border-color: #3370ff;
+  border-color: var(--primary);
 }
 
 .copy-row {
@@ -179,20 +186,20 @@ useModalEsc(() => emit('close'))
   gap: 6px;
   padding: 10px 14px 0;
   font-size: 12px;
-  color: #1f2329;
+  color: var(--text-1);
   cursor: pointer;
 }
 
 .copy-row input {
-  accent-color: #3370ff;
+  accent-color: var(--primary);
 }
 
 .error {
   margin: 8px 14px 0;
   padding: 6px 8px;
   font-size: 12px;
-  color: #f54a45;
-  background: rgba(245, 74, 69, 0.08);
+  color: var(--danger);
+  background: var(--danger-bg-subtle);
   border-radius: 4px;
 }
 
@@ -206,9 +213,9 @@ useModalEsc(() => emit('close'))
 .ghost {
   padding: 5px 14px;
   font-size: 13px;
-  color: #646a73;
+  color: var(--text-2);
   background: none;
-  border: 1px solid #d0d3d6;
+  border: 1px solid var(--border-control);
   border-radius: 4px;
   cursor: pointer;
 }
@@ -216,8 +223,8 @@ useModalEsc(() => emit('close'))
 .primary {
   padding: 5px 14px;
   font-size: 13px;
-  color: #fff;
-  background: #3370ff;
+  color: var(--text-on-primary);
+  background: var(--primary);
   border: none;
   border-radius: 4px;
   cursor: pointer;

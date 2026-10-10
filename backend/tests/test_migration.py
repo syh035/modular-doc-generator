@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from io import BytesIO
 from uuid import uuid4
 
+import httpx
 import pytest
 from docx import Document
 from fastapi.testclient import TestClient
@@ -32,7 +33,11 @@ def upload_template(client: TestClient, name: str) -> dict:
         files={"file": (name, make_plain_docx(marker), "application/octet-stream")},
     )
     assert resp.status_code == 201
-    return resp.json()
+    body = resp.json()
+    # 匹配矩阵夹具仅保留测试直插区域，全文候选本身另有集成覆盖。
+    with get_conn() as conn:
+        conn.execute("DELETE FROM regions WHERE template_id = ?", (body["id"],))
+    return body
 
 
 def add_region(
@@ -66,14 +71,16 @@ def bind(client: TestClient, version_id: int, region_id: int, block_id: int) -> 
     assert resp.status_code == 200
 
 
-def plan(client: TestClient, target_tid: int, source_vid: int):
+def plan(client: TestClient, target_tid: int, source_vid: int) -> httpx.Response:
     return client.post(
         f"/api/templates/{target_tid}/migrate/plan",
         json={"source_version_id": source_vid},
     )
 
 
-def apply(client: TestClient, target_tid: int, source_vid: int, bindings: list[dict]):
+def apply(
+    client: TestClient, target_tid: int, source_vid: int, bindings: list[dict]
+) -> httpx.Response:
     return client.post(
         f"/api/templates/{target_tid}/migrate/apply",
         json={"source_version_id": source_vid, "bindings": bindings},

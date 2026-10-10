@@ -1,6 +1,6 @@
 """API 入口：/api/blocks（字符块 CRUD，M2 完整化）。
 
-- 名称 2–30 字 / 内容 ≤5000 字（D8）/ 标签 ≤10 个，超限 BLOCK_INVALID / TAG_INVALID
+- 名称 1–30 字 / 内容 ≤5000 字（D8）/ 标签 ≤10 个，超限 BLOCK_INVALID / TAG_INVALID
 - 标签以名字传入：不存在的自动创建（get-or-create）
 - 删除只软删（D11）：置 deleted_at + 绑定同事务置 missing + 标签关联清除，
   无存活块引用的标签随即自动清理（2026-09-18 用户确认）
@@ -8,48 +8,59 @@
 """
 
 import sqlite3
+from typing import Literal
 
 from fastapi import APIRouter, Response
 from pydantic import BaseModel
 
-from app.core.errors import BLOCK_INVALID, BLOCK_NOT_FOUND, TAG_INVALID, AppError
+from app.core.errors import (
+    BLOCK_INVALID,
+    BLOCK_NOT_FOUND,
+    TAG_INVALID,
+    TEMPLATE_NOT_FOUND,
+    AppError,
+)
 from app.models.db import get_conn
 from app.models.entities import Block, Tag
 from app.models.repositories import blocks as blocks_repo
 from app.models.repositories import tags as tags_repo
+from app.models.repositories import templates as templates_repo
 
 router = APIRouter(prefix="/api")
 
-# PRD 4.3 字段规则：名称 2–30 字、内容 ≤5000 字（D8）、标签 ≤10 个
-_NAME_MIN, _NAME_MAX = 2, 30
+# PRD 4.3 字段规则：名称 1–30 字、内容 ≤5000 字（D8）、标签 ≤10 个
+_NAME_MIN, _NAME_MAX = 1, 30
 _CONTENT_MAX = 5000
 _TAG_NAME_MAX = 20
 _TAGS_MAX = 10
 
 
 class BlockCreate(BaseModel):
+    template_id: int | None = None
     name: str
     content: str
     tags: list[str] = []
+    kind: Literal["text", "blank"] = "text"
 
 
 class BlockUpdate(BaseModel):
+    kind: Literal["text", "blank"] | None = None
     name: str | None = None
     content: str | None = None
     tags: list[str] | None = None  # None = 不动标签；[] = 清空标签
 
 
-def _validate(name: str, content: str) -> tuple[str, str]:
+def _validate(name: str, content: str, kind: str = "text") -> tuple[str, str]:
     name = name.strip()
     if not (_NAME_MIN <= len(name) <= _NAME_MAX):
         raise AppError(
             BLOCK_INVALID, f"块名称长度须在 {_NAME_MIN}–{_NAME_MAX} 字之间", status_code=400
         )
     if len(content) > _CONTENT_MAX:
-        raise AppError(
-            BLOCK_INVALID, f"块内容不能超过 {_CONTENT_MAX} 字（D8）", status_code=400
-        )
-    if not content.strip():
+        raise AppError(BLOCK_INVALID, f"块内容不能超过 {_CONTENT_MAX} 字（D8）", status_code=400)
+    if kind == "blank":
+        content = ""
+    elif not content.strip():
         raise AppError(BLOCK_INVALID, "块内容不能为空", status_code=400)
     return name, content
 
@@ -99,6 +110,7 @@ def _block_dict(b: Block, tags: list[Tag]) -> dict[str, object]:
         "id": b.id,
         "name": b.name,
         "content": b.content,
+        "kind": b.kind,
         "tags": [{"id": t.id, "name": t.name} for t in tags],
         "created_at": b.created_at,
         "updated_at": b.updated_at,
@@ -116,21 +128,46 @@ def _block_with_tags(conn: sqlite3.Connection, block_id: int) -> dict[str, objec
 @router.post("/blocks", status_code=201)
 def create_block(payload: BlockCreate) -> dict[str, object]:
     """新建字符块（标签 get-or-create 挂接）。"""
-    name, content = _validate(payload.name, payload.content)
+    name, content = _validate(payload.name, payload.content, payload.kind)
     tag_names = _validate_tags(payload.tags)
     with get_conn() as conn:
-        block = blocks_repo.create_block(conn, name, content)
+        if (
+            payload.template_id is not None
+            and templates_repo.get_template(conn, payload.template_id) is None
+        ):
+            raise AppError(TEMPLATE_NOT_FOUND, "模板不存在", status_code=404)
+        block = blocks_repo.create_block(conn, name, content, kind=payload.kind)
         tags = _replace_tags(conn, block.id, tag_names)
+        if payload.template_id is not None:
+            conn.execute(
+                "INSERT INTO template_blocks (template_id, block_id) VALUES (?, ?)",
+                (payload.template_id, block.id),
+            )
     return _block_dict(block, tags)
 
 
+@router.post("/blocks/{block_id}/templates/{template_id}")
+def add_to_template(block_id: int, template_id: int) -> dict[str, int]:
+    """Explicitly reuse an existing block identity in a template library (idempotent)."""
+    with get_conn() as conn:
+        if templates_repo.get_template(conn, template_id) is None:
+            raise AppError(TEMPLATE_NOT_FOUND, "模板不存在", status_code=404)
+        if blocks_repo.get_block(conn, block_id) is None:
+            raise AppError(BLOCK_NOT_FOUND, "字符块不存在或已删除", status_code=404)
+        conn.execute(
+            "INSERT OR IGNORE INTO template_blocks (template_id, block_id) VALUES (?, ?)",
+            (template_id, block_id),
+        )
+    return {"template_id": template_id, "block_id": block_id}
+
+
 @router.get("/blocks")
-def list_blocks() -> dict[str, object]:
+def list_blocks(template_id: int | None = None) -> dict[str, object]:
     """块列表（存活块，排除软删除，更新时间倒序，含各自标签组）。"""
     with get_conn() as conn:
         items = [
             _block_dict(b, tags_repo.tags_of_block(conn, b.id))
-            for b in blocks_repo.list_blocks(conn)
+            for b in blocks_repo.list_blocks(conn, template_id=template_id)
         ]
     return {"blocks": items}
 
@@ -155,13 +192,16 @@ def update_block(block_id: int, payload: BlockUpdate) -> dict[str, object]:
                 BLOCK_NOT_FOUND, f"字符块不存在或已删除（id={block_id}）", status_code=404
             )
         name = content = None
-        if payload.name is not None or payload.content is not None:
+        if payload.name is not None or payload.content is not None or payload.kind is not None:
             # 两字段任一传入即整体校验：以现值补齐未传字段，保证不变量仍成立
             name, content = _validate(
                 payload.name if payload.name is not None else current.name,
                 payload.content if payload.content is not None else current.content,
+                payload.kind or current.kind,
             )
-        updated = blocks_repo.update_block(conn, block_id, name=name, content=content)
+        updated = blocks_repo.update_block(
+            conn, block_id, name=name, content=content, kind=payload.kind
+        )
         assert updated is not None
         tags = (
             _replace_tags(conn, block_id, _validate_tags(payload.tags))

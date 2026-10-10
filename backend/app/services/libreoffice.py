@@ -11,9 +11,11 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 from app.core.config import settings
 from app.core.errors import (
@@ -27,6 +29,8 @@ from app.core.errors import (
 _MACOS_SOFFICE_CANDIDATES = [
     "/Applications/LibreOffice.app/Contents/MacOS/soffice",
     "/usr/local/bin/soffice",
+    "/opt/homebrew/bin/soffice",
+    str(Path.home() / "Applications/LibreOffice.app/Contents/MacOS/soffice"),
 ]
 
 _MACOS_INSTALL_HINT = (
@@ -107,23 +111,37 @@ class LibreOfficeManager:
         self.conversions = 0  # 实际执行 soffice 的次数（测试观测缓存命中用）
 
     def _ensure_fontconfig(self) -> None:
-        """幂等写出 fontconfig 配置：扫描 macOS 系统字体目录（P17）。"""
+        """按平台扫描字体；macOS 补齐 cask 字体目录，Linux 保留系统字体配置。"""
         if self._fontconfig_ready:
             return
         conf = self.fontconfig_file
         assert conf is not None
         cache_dir = conf.parent / "cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        user_fonts = Path.home() / "Library" / "Fonts"
+        if sys.platform == "darwin":
+            directories = [
+                Path("/System/Library/Fonts"),
+                Path("/Library/Fonts"),
+                Path.home() / "Library/Fonts",
+            ]
+            system_config = ""
+        else:
+            directories = [
+                Path("/usr/share/fonts"),
+                Path("/usr/local/share/fonts"),
+                Path.home() / ".local/share/fonts",
+                Path.home() / ".fonts",
+            ]
+            system_config = '  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>\n'
+        font_dirs = "".join(f"  <dir>{escape(str(directory))}</dir>\n" for directory in directories)
         conf.write_text(
             '<?xml version="1.0"?>\n'
             '<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">\n'
             "<fontconfig>\n"
-            "  <dir>/System/Library/Fonts</dir>\n"
-            "  <dir>/Library/Fonts</dir>\n"
-            f"  <dir>{user_fonts}</dir>\n"
-            f"  <cachedir>{cache_dir}</cachedir>\n"
-            "</fontconfig>\n"
+            + system_config
+            + font_dirs
+            + f"  <cachedir>{escape(str(cache_dir))}</cachedir>\n"
+            + "</fontconfig>\n"
         )
         self._fontconfig_ready = True
 

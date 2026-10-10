@@ -6,13 +6,28 @@ import { LIBRARY_MAX_WIDTH, LIBRARY_MIN_WIDTH, useBlocksStore } from './stores/b
 
 vi.mock('./pdf/viewer', () => ({ openDocument: vi.fn(), preparePage: vi.fn() }))
 
-beforeEach(() => localStorage.clear())
+beforeEach(() => {
+  localStorage.clear()
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })))
+})
 afterEach(() => {
   document.body.style.cursor = ''
   document.body.style.userSelect = ''
 })
 
 describe('M12 块库分隔条', () => {
+  it('窄屏使用模态抽屉，选块或关闭后归还完整预览宽度', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })))
+    const wrapper = shallowMount(App, { global: { plugins: [createPinia()] } })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findComponent({ name: 'BlockDrawer' }).exists()).toBe(true)
+    expect(wrapper.findComponent({ name: 'BlockLibrary' }).exists()).toBe(false)
+    wrapper.findComponent({ name: 'BlockDrawer' }).vm.$emit('close')
+    await wrapper.vm.$nextTick()
+    expect(useBlocksStore().libraryOpen).toBe(false)
+    expect(wrapper.findComponent({ name: 'BlockDrawer' }).exists()).toBe(false)
+    wrapper.unmount()
+  })
   it('可 Tab 聚焦，左右键以 16px 调整并持久化，边界与 ARIA 同步', async () => {
     const wrapper = shallowMount(App, { global: { plugins: [createPinia()] } })
     const store = useBlocksStore()

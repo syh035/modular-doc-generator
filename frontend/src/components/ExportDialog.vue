@@ -99,16 +99,16 @@ useModalEsc(() => emit('close'))
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--modal-backdrop);
 }
 
 .dialog-card {
   width: min(420px, 90%);
   display: flex;
   flex-direction: column;
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 8px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 20px var(--shadow-modal);
   overflow: hidden;
 }
 
@@ -117,7 +117,7 @@ useModalEsc(() => emit('close'))
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  border-bottom: 1px solid #e2e3e5;
+  border-bottom: 1px solid var(--border);
 }
 
 .title {
@@ -129,7 +129,7 @@ useModalEsc(() => emit('close'))
   border: none;
   background: none;
   font-size: 18px;
-  color: #8f959e;
+  color: var(--text-3);
   cursor: pointer;
   line-height: 1;
 }
@@ -138,14 +138,14 @@ useModalEsc(() => emit('close'))
   margin: 10px 14px 0;
   font-size: 12px;
   line-height: 1.6;
-  color: #646a73;
+  color: var(--text-2);
 }
 
 .warning-list {
   margin: 8px 14px 0;
   max-height: 200px;
   overflow: auto;
-  border: 1px solid #e2e3e5;
+  border: 1px solid var(--border);
   border-radius: 4px;
 }
 
@@ -159,32 +159,32 @@ useModalEsc(() => emit('close'))
 }
 
 .warning-row + .warning-row {
-  border-top: 1px solid #f0f1f2;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .name {
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 .tag {
   flex-shrink: 0;
   padding: 1px 8px;
-  border: 1px solid #f54a45;
+  border: 1px solid var(--danger);
   border-radius: 3px;
-  color: #f54a45;
+  color: var(--danger);
 }
 
 .tag.clipped {
-  border-color: #ff7d00;
-  color: #ff7d00;
+  border-color: var(--warning);
+  color: var(--warning);
 }
 
 .error {
   margin: 8px 14px 0;
   padding: 6px 8px;
   font-size: 12px;
-  color: #f54a45;
-  background: rgba(245, 74, 69, 0.08);
+  color: var(--danger);
+  background: var(--danger-bg-subtle);
   border-radius: 4px;
 }
 
@@ -198,9 +198,9 @@ useModalEsc(() => emit('close'))
 .ghost {
   padding: 5px 14px;
   font-size: 13px;
-  color: #646a73;
+  color: var(--text-2);
   background: none;
-  border: 1px solid #d0d3d6;
+  border: 1px solid var(--border-control);
   border-radius: 4px;
   cursor: pointer;
 }
@@ -208,8 +208,8 @@ useModalEsc(() => emit('close'))
 .primary {
   padding: 5px 14px;
   font-size: 13px;
-  color: #fff;
-  background: #3370ff;
+  color: var(--text-on-primary);
+  background: var(--primary);
   border: none;
   border-radius: 4px;
   cursor: pointer;

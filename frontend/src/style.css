@@ -1,3 +1,70 @@
+/* 语义颜色变量：保留既有色值与透明度，组件不再直接声明颜色常量。 */
+:root {
+  /* 品牌与状态 */
+  --primary: #3370ff;
+  --primary-hover: #2b5fd9;
+  --danger: #f54a45;
+  --success: #34c724;
+  --warning: #ff7d00;
+  --warning-notice: #ff8800;
+  --warning-muted: #e6a23c;
+  --candidate: #ffb900;
+  --guide-example: #c7392c;
+
+  /* 文字、边框与背景 */
+  --text-1: #1f2329;
+  --text-2: #646a73;
+  --text-3: #8f959e;
+  --text-body: #40464e;
+  --text-disabled: #a8abb0;
+  --text-on-primary: #fff;
+  --region-unplaced: #909399;
+  --border: #e2e3e5;
+  --border-control: #d0d3d6;
+  --border-subtle: #f0f1f2;
+  --bg-surface: #fff;
+  --bg-muted: #f5f6f7;
+  --bg-hover: #f2f3f5;
+  --bg-panel: #fafbfc;
+  --bg-list-hover: #f5f7fa;
+  --bg-migration: #f7f8fa;
+  --bg-preview: #eceff1;
+  --bg-resizer-active: #d6e2ff;
+
+  /* 主色透明层 */
+  --primary-bg-hover: rgba(51, 112, 255, 0.06);
+  --primary-bg-subtle: rgba(51, 112, 255, 0.08);
+  --primary-bg-selected: rgba(51, 112, 255, 0.1);
+  --primary-bg-region: rgba(51, 112, 255, 0.12);
+  --primary-bg-marker: rgba(51, 112, 255, 0.2);
+  --primary-flash-ring: rgba(51, 112, 255, 0.5);
+
+  /* 成功、危险与警告透明层 */
+  --success-bg-hover: rgba(52, 199, 36, 0.06);
+  --success-bg-subtle: rgba(52, 199, 36, 0.08);
+  --success-bg-confirmed: rgba(52, 199, 36, 0.12);
+  --success-bg-region: rgba(52, 199, 36, 0.15);
+  --success-bg-marker: rgba(52, 199, 36, 0.2);
+  --success-bg-legend: rgba(52, 199, 36, 0.25);
+  --danger-bg-hover: rgba(245, 74, 69, 0.06);
+  --danger-bg-subtle: rgba(245, 74, 69, 0.08);
+  --danger-bg-region: rgba(245, 74, 69, 0.15);
+  --danger-border-subtle: rgba(245, 74, 69, 0.2);
+  --danger-border-control: rgba(245, 74, 69, 0.4);
+  --warning-bg-region: rgba(255, 125, 0, 0.15);
+  --warning-bg-missing: rgba(230, 162, 60, 0.1);
+  --candidate-bg-low: rgba(255, 196, 0, 0.15);
+  --candidate-bg-region: rgba(255, 196, 0, 0.18);
+  --candidate-bg-marker: rgba(255, 196, 0, 0.3);
+  --candidate-bg-legend: rgba(255, 196, 0, 0.35);
+  --guide-example-bg: rgba(199, 57, 44, 0.06);
+
+  /* 遮罩与阴影 */
+  --modal-backdrop: rgba(0, 0, 0, 0.25);
+  --shadow-modal: rgba(0, 0, 0, 0.2);
+  --shadow-page: rgba(0, 0, 0, 0.15);
+}
+
 /* 全局基础样式：双栏布局骨架（PRD 4.0 界面总览） */
 
 * {
@@ -17,23 +84,41 @@ body {
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
   font-size: 14px;
-  color: #1f2329;
-  background: #f5f6f7;
+  color: var(--text-1);
+  background: var(--bg-muted);
 }
 
 button {
   font: inherit;
   cursor: pointer;
-  border: 1px solid #d0d3d6;
+  border: 1px solid var(--border-control);
   border-radius: 4px;
-  background: #fff;
+  background: var(--bg-surface);
   padding: 4px 12px;
 }
 
 button:hover {
-  border-color: #3370ff;
-  color: #3370ff;
+  border-color: var(--primary);
+  color: var(--primary);
 }
+
+/* 工作台共用控件：保持语义颜色与原生键盘操作。 */
+input:not([type='checkbox']):not([type='radio']):not([type='file']), textarea, select {
+  font: inherit;
+  font-size: 13px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-control);
+  border-radius: 7px;
+  color: var(--text-1);
+  background: var(--bg-surface);
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+:is(button, input, textarea, select, summary):focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.ui-btn { min-height: 34px; padding: 7px 12px; border-radius: 7px; font-size: 13px; white-space: nowrap; }
+.ui-primary, .ui-primary:hover { color: var(--text-on-primary); background: var(--primary); border-color: var(--primary); }
+.ui-primary:hover:not(:disabled) { background: var(--primary-hover); }
+.ui-danger, .ui-danger:hover { color: var(--danger); border-color: var(--danger-border-control); }
 
 /* 原生 dialog 的顶层遮罩铺满视窗，避免预览滚动容器裁剪或背景仍可操作。 */
 dialog.dialog-mask {

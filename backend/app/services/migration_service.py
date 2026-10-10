@@ -108,6 +108,8 @@ def _source_items(conn: sqlite3.Connection, source_version_id: int) -> list[dict
                 "source_label": region.label,
                 "type": region.type,
                 "block_id": binding.block_id,
+                "line_break_mode": binding.line_break_mode,
+                "position": binding.position,
                 "block_name": block.name if block else None,
             }
         )
@@ -127,6 +129,15 @@ def _target_regions(conn: sqlite3.Connection, target_template_id: int) -> list[R
         for r in regions_repo.list_regions(conn, target_template_id)
         if r.review_status != "excluded"
     ]
+
+
+def _layout_fields(item: dict[str, object]) -> dict[str, object]:
+    fields: dict[str, object] = {}
+    if item["line_break_mode"] != "paragraph":
+        fields["line_break_mode"] = item["line_break_mode"]
+    if item["position"] != "inside":
+        fields["position"] = item["position"]
+    return fields
 
 
 def build_plan(
@@ -162,6 +173,7 @@ def build_plan(
                             "source_label": it["source_label"],
                             "block_id": it["block_id"],
                             "block_name": it["block_name"],
+                            **_layout_fields(it),
                             "options": [_option(r) for r in free],
                         }
                     )
@@ -172,6 +184,7 @@ def build_plan(
                             "source_label": it["source_label"],
                             "block_id": it["block_id"],
                             "block_name": it["block_name"],
+                            **_layout_fields(it),
                             "manual_options": [],  # 占位：apply 前统一补全
                         }
                     )
@@ -185,6 +198,7 @@ def build_plan(
                         "source_label": it["source_label"],
                         "block_id": it["block_id"],
                         "block_name": it["block_name"],
+                        **_layout_fields(it),
                         "manual_options": [],
                     }
                 )
@@ -200,6 +214,7 @@ def build_plan(
                         "target_label": tr.label,
                         "block_id": it["block_id"],
                         "block_name": it["block_name"],
+                        **_layout_fields(it),
                     }
                 )
             for it in items[len(tregs) :]:
@@ -209,6 +224,7 @@ def build_plan(
                         "source_label": it["source_label"],
                         "block_id": it["block_id"],
                         "block_name": it["block_name"],
+                        **_layout_fields(it),
                         "manual_options": [],
                     }
                 )
@@ -222,6 +238,7 @@ def build_plan(
                         "source_label": it["source_label"],
                         "block_id": it["block_id"],
                         "block_name": it["block_name"],
+                        **_layout_fields(it),
                         "options": [_option(r) for r in free],
                     }
                 )
@@ -250,6 +267,8 @@ def apply_migration(
     source_version_id: int,
     target_template_id: int,
     pairs: list[tuple[int, int]],
+    *,
+    settings_by_region: dict[int, tuple[str, str]] | None = None,
 ) -> dict[str, object]:
     """落库最终映射：前端把三清单确认结果（① 全部 + ②③点选）整包提交。
 
@@ -284,6 +303,9 @@ def apply_migration(
             raise AppError(
                 BLOCK_NOT_FOUND, f"字符块不存在或已删除（id={block_id}）", status_code=404
             )
-        bindings_repo.upsert_binding(conn, target_version.id, region_id, block_id)
+        mode, position = (settings_by_region or {}).get(region_id, ("paragraph", "inside"))
+        bindings_repo.upsert_binding(
+            conn, target_version.id, region_id, block_id, line_break_mode=mode, position=position
+        )
 
     return {"version_id": target_version.id, "created": len(pairs)}

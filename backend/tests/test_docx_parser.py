@@ -3,6 +3,7 @@
 from io import BytesIO
 
 from docx import Document
+from docx.document import Document as DocxDocument
 from lxml import etree
 
 from app.services.docx_parser import iter_flow_paragraphs, parse_candidates, parse_placeholders
@@ -11,7 +12,7 @@ _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _V_NS = "urn:schemas-microsoft-com:vml"
 
 
-def docx_bytes(doc: Document) -> bytes:
+def docx_bytes(doc: DocxDocument) -> bytes:
     """Document → bytes（内存序列化）。"""
     buf = BytesIO()
     doc.save(buf)
@@ -21,13 +22,13 @@ def docx_bytes(doc: Document) -> bytes:
 # ---- 构造辅助 ----
 
 
-def build_simple_doc() -> Document:
+def build_simple_doc() -> DocxDocument:
     doc = Document()
     doc.add_paragraph("{{姓名}}")
     return doc
 
 
-def build_split_run_doc() -> Document:
+def build_split_run_doc() -> DocxDocument:
     """P1 核心场景：`{{姓名}}` 被拆成多个 run。"""
     doc = Document()
     p = doc.add_paragraph()
@@ -37,14 +38,14 @@ def build_split_run_doc() -> Document:
     return doc
 
 
-def build_multi_placeholder_doc() -> Document:
+def build_multi_placeholder_doc() -> DocxDocument:
     doc = Document()
     doc.add_paragraph("{{姓名}}，电话{{电话}}")
     doc.add_paragraph("{{ 自我评价 }}")
     return doc
 
 
-def build_table_doc() -> Document:
+def build_table_doc() -> DocxDocument:
     doc = Document()
     doc.add_paragraph("正文占位 {{姓名}}")
     table = doc.add_table(rows=2, cols=2)
@@ -53,7 +54,7 @@ def build_table_doc() -> Document:
     return doc
 
 
-def build_nested_table_doc() -> Document:
+def build_nested_table_doc() -> DocxDocument:
     doc = Document()
     table = doc.add_table(rows=1, cols=1)
     cell = table.cell(0, 0)
@@ -63,7 +64,7 @@ def build_nested_table_doc() -> Document:
     return doc
 
 
-def build_textbox_doc() -> Document:
+def build_textbox_doc() -> DocxDocument:
     """D6：文本框内占位符不纳入解析范围。"""
     doc = Document()
     p = doc.add_paragraph()
@@ -79,7 +80,7 @@ def build_textbox_doc() -> Document:
     return doc
 
 
-def build_header_doc() -> Document:
+def build_header_doc() -> DocxDocument:
     """D6：页眉中的占位符不纳入解析范围（页眉在独立 header part）。"""
     doc = Document()
     doc.sections[0].header.paragraphs[0].text = "{{页眉占位}}"
@@ -97,7 +98,8 @@ def test_simple_placeholder() -> None:
     assert r.placeholder == "{{姓名}}"
     assert r.label == "姓名"
     assert r.anchor["kind"] == "p"
-    assert len(r.anchor["path"]) == 1  # type: ignore[arg-type]
+    path = r.anchor["path"]
+    assert isinstance(path, list) and len(path) == 1
     assert r.order_index == 0
 
 
@@ -132,7 +134,7 @@ def test_nested_table_parsed() -> None:
     assert r.label == "嵌套"
     # 嵌套路径：[tbl, row, cell, nested_tbl, row, cell, para] 共 7 位
     path = r.anchor["path"]
-    assert isinstance(path, list) and len(path) == 7  # type: ignore[arg-type]
+    assert isinstance(path, list) and len(path) == 7
 
 
 def test_textbox_skipped() -> None:
@@ -193,11 +195,7 @@ def test_flow_anchors_match_parse_placeholders() -> None:
     flow = list(iter_flow_paragraphs(data))
     for region in parse_placeholders(data):
         path = region.anchor["path"]
-        matches = [
-            t
-            for a, t in flow
-            if a["path"] == path and a["kind"] == region.anchor["kind"]
-        ]
+        matches = [t for a, t in flow if a["path"] == path and a["kind"] == region.anchor["kind"]]
         assert len(matches) == 1
         assert region.placeholder in matches[0]
 
@@ -251,24 +249,27 @@ def test_candidates_lexicon_title_and_labeled() -> None:
 
 
 def test_candidates_paragraph_threshold_boundary() -> None:
-    """成段阈值：30 字产出、29 字不产出。"""
+    """全文识别不再按 30 字阈值过滤。"""
     doc = Document()
     doc.add_paragraph("字" * 29)
     doc.add_paragraph("字" * 30)
     outcome = parse_candidates(docx_bytes(doc))
-    assert len(outcome.candidates) == 1
+    assert len(outcome.candidates) == 2
+    assert [c.anchor["path"] for c in outcome.candidates] == [[0], [1]]
     c = outcome.candidates[0]
     assert c.region_type == "custom"
     assert c.confidence == 0.4
     assert c.label.endswith("…")
 
 
-def test_candidates_short_non_lexicon_no_candidate() -> None:
-    """过短非词表段（如「张三」）不产候选，但计入 has_any_text。"""
+def test_candidates_short_non_lexicon_candidate() -> None:
+    """短姓名也产候选，空白仍由独立测试排除。"""
     doc = Document()
     doc.add_paragraph("张三")
     outcome = parse_candidates(docx_bytes(doc))
-    assert outcome.candidates == []
+    assert len(outcome.candidates) == 1
+    assert outcome.candidates[0].label == "张三"
+    assert outcome.candidates[0].anchor["path"] == [0]
     assert outcome.has_any_text is True
 
 

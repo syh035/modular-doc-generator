@@ -5,7 +5,7 @@ import sqlite3
 from typing import Annotated
 
 from fastapi import APIRouter, File, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from app.core.errors import TEMPLATE_NOT_FOUND, AppError
 from app.models.db import get_conn
@@ -16,6 +16,12 @@ from app.models.repositories import versions as versions_repo
 from app.services import render_service, template_service
 
 router = APIRouter(prefix="/api")
+
+
+@router.delete("/templates/{template_id}", status_code=204)
+def delete_template(template_id: int) -> Response:
+    template_service.delete_template(template_id)
+    return Response(status_code=204)
 
 
 def region_dict(r: Region) -> dict[str, object]:
