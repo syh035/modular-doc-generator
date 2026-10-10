@@ -1,10 +1,11 @@
 """应用配置。所有可调参数集中在此，D4 阈值等开发期校准项走配置不改代码。"""
 
+import os
 from pathlib import Path
 
 
 class Settings:
-    """全局配置。路径锚定 backend/ 目录，数据落在项目根 data/。"""
+    """全局配置。开发默认项目 data/；分发通过环境变量指定独立资源与数据目录。"""
 
     # 服务
     host: str = "127.0.0.1"  # P10 铁律：只绑本机回环，禁止 0.0.0.0
@@ -15,7 +16,14 @@ class Settings:
     # config.py 在 backend/app/core/ 下，三层 parent 才到 backend/（M0 少算一层致 data 落错位）
     backend_root: Path = Path(__file__).resolve().parents[2]
     project_root: Path = backend_root.parent
-    data_dir: Path = project_root / "data"
+    data_dir: Path = (
+        Path(os.environ.get("MODUDOC_DATA_DIR", str(project_root / "data")))
+        .expanduser().resolve()
+    )
+    static_dir: Path | None = (
+        Path(os.environ["MODUDOC_STATIC_DIR"]).resolve()
+        if os.environ.get("MODUDOC_STATIC_DIR") else None
+    )
     templates_dir: Path = data_dir / "templates"
     db_path: Path = data_dir / "app.db"
     # 渲染管线（M4）：转换缓存与 LO 独立 profile（避开单实例锁，P8）

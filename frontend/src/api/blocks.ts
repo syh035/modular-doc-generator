@@ -13,6 +13,7 @@ export interface Block {
   id: number
   name: string
   content: string
+  kind?: 'text' | 'blank'
   tags: BlockTag[]
   created_at: string
   updated_at: string
@@ -28,14 +29,17 @@ export interface TagInfo {
 
 /** 块更新载荷（部分更新：仅传入字段生效；tags 传入即整组替换）。 */
 export interface BlockPayload {
+  template_id?: number
   name?: string
   content?: string
+  kind?: 'text' | 'blank'
   tags?: string[]
 }
 
 /** 块列表（存活块，更新时间倒序，含各自标签组）。 */
-export async function listBlocks(): Promise<Block[]> {
-  const body = await apiFetch<{ blocks: Block[] }>('/api/blocks')
+export async function listBlocks(templateId?: number): Promise<Block[]> {
+  const url = templateId === undefined ? '/api/blocks' : `/api/blocks?template_id=${templateId}`
+  const body = await apiFetch<{ blocks: Block[] }>(url)
   return body.blocks
 }
 
@@ -44,7 +48,7 @@ export function fetchBlock(id: number): Promise<Block> {
   return apiFetch<Block>(`/api/blocks/${id}`)
 }
 
-/** 新建块（名称 2–30 字 / 内容 ≤5000 字 / 标签 ≤10 个，后端校验；标签名不存在自动创建）。 */
+/** 新建块（名称 1–30 字 / 内容 ≤5000 字 / 标签 ≤10 个，后端校验；标签名不存在自动创建）。 */
 export function createBlock(payload: BlockPayload): Promise<Block> {
   return apiFetch<Block>('/api/blocks', {
     method: 'POST',
@@ -85,4 +89,9 @@ export function renameTag(id: number, name: string): Promise<TagInfo> {
 /** 删除标签（块关联级联清理，块本身不受影响）。 */
 export async function deleteTag(id: number): Promise<void> {
   await apiFetch<void>(`/api/tags/${id}`, { method: 'DELETE' }) // 204 无响应体
+}
+
+
+export async function addBlockToTemplate(blockId: number, templateId: number): Promise<void> {
+  await apiFetch(`/api/blocks/${blockId}/templates/${templateId}`, { method: 'POST' })
 }

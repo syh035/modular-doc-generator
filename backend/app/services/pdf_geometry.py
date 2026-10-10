@@ -10,8 +10,8 @@
 - 每个非空 DOCX 段落消耗连续 1..N 个 PDF 行（自动换段折行），
   段落 bbox = 所耗行 bbox 的并集
 - 页眉页脚/页码等污染行：允许在段落起点前向后看 LOOKAHEAD 行跳过
-- 对不上的段落（如隐藏文字）直接跳过，对应区域 bbox 保持 None，
-  交给 M5b 校对流程人工兜底
+- 常规顺序窗口未命中时回查未消费的文本行，容忍晚写表格块与跨页插入行；
+  精确拼接失败的段落（如隐藏文字）保持 bbox=None，可直接人工重新定位
 """
 
 import re
@@ -51,13 +51,14 @@ class PdfLine:
 class RegionGeometry:
     """一个文档流段落的渲染几何：bbox 为所匹配行并集。
 
-    注：段落跨页折行时 bbox 取并集、页码取首行所在页（简历场景罕见，
-    v1 已知局限，M5b 校对可人工修正）。
+    顶层 bbox/page 保留首个页面框；跨页时 fragments 包含各页独立几何。
+    同一段落仍只占用一个文档流锚点与绑定。
     """
 
     page: int
     bbox: tuple[float, float, float, float]
     line_count: int
+    fragments: tuple["RegionGeometry", ...] = ()
 
 
 def normalize_text(s: str) -> str:
@@ -82,9 +83,7 @@ def extract_pdf_lines(pdf_path: str | Path) -> list[PdfLine]:
                     PdfLine(
                         page_no,
                         "".join(span["text"] for span in line["spans"]),
-                        cast(
-                            "tuple[float, float, float, float]", tuple(line["bbox"])
-                        ),
+                        cast("tuple[float, float, float, float]", tuple(line["bbox"])),
                     )
                     for line in block["lines"]
                     if "".join(span["text"] for span in line["spans"]).strip()
@@ -146,26 +145,63 @@ def align_flow_to_lines(
     未匹配段落不出现在结果中（调用方保持 bbox=None）。
     """
     result: dict[tuple[int, ...], RegionGeometry] = {}
-    pi = 0
+    used: set[int] = set()
+    cursor = 0
     for anchor, text in flow:
         target = normalize_text(text)
         if not target:
             continue
         path = anchor["path"]
         assert isinstance(path, list)
-        match: tuple[list[PdfLine], int] | None = None
-        for j in range(pi, min(pi + _LOOKAHEAD + 1, len(pdf_lines))):
-            match = _match_lines_at(pdf_lines, j, target)
-            if match is not None:
+        # 优先文档流附近；表格块晚写入 PDF 时，回查尚未消费的行。
+        candidates = list(range(cursor, min(cursor + _LOOKAHEAD + 1, len(pdf_lines))))
+        candidates += [i for i in range(len(pdf_lines)) if i not in candidates]
+        indices: list[int] = []
+        for start in candidates:
+            if start in used:
+                continue
+            remaining = target
+            trial: list[int] = []
+            skipped = 0
+            for i in range(start, len(pdf_lines)):
+                if i in used:
+                    continue
+                norm = normalize_text(pdf_lines[i].text)
+                if not norm:
+                    continue
+                if remaining.startswith(norm) or norm.startswith(remaining):
+                    trial.append(i)
+                    remaining = remaining[len(norm) :] if remaining.startswith(norm) else ""
+                    skipped = 0
+                    if not remaining:
+                        indices = trial
+                        break
+                elif not trial or skipped >= _LOOKAHEAD:
+                    break
+                else:
+                    # 跨页段落之间可能插入页码或晚写的表格块；只消费匹配行。
+                    skipped += 1
+            if indices:
                 break
-        if match is None:
-            continue  # 未匹配：跳过该段落，PDF 指针不动
-        hits, consumed = match
-        assert consumed > 0
-        pi = j + consumed
-        x0 = min(ln.bbox[0] for ln in hits)
-        y0 = min(ln.bbox[1] for ln in hits)
-        x1 = max(ln.bbox[2] for ln in hits)
-        y1 = max(ln.bbox[3] for ln in hits)
-        result[tuple(path)] = RegionGeometry(hits[0].page, (x0, y0, x1, y1), consumed)
+        if not indices:
+            continue
+        used.update(indices)
+        # 回查命中晚写表格时保持正文游标，避免改变后续重复正文的顺序。
+        if indices[0] < cursor + _LOOKAHEAD + 1:
+            cursor = max(cursor, indices[-1] + 1)
+        hits = [pdf_lines[i] for i in indices]
+        parts: list[RegionGeometry] = []
+        for page in dict.fromkeys(ln.page for ln in hits):
+            page_hits = [ln for ln in hits if ln.page == page]
+            box = (
+                min(ln.bbox[0] for ln in page_hits),
+                min(ln.bbox[1] for ln in page_hits),
+                max(ln.bbox[2] for ln in page_hits),
+                max(ln.bbox[3] for ln in page_hits),
+            )
+            parts.append(RegionGeometry(page, box, len(page_hits)))
+        first = parts[0]
+        result[tuple(path)] = RegionGeometry(
+            first.page, first.bbox, len(hits), tuple(parts) if len(parts) > 1 else ()
+        )
     return result

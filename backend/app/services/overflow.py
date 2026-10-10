@@ -25,6 +25,9 @@ _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 LEVEL_LARGE = "large"
 LEVEL_SMALL = "small"
 
+# 自动框坐标保留两位小数，两个端点量化可引入最多 0.01pt 高度差。
+_HEIGHT_TOLERANCE_PT = 0.01
+
 
 @dataclass(frozen=True, slots=True)
 class OverflowInfo:
@@ -67,17 +70,20 @@ def measure_overflow(
     if not isinstance(y0, (int, float)) or not isinstance(y1, (int, float)):
         return None
     orig_h = float(y1) - float(y0)
+    fragments = orig_bbox.get("fragments")
+    if isinstance(fragments, list) and fragments:
+        orig_h = sum(float(part["y1"]) - float(part["y0"]) for part in fragments)
     if orig_h <= 0:
         return None
     new_h = new_bbox[3] - new_bbox[1]
     ratio = (new_h - orig_h) / orig_h
-    if ratio <= 0 and not clipped:
+    if new_h - orig_h <= _HEIGHT_TOLERANCE_PT + 1e-9 and not clipped:
         return None
     level = LEVEL_LARGE if (clipped or ratio > threshold) else LEVEL_SMALL
     return OverflowInfo(
         orig_height=round(orig_h, 2),
         new_height=round(new_h, 2),
-        ratio=round(ratio, 4),
+        ratio=round(ratio, 8),
         level=level,
         clipped=clipped,
         fixed_row=fixed_row,

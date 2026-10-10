@@ -24,7 +24,7 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
       - name: Type check (mypy)
-        run: mypy app
+        run: mypy app tests
       - name: Tests (pytest)
         # LibreOffice 相关用例自带 skipif 守卫，CI 环境无 LO 自动跳过，其余全绿
         run: pytest -q
@@ -50,3 +50,39 @@ jobs:
         run: npm run typecheck
       - name: Tests (vitest)
         run: npm run test
+
+  desktop:
+    name: macOS desktop (Swift / lifecycle / bundle)
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Prepare fixture interpreter and checks
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/pip install ruff mypy
+      - name: Lint and type check build scripts
+        run: |
+          backend/.venv/bin/ruff check scripts/build_desktop.py scripts/test_desktop.py scripts/migrate_data.py scripts/test_packaged.py scripts/package_desktop.py
+          backend/.venv/bin/mypy scripts/build_desktop.py scripts/test_desktop.py scripts/migrate_data.py scripts/test_packaged.py scripts/package_desktop.py
+          xcrun swift-format lint --strict desktop/*.swift
+      - name: Native service lifecycle tests
+        run: python scripts/test_desktop.py
+      - name: Build production frontend
+        run: npm ci --prefix frontend && npm run build --prefix frontend
+      - name: Compile and verify app
+        run: python scripts/build_desktop.py --arch ${{ matrix.arch }}
+      - name: Accept moved bundle with offline dependencies
+        run: python scripts/test_packaged.py --app desktop/build/模块化文档生成助手.app --python "$(command -v python)"

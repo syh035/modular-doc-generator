@@ -10,9 +10,14 @@
  */
 
 import { defineStore } from 'pinia'
+import { verifiedPageFingerprints } from '../pdf/pageCache'
+import type { PdfPageMetadata } from '../api/versions'
+import { clearHistoryBoundary } from '../api/historyHooks'
+import { useBlocksStore } from './blocks'
 import { computed, ref } from 'vue'
 import { CancelledError, RequestSequencer, fetchBlob } from '../api/client'
 import {
+  deleteTemplate as deleteTemplateApi,
   fetchTemplate,
   listTemplates,
   previewUrl,
@@ -22,6 +27,8 @@ import {
 } from '../api/templates'
 import {
   bindRegion,
+  setRegionLayout,
+  saveRegionText as saveRegionTextApi,
   createVersion as createVersionApi,
   deleteVersion as deleteVersionApi,
   fetchVersionOverlay,
@@ -96,11 +103,14 @@ export const usePreviewStore = defineStore('preview', () => {
   const versions = ref<VersionInfo[]>([])
 
   /** 当前预览状态机：idle（未选）→ loading → ready | error。 */
+  const uploadPhase = ref<'idle' | 'request' | 'render'>('idle')
+  const uploadStartedAt = ref<number | null>(null)
   const status = ref<PreviewStatus>('idle')
   const error = ref<string | null>(null)
   const regions = ref<DisplayRegion[]>([])
   /** 管线 PDF 原始字节（组件交 pdfjs 渲染；换模板/绑定刷新整体替换）。 */
   const pdfData = ref<ArrayBuffer | null>(null)
+  const pageFingerprints = ref<string[]>([])
   /** 绑定后预览刷新中（D12：局部刷新指示，旧内容保持可见）。 */
   const refreshing = ref(false)
   /** 校对模式（M5b）：开启时预览切到模板本体（校对对象是模板区域，非版本成品）。 */
@@ -165,6 +175,7 @@ export const usePreviewStore = defineStore('preview', () => {
     exportError.value = null
     try {
       const { blob, fileName } = await exportVersion(versionId, confirm)
+      await clearHistoryBoundary()
       return { ok: true, needConfirm: false, blob, fileName }
     } catch (err) {
       if (err instanceof ExportBlockedError) {
@@ -197,13 +208,20 @@ export const usePreviewStore = defineStore('preview', () => {
 
   /** 上传模板（顶栏「导入模板」）：成功后刷新列表并选中新模板（新模板进待校对流程）。 */
   async function uploadTemplate(file: File): Promise<UploadResult> {
+    if (uploadPhase.value !== 'idle') return { ok: false, error: '已有模板正在导入' }
+    uploadPhase.value = 'request'
+    uploadStartedAt.value = Date.now()
     try {
       const { template, reused } = await uploadTemplateApi(file)
       await loadTemplates()
+      uploadPhase.value = 'render'
       await selectTemplate(template.id)
       return { ok: true, error: null, templateId: template.id, reused }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    } finally {
+      uploadPhase.value = 'idle'
+      uploadStartedAt.value = null
     }
   }
 
@@ -213,14 +231,15 @@ export const usePreviewStore = defineStore('preview', () => {
     if (!sequencer.isCurrent(seq)) {
       throw new CancelledError()
     }
-    pdfData.value = await blob.arrayBuffer()
-    if (!sequencer.isCurrent(seq)) {
-      throw new CancelledError()
-    }
-    regions.value = await fetchVersionOverlay(versionId)
-    if (!sequencer.isCurrent(seq)) {
-      throw new CancelledError()
-    }
+    const data = await blob.arrayBuffer()
+    let metadata: PdfPageMetadata = {}
+    const overlay = await fetchVersionOverlay(versionId, value => { metadata = value })
+    const hashes = await verifiedPageFingerprints(data, metadata)
+    if (!sequencer.isCurrent(seq)) throw new CancelledError()
+    // Publish one coherent PDF + geometry + fingerprint batch (P7/P21).
+    pageFingerprints.value = hashes
+    regions.value = overlay
+    pdfData.value = data
   }
 
   /** 无版本历史模板：模板预览 PDF + 详情区域（bbox 落库版，binding 恒 null）。 */
@@ -229,6 +248,7 @@ export const usePreviewStore = defineStore('preview', () => {
     if (!sequencer.isCurrent(seq)) {
       throw new CancelledError()
     }
+    pageFingerprints.value = []
     pdfData.value = await blob.arrayBuffer()
     if (!sequencer.isCurrent(seq)) {
       throw new CancelledError()
@@ -240,7 +260,24 @@ export const usePreviewStore = defineStore('preview', () => {
     regions.value = detail.regions.map(r => ({ ...r, binding: null }))
   }
 
+  async function removeTemplate(id: number): Promise<ProofreadResult> {
+    try {
+      await deleteTemplateApi(id)
+      templates.value = templates.value.filter(t => t.id !== id)
+      if (currentTemplateId.value === id) {
+        dismissExportWarnings()
+        await selectTemplate(null)
+      }
+      return { ok: true, error: null }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
   async function selectTemplate(id: number | null): Promise<void> {
+    exportWarnings.value = []
+    exportError.value = null
+    await clearHistoryBoundary()
     // M10 迁移触发：捕获切换前上下文（会话内、版本模式、active 绑定 ≥1 才有可迁移源）
     const prevTemplateId = currentTemplateId.value
     const prevVersionId = currentVersionId.value
@@ -443,6 +480,7 @@ export const usePreviewStore = defineStore('preview', () => {
     if (proofreadMode.value || id === currentVersionId.value) {
       return
     }
+    await clearHistoryBoundary()
     const seq = sequencer.next()
     currentVersionId.value = id
     regions.value = []
@@ -550,15 +588,16 @@ export const usePreviewStore = defineStore('preview', () => {
   }
 
   /** 绑定/换绑（PRD 4.4 正反向统一入口）→ 成功后刷新预览。 */
-  async function bindRegionToBlock(regionId: number, blockId: number): Promise<boolean> {
+  async function bindRegionToBlock(regionId: number, blockId: number, lineBreakMode: 'paragraph' | 'soft' = 'paragraph', position: 'inside' | 'before' | 'after' = 'inside'): Promise<boolean> {
     const versionId = currentVersionId.value
     if (versionId === null) {
       error.value = '当前模板无内容版本，无法绑定'
       return false
     }
     try {
-      await bindRegion(versionId, regionId, blockId)
+      await bindRegion(versionId, regionId, blockId, lineBreakMode, position)
       await refreshVersionRender()
+      void loadVersionList()
       return true
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err)
@@ -576,6 +615,7 @@ export const usePreviewStore = defineStore('preview', () => {
     try {
       await unbindRegion(versionId, regionId)
       await refreshVersionRender()
+      void loadVersionList()
       return true
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err)
@@ -642,7 +682,11 @@ export const usePreviewStore = defineStore('preview', () => {
     }
     try {
       const region = await createRegionApi(templateId, { label, type, bbox: frame })
-      regions.value = [...regions.value, { ...region, binding: null }]
+      const previous = regions.value.find(r => r.id === region.id)
+      const updated = { ...region, binding: previous?.binding ?? null }
+      regions.value = previous
+        ? regions.value.map(r => r.id === region.id ? updated : r)
+        : [...regions.value, updated]
       void loadTemplates()
       return { ok: true, error: null }
     } catch (err) {
@@ -650,7 +694,52 @@ export const usePreviewStore = defineStore('preview', () => {
     }
   }
 
+  async function editRegionText(regionId: number, content: string, syncBlock: boolean,
+    expectedContent: string): Promise<ProofreadResult> {
+    const versionId = currentVersionId.value
+    const templateId = currentTemplateId.value
+    if (versionId === null || proofreadMode.value) {
+      return { ok: false, error: '请先退出校对模式并选择内容版本' }
+    }
+    try {
+      await saveRegionTextApi(versionId, regionId, content, syncBlock, expectedContent)
+      const blocksStore = useBlocksStore()
+      await Promise.all([blocksStore.loadBlocks(), blocksStore.loadTags()])
+      if (currentVersionId.value === versionId && currentTemplateId.value === templateId) {
+        await refreshVersionRender()
+        void loadVersionList()
+      }
+      return { ok: true, error: null }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  async function changeRegionLayout(regionId: number, action: 'remove' | 'restore'): Promise<ProofreadResult> {
+    const versionId = currentVersionId.value
+    if (versionId === null || proofreadMode.value) return { ok: false, error: '请先选择内容版本并退出校对' }
+    try {
+      await setRegionLayout(versionId, regionId, action)
+      if (currentVersionId.value === versionId) await refreshVersionRender()
+      return { ok: true, error: null }
+    } catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) } }
+  }
+
+  async function reloadAfterHistory(): Promise<void> {
+    await loadTemplates()
+    await loadVersionList()
+    if (proofreadMode.value && currentTemplateId.value !== null) {
+      const detail = await fetchTemplate(currentTemplateId.value)
+      regions.value = detail.regions.map(r => ({ ...r, binding: null }))
+    } else await refreshVersionRender()
+  }
+
   return {
+    reloadAfterHistory,
+    changeRegionLayout,
+    uploadPhase,
+    uploadStartedAt,
+    editRegionText,
     templates,
     templatesError,
     currentTemplateId,
@@ -661,10 +750,12 @@ export const usePreviewStore = defineStore('preview', () => {
     error,
     regions,
     pdfData,
+    pageFingerprints,
     refreshing,
     proofreadMode,
     loadTemplates,
     selectTemplate,
+    removeTemplate,
     uploadTemplate,
     toggleProofreadMode,
     refreshVersionRender,

@@ -9,6 +9,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import {
+  addBlockToTemplate,
   createBlock,
   deleteBlock,
   deleteTag,
@@ -48,6 +49,47 @@ function _writeStored(key: string, value: string): void {
 export const useBlocksStore = defineStore('blocks', () => {
   const blocks = ref<Block[]>([])
   const tags = ref<TagInfo[]>([])
+  const libraryTemplateId = ref<number | null>(null)
+  const libraryBlockIds = ref<number[]>([])
+  const libraryLoading = ref(false)
+  const libraryError = ref<string | null>(null)
+  let libraryRequest = 0
+  const libraryBlocks = computed(() => libraryTemplateId.value === null ? []
+    : blocks.value.filter(b => libraryBlockIds.value.includes(b.id)))
+  const libraryTags = computed(() => {
+    const counts = new Map<number, TagInfo>()
+    for (const block of libraryBlocks.value) for (const tag of block.tags) {
+      const current = counts.get(tag.id)
+      counts.set(tag.id, { ...tag, created_at: '', block_count: (current?.block_count ?? 0) + 1 })
+    }
+    return [...counts.values()].sort((a, b) => a.name.localeCompare(b.name))
+  })
+
+  async function loadTemplateBlocks(templateId: number | null): Promise<void> {
+    const request = ++libraryRequest
+    if (libraryTemplateId.value !== templateId) {
+      libraryBlockIds.value = []
+      selectedBlockId.value = null
+      activeTagId.value = null
+    }
+    libraryTemplateId.value = templateId
+    libraryError.value = null
+    libraryLoading.value = templateId !== null
+    if (templateId === null) { libraryBlockIds.value = []; return }
+    try {
+      const result = await listBlocks(templateId)
+      if (request !== libraryRequest) return
+      const ids = new Set(result.map(b => b.id))
+      blocks.value = [...result, ...blocks.value.filter(b => !ids.has(b.id))]
+      libraryBlockIds.value = [...ids]
+    } catch (err) {
+      if (request !== libraryRequest) return
+      libraryBlockIds.value = []
+      libraryError.value = err instanceof Error ? err.message : String(err)
+    } finally {
+      if (request === libraryRequest) libraryLoading.value = false
+    }
+  }
   const error = ref<string | null>(null)
   /** 块库抽屉展开态（UI 调整②，展开/收起均 localStorage 记忆）。 */
   const libraryOpen = ref(_readStored(LIBRARY_OPEN_KEY) !== '0')
@@ -116,11 +158,16 @@ export const useBlocksStore = defineStore('blocks', () => {
     }
   }
 
+  let tagsRequest = 0
   async function loadTags(): Promise<void> {
+    const request = ++tagsRequest
     try {
-      tags.value = await listTags()
+      const result = await listTags()
+      if (request !== tagsRequest) return
+      tags.value = result
+      if (activeTagId.value !== null && !result.some(t => t.id === activeTagId.value)) activeTagId.value = null
     } catch (err) {
-      error.value = _errMessage(err)
+      if (request === tagsRequest) error.value = _errMessage(err)
     }
   }
 
@@ -128,17 +175,24 @@ export const useBlocksStore = defineStore('blocks', () => {
     name: string,
     content: string,
     tagNames: string[] = [],
+    kind: 'text' | 'blank' = 'text',
+    templateId?: number,
   ): Promise<boolean> {
     creating.value = true
     createError.value = null
     try {
       const payload: BlockPayload = { name, content }
+      if (templateId !== undefined) payload.template_id = templateId
+      if (kind === 'blank') payload.kind = kind
       if (tagNames.length > 0) {
         payload.tags = tagNames
       }
       const block = await createBlock(payload)
       blocks.value = [block, ...blocks.value] // 更新时间倒序：新块排最前
-      selectedBlockId.value = block.id // 新建即选中：建完可直接点区域绑定
+      if (templateId === undefined || libraryTemplateId.value === templateId) {
+        selectedBlockId.value = block.id // New blocks are immediately available before region binding.
+        if (templateId !== undefined) libraryBlockIds.value = [...new Set([...libraryBlockIds.value, block.id])]
+      }
       void loadTags() // 新标签计数变化
       return true
     } catch (err) {
@@ -176,7 +230,7 @@ export const useBlocksStore = defineStore('blocks', () => {
       if (selectedBlockId.value === id) {
         selectedBlockId.value = null
       }
-      void loadTags()
+      await loadTags()
       return true
     } catch (err) {
       mutationError.value = _errMessage(err)
@@ -216,12 +270,47 @@ export const useBlocksStore = defineStore('blocks', () => {
     }
   }
 
+  async function retagBlocks(ids: number[], names: string[], mode: 'add' | 'replace' | 'remove') {
+    const failedIds: number[] = []
+    const failures: string[] = []
+    const targets = [...new Set(ids)]
+    for (const id of targets) {
+      const block = blocks.value.find(b => b.id === id)
+      if (!block) { failedIds.push(id); failures.push(`块 #${id} 已不存在`); continue }
+      const previous = block.tags.map(t => t.name)
+      const desired = mode === 'replace' ? names : mode === 'add'
+        ? [...new Set([...previous, ...names])]
+        : previous.filter(name => !names.includes(name))
+      try { await updateBlock(id, { tags: desired }) }
+      catch (err) { failedIds.push(id); failures.push(`${block.name}：${_errMessage(err)}`) }
+    }
+    await Promise.all([loadBlocks(), loadTags()])
+    return { updated: targets.length - failedIds.length, failedIds, failures }
+  }
+
+  async function shareBlock(blockId: number, templateId: number): Promise<boolean> {
+    mutationError.value = null
+    try {
+      await addBlockToTemplate(blockId, templateId)
+      if (libraryTemplateId.value === templateId) await loadTemplateBlocks(templateId)
+      return true
+    } catch (err) {
+      mutationError.value = _errMessage(err)
+      return false
+    }
+  }
+
   function selectBlock(id: number | null): void {
     selectedBlockId.value = selectedBlockId.value === id ? null : id
   }
 
   return {
     blocks,
+    libraryBlocks,
+    libraryTags,
+    libraryLoading,
+    libraryError,
+    loadTemplateBlocks,
     tags,
     error,
     libraryOpen,
@@ -245,6 +334,8 @@ export const useBlocksStore = defineStore('blocks', () => {
     toggleTagFilter,
     renameExistingTag,
     removeTag,
+    retagBlocks,
+    shareBlock,
     selectBlock,
   }
 })

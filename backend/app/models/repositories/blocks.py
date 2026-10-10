@@ -1,7 +1,7 @@
 """blocks 表数据访问。
 
 块是内容资产主体：只软删除（D11），不做物理删除路由；
-字段业务校验（名称 2–30 字 / 内容 ≤5000 字 / 标签 ≤10 个）属 M2 service 层职责，此处纯存储。
+字段业务校验（名称 1–30 字 / 内容 ≤5000 字 / 标签 ≤10 个）属 M2 service 层职责，此处纯存储。
 分类功能已移除（2026-09-18 用户确认），块列表平铺按更新时间倒序。
 """
 
@@ -10,15 +10,15 @@ import sqlite3
 from app.models.db import utcnow
 from app.models.entities import Block
 
-_SELECT = "SELECT id, name, content, created_at, updated_at, deleted_at FROM blocks"
+_SELECT = "SELECT id, name, content, created_at, updated_at, deleted_at, kind FROM blocks"
 
 
-def create_block(conn: sqlite3.Connection, name: str, content: str) -> Block:
+def create_block(conn: sqlite3.Connection, name: str, content: str, *, kind: str = "text") -> Block:
     """新建块并回读完整行。"""
     now = utcnow()
     cur = conn.execute(
-        "INSERT INTO blocks (name, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
-        (name, content, now, now),
+        "INSERT INTO blocks (name, content, created_at, updated_at, kind) VALUES (?, ?, ?, ?, ?)",
+        (name, content, now, now, kind),
     )
     assert cur.lastrowid is not None
     block = get_block(conn, cur.lastrowid)
@@ -41,13 +41,21 @@ def list_blocks(
     conn: sqlite3.Connection,
     *,
     include_deleted: bool = False,
+    template_id: int | None = None,
 ) -> list[Block]:
     """块列表（平铺，按更新时间倒序——最近编辑的块排前面）；默认排除软删除行。"""
     sql = _SELECT
+    conditions = []
+    params: list[object] = []
     if not include_deleted:
-        sql += " WHERE deleted_at IS NULL"
+        conditions.append("deleted_at IS NULL")
+    if template_id is not None:
+        conditions.append("id IN (SELECT block_id FROM template_blocks WHERE template_id = ?)")
+        params.append(template_id)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
     sql += " ORDER BY updated_at DESC, id DESC"
-    rows = conn.execute(sql).fetchall()
+    rows = conn.execute(sql, params).fetchall()
     return [Block.from_row(r) for r in rows]
 
 
@@ -57,6 +65,7 @@ def update_block(
     *,
     name: str | None = None,
     content: str | None = None,
+    kind: str | None = None,
 ) -> Block | None:
     """部分更新（仅传入的字段）；目标不存在或已软删除时返回 None。"""
     sets: list[str] = []
@@ -67,6 +76,9 @@ def update_block(
     if content is not None:
         sets.append("content = ?")
         params.append(content)
+    if kind is not None:
+        sets.append("kind = ?")
+        params.append(kind)
     if not sets:
         return get_block(conn, block_id)
     sets.append("updated_at = ?")

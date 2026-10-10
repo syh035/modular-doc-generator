@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatOverflowGrowth } from '../utils/overflow'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { RegionFramePayload } from '../api/regions'
 import {
@@ -11,30 +12,104 @@ import { openDocument, preparePage, type OpenedPdf, type RenderedPage } from '..
 import { useBlocksStore } from '../stores/blocks'
 import { usePreviewStore, type DisplayRegion } from '../stores/preview'
 import BindingDialog from './BindingDialog.vue'
+import RegionTextEditor from './RegionTextEditor.vue'
 import ExportDialog from './ExportDialog.vue'
 import MigrationDialog from './MigrationDialog.vue'
 import ProofreadPopover from './ProofreadPopover.vue'
 import RegionNameDialog from './RegionNameDialog.vue'
-import VersionDialog from './VersionDialog.vue'
+import TemplateManager from './TemplateManager.vue'
+import { PageCanvasCache } from '../pdf/pageCache'
+import { previewScale } from '../pdf/scale'
 
+const emit = defineEmits<{ import: [] }>()
+const managerOpen = ref(false)
 const store = usePreviewStore()
 const blocksStore = useBlocksStore()
 /** 滚动容器（页面按 fit-width 平铺，纵向滚动）。 */
 const scrollRef = ref<HTMLElement | null>(null)
 const containerWidth = ref(0)
+const containerHeight = ref(0)
+const zoom = ref('page')
+const renderedScale = ref(1)
 const pages = ref<RenderedPage[]>([])
+const canvasCache = new PageCanvasCache()
 /** 未定位区域（bbox=null，渲染未匹配）：无几何，只能列表提示（M5b 校对兜底）。 */
 const unplaced = computed(() =>
-  store.regions.filter(r => r.bbox === null && (store.proofreadMode || r.review_status !== 'excluded')),
+  store.regions.filter(r => !r.removed && r.bbox === null && (store.proofreadMode || r.review_status !== 'excluded')),
 )
 /** 绑定浮层目标区域（null = 关闭，正常模式）。 */
 const dialogRegion = ref<DisplayRegion | null>(null)
+const textEditorTarget = ref<DisplayRegion | null>(null)
+const textEditing = ref(false)
+const textEditError = ref<string | null>(null)
+
+function openTextEditor(): void {
+  textEditorTarget.value = dialogRegion.value
+  dialogRegion.value = null
+  textEditError.value = null
+}
+
+async function saveText(content: string, syncBlock: boolean): Promise<void> {
+  const region = textEditorTarget.value
+  if (!region || textEditing.value) return
+  textEditing.value = true
+  const result = await store.editRegionText(region.id, content, syncBlock, region.current_text ?? '')
+  textEditing.value = false
+  if (result.ok) textEditorTarget.value = null
+  else textEditError.value = result.error
+}
+
+async function removeTextParagraph(): Promise<void> {
+  const region = textEditorTarget.value
+  if (!region || textEditing.value) return
+  textEditing.value = true
+  const result = await store.changeRegionLayout(region.id, 'remove')
+  textEditing.value = false
+  if (result.ok) textEditorTarget.value = null
+  else textEditError.value = result.error
+}
+const removedRegions = computed(() => store.regions.filter(r => r.removed))
+async function restoreParagraph(id: number): Promise<void> {
+  const result = await store.changeRegionLayout(id, 'restore')
+  if (!result.ok) store.error = result.error
+}
+
+watch(() => store.currentVersionId, () => { textEditorTarget.value = null })
 /** 校对浮层目标（null = 关闭，校对模式；page 供微调启动取 viewport）。 */
 const popoverTarget = ref<{ region: DisplayRegion; page: RenderedPage } | null>(null)
 /** 命名弹层：框选完成待命名（null = 关闭）。 */
 const nameDialog = ref<{ frame: RegionFramePayload } | null>(null)
 const nameError = ref<string | null>(null)
 const nameSubmitting = ref(false)
+const frameMode = ref(false)
+const frameTarget = ref<DisplayRegion | null>(null)
+const frameError = ref<string | null>(null)
+
+async function startFrame(region: DisplayRegion | null = null): Promise<void> {
+  const templateId = store.currentTemplateId
+  await store.toggleProofreadMode(true)
+  await nextTick()
+  if (store.currentTemplateId !== templateId || !store.proofreadMode || store.error) return
+  frameTarget.value = region
+  frameMode.value = true
+  frameError.value = null
+}
+
+function cancelFrame(): void {
+  frameMode.value = false
+  frameTarget.value = null
+  frameError.value = null
+  draftFrame.value = null
+  drag = null
+}
+
+async function relocateFrame(frame: RegionFramePayload): Promise<void> {
+  const target = frameTarget.value
+  if (!target) return
+  const result = await store.adjustRegionBBox(target.id, frame)
+  if (result.ok) cancelFrame()
+  else frameError.value = result.error
+}
 /** 拖拽中的框选草稿（页内 CSS 像素矩形）。 */
 const draftFrame = ref<{ page: number; rect: OverlayRect } | null>(null)
 /** 微调草稿：区域 id + 页内矩形（null = 未在微调）。 */
@@ -110,35 +185,6 @@ const proofreadProgress = computed(() => {
 
 // ---- 溢出（M7）：状态条汇总 + 点击跳转闪烁 ----
 
-/** 溢出区域清单：大超出在前，同级按溢出比例降序。 */
-const overflowRegions = computed(() =>
-  store.regions
-    .filter(r => r.overflow != null)
-    .sort((a, b) => {
-      const la = a.overflow!.level === 'large' ? 0 : 1
-      const lb = b.overflow!.level === 'large' ? 0 : 1
-      if (la !== lb) return la - lb
-      return b.overflow!.ratio - a.overflow!.ratio
-    }),
-)
-
-/** 状态条 chip 视图模型（模板内免非空断言）。 */
-const overflowChips = computed(() =>
-  overflowRegions.value.map(r => ({
-    id: r.id,
-    label: r.label,
-    level: r.overflow!.level,
-    ratioPct: Math.round(r.overflow!.ratio * 100),
-    clipped: r.overflow!.clipped,
-    page: (r.bbox?.page ?? 0) + 1,
-    region: r,
-  })),
-)
-
-const largeOverflowCount = computed(
-  () => overflowChips.value.filter(c => c.level === 'large').length,
-)
-
 /** 闪烁定位中的区域 id（null = 无）；定时器句柄防重复点击堆叠。 */
 const flashRegionId = ref<number | null>(null)
 let flashTimer: number | null = null
@@ -173,15 +219,25 @@ function onTemplateChange(event: Event): void {
 
 // ---- 版本管理（M8）：下拉切换 + 新建/重命名/删除 ----
 
-/** 版本弹层（null = 关闭；create/rename 共用 VersionDialog）。 */
-const versionDialog = ref<'create' | 'rename' | null>(null)
-const versionDialogError = ref<string | null>(null)
-const versionSubmitting = ref(false)
-
-/** 当前版本名（重命名弹层预填；列表未就绪时回退空）。 */
+/** 当前版本名用于工具条上下文。 */
 const currentVersionName = computed(
   () => store.versions.find(v => v.id === store.currentVersionId)?.name ?? '',
 )
+
+async function useManagedVersion(templateId: number, versionId: number | null): Promise<void> {
+  managerOpen.value = false
+  if (templateId !== store.currentTemplateId || store.status !== 'ready') await store.selectTemplate(templateId)
+  if (store.currentTemplateId === templateId && store.status === 'ready' && versionId !== null) {
+    // M10 提示针对新模板的默认空白版本；显式打开其他版本时不迁移到它。
+    if (versionId !== store.currentVersionId) store.dismissMigration()
+    await store.selectVersion(versionId)
+  }
+}
+
+function importTemplate(): void {
+  managerOpen.value = false
+  emit('import')
+}
 
 /** 版本切换：整体刷新渲染（校对模式下拉置灰，此处不再兜底）。 */
 function onVersionChange(event: Event): void {
@@ -189,40 +245,6 @@ function onVersionChange(event: Event): void {
   if (value !== '') {
     void store.selectVersion(Number(value))
   }
-}
-
-async function onVersionSubmit(name: string, copyFrom: boolean): Promise<void> {
-  const mode = versionDialog.value
-  if (mode === null) {
-    return
-  }
-  versionSubmitting.value = true
-  versionDialogError.value = null
-  const result =
-    mode === 'create'
-      ? await store.createNewVersion(name, copyFrom)
-      : await store.renameCurrentVersion(name)
-  versionSubmitting.value = false
-  if (!result.ok) {
-    versionDialogError.value = result.error // 内联显示（重名/名称非法）
-    return
-  }
-  versionDialog.value = null
-}
-
-function onDeleteVersion(): void {
-  if (store.currentVersionId === null) {
-    return
-  }
-  if (!window.confirm(`删除版本「${currentVersionName.value}」？其绑定关系将一并删除。`)) {
-    return
-  }
-  void store.deleteCurrentVersion().then(result => {
-    // 删除失败（如最后版本 LAST_VERSION 保护）给出反馈，避免静默无响应
-    if (!result.ok) {
-      window.alert(result.error)
-    }
-  })
 }
 
 // ---- 换模板迁移（M10）：切换触发提示 → 三清单确认 → 整包落库 ----
@@ -293,7 +315,7 @@ async function onExportConfirm(): Promise<void> {
 
 function regionsOf(pageIndex: number): DisplayRegion[] {
   return store.regions.filter(r => {
-    if (r.bbox === null || r.bbox.page !== pageIndex) {
+    if (r.bbox === null || !(r.bbox.fragments ?? [r.bbox]).some(b => b.page === pageIndex)) {
       return false
     }
     // Q4：正常模式不显示排除区域（不参与绑定与替换）
@@ -314,7 +336,8 @@ function rectStyle(rect: OverlayRect) {
 }
 
 function overlayStyle(region: DisplayRegion, page: RenderedPage) {
-  return rectStyle(bboxToOverlayRect(region.bbox!, page.viewport))
+  const box = (region.bbox!.fragments ?? [region.bbox!]).find(b => b.page === page.index)!
+  return rectStyle(bboxToOverlayRect(box, page.viewport))
 }
 
 /** 校对模式着色：高置信候选绿 / 低置信候选黄 / 已确认蓝 / 已排除灰虚线。 */
@@ -338,6 +361,9 @@ function normalClass(region: DisplayRegion): string {
 }
 
 function overlayTitle(region: DisplayRegion): string {
+  if (store.proofreadMode && region.confidence === 0.9 && region.placeholder === null) {
+    return `标题候选：${region.label}（可校对确认、排除或编辑）`
+  }
   let state: string
   if (region.binding?.status === 'active') {
     state = `已绑定：${region.binding.block_name ?? `块 #${region.binding.block_id}`}`
@@ -350,7 +376,7 @@ function overlayTitle(region: DisplayRegion): string {
   if (ov) {
     const hint = ov.clipped
       ? '固定行高裁剪内容，请缩短内容或调整模板行高'
-      : `溢出 +${Math.round(ov.ratio * 100)}%（超出区域原高度）`
+      : `溢出 ${formatOverflowGrowth(ov.ratio)}（超出区域原高度）`
     return `${region.label}（${hint}；${state}）`
   }
   return `${region.label}（${state}）`
@@ -358,6 +384,7 @@ function overlayTitle(region: DisplayRegion): string {
 
 /** 区域点击（PRD 4.4）：左栏已选块 → 直接绑定/换绑；否则浮层选块/换绑/解绑。 */
 function onRegionClick(region: DisplayRegion, page: RenderedPage): void {
+  if (frameMode.value) return
   if (store.proofreadMode) {
     // 校对模式：区域点击 = 校对操作浮层（确认/排除/微调/删除）
     popoverTarget.value = { region, page }
@@ -371,11 +398,13 @@ function onRegionClick(region: DisplayRegion, page: RenderedPage): void {
   dialogRegion.value = region
 }
 
-async function onDialogBind(blockId: number): Promise<void> {
+async function onDialogBind(blockId: number, lineBreakMode: 'paragraph' | 'soft' = 'paragraph', position: 'inside' | 'before' | 'after' = 'inside'): Promise<void> {
   const region = dialogRegion.value
   dialogRegion.value = null
   if (region) {
-    await store.bindRegionToBlock(region.id, blockId)
+    if (position !== 'inside') await store.bindRegionToBlock(region.id, blockId, lineBreakMode, position)
+    else if (lineBreakMode === 'paragraph') await store.bindRegionToBlock(region.id, blockId)
+    else await store.bindRegionToBlock(region.id, blockId, lineBreakMode)
   }
 }
 
@@ -427,7 +456,8 @@ function beginAdjustDrag(
   if (!pt) {
     return
   }
-  const originRect = bboxToOverlayRect(region.bbox, page.viewport)
+  const box = (region.bbox.fragments ?? [region.bbox]).find(b => b.page === page.index)!
+  const originRect = bboxToOverlayRect(box, page.viewport)
   drag = { kind: 'adjust', handle, page, startPageX: pt.x, startPageY: pt.y, originRect }
   adjustDraft.value = { regionId: region.id, page: page.index, rect: { ...originRect } }
   window.addEventListener('mousemove', onDragMove)
@@ -490,6 +520,10 @@ function onDragEnd(): void {
       return // 视为点击，不误开命名弹层
     }
     const b = overlayRectToBBox(rect, d.page.viewport)
+    if (frameTarget.value) {
+      void relocateFrame({ page: d.page.index, ...b })
+      return
+    }
     nameError.value = null
     nameDialog.value = { frame: { page: d.page.index, ...b } }
     return
@@ -506,6 +540,7 @@ function onDragEnd(): void {
 
 /** Esc 取消微调（草稿丢弃，区域保持原 bbox）。 */
 function onCancelAdjust(e: KeyboardEvent): void {
+  if (e.key === 'Escape' && frameMode.value && !nameDialog.value) cancelFrame()
   if (e.key === 'Escape' && adjustDraft.value) {
     adjustDraft.value = null
     drag = null
@@ -526,6 +561,7 @@ async function onNameSubmit(label: string, type: string): Promise<void> {
     return
   }
   nameDialog.value = null
+  cancelFrame()
 }
 
 function onPopoverConfirm(): void {
@@ -561,7 +597,10 @@ function onPopoverAdjust(): void {
   adjustDraft.value = {
     regionId: t.region.id,
     page: t.page.index,
-    rect: bboxToOverlayRect(t.region.bbox, t.page.viewport),
+    rect: bboxToOverlayRect(
+      (t.region.bbox.fragments ?? [t.region.bbox]).find(b => b.page === t.page.index)!,
+      t.page.viewport,
+    ),
   }
 }
 
@@ -626,12 +665,17 @@ async function doRebuild(seq: number): Promise<void> {
     return
   }
   const width = containerWidth.value
-  const first = await opened.document.getPage(1)
-  const baseWidth = first.getViewport({ scale: 1 }).width
-  const scale = Math.max((width - 32) / baseWidth, 0.1) // 左右各留 16px
+  const document = opened.document
+  const hashes = [...store.pageFingerprints]
+  const first = await document.getPage(1)
+  if (seq !== rebuildSeq) return
+  const base = first.getViewport({ scale: 1 })
+  const scale = previewScale(zoom.value, width, containerHeight.value, base.width, base.height)
+  renderedScale.value = scale
   const list: RenderedPage[] = []
-  for (let i = 1; i <= opened.document.numPages; i++) {
-    const page = await opened.document.getPage(i)
+  for (let i = 1; i <= document.numPages; i++) {
+    const page = await document.getPage(i)
+    if (seq !== rebuildSeq) return
     list.push(preparePage(page, scale))
   }
   if (seq !== rebuildSeq) {
@@ -648,27 +692,46 @@ async function doRebuild(seq: number): Promise<void> {
     console.warn('[TemplatePreview] canvas 未就绪，跳过本轮渲染')
     return
   }
-  await Promise.all(list.map((p, i) => p.render(canvases[i])))
+  await Promise.all(list.map(async (p, i) => {
+    const canvas = canvases[i]
+    const content = hashes.length === list.length ? hashes[i] : data
+    const layout = `${p.index}:${scale}:${p.width}:${p.height}:${window.devicePixelRatio || 1}`
+    if (canvasCache.matches(canvas, content, layout)) return
+    canvasCache.forget(canvas) // cancelled/failed renders must never become reusable
+    await p.render(canvas)
+    if (seq === rebuildSeq) {
+      canvasCache.completed(canvas, content, layout)
+      canvas.dataset.renderCount = String(Number(canvas.dataset.renderCount ?? 0) + 1)
+    }
+  }))
 }
 
 watch(
-  () => [store.pdfData, containerWidth.value, store.regions, store.status],
+  () => [store.pdfData, containerWidth.value, containerHeight.value, zoom.value, store.regions, store.status],
   () => {
     rebuild()
   },
 )
 
+watch(() => store.currentTemplateId, () => {
+  cancelFrame()
+  nameDialog.value = null
+  textEditorTarget.value = null
+  popoverTarget.value = null
+  adjustDraft.value = null
+})
+
 // 切换校对模式：关闭所有弹层与草稿（popover 持有的 RenderedPage 引用即将失效）
 watch(
   () => store.proofreadMode,
   () => {
+    cancelFrame()
+    textEditorTarget.value = null
     popoverTarget.value = null
     nameDialog.value = null
     nameError.value = null
     draftFrame.value = null
     adjustDraft.value = null
-    versionDialog.value = null
-    versionDialogError.value = null
     migrationStage.value = null
     store.dismissMigration()
     store.dismissExportWarnings()
@@ -678,9 +741,11 @@ watch(
 onMounted(() => {
   void store.loadTemplates() // 模板列表数据源（UI 调整③：下拉随工具条常驻）
   containerWidth.value = scrollRef.value?.clientWidth ?? 0
+  containerHeight.value = scrollRef.value?.clientHeight ?? 0
   if (typeof ResizeObserver !== 'undefined') {
-    observer = new ResizeObserver(entries => {
-      containerWidth.value = entries[0]?.contentRect.width ?? 0
+    observer = new ResizeObserver(() => {
+      containerWidth.value = scrollRef.value?.clientWidth ?? 0
+      containerHeight.value = scrollRef.value?.clientHeight ?? 0
     })
     if (scrollRef.value) {
       observer.observe(scrollRef.value)
@@ -707,18 +772,20 @@ onBeforeUnmount(() => {
   opened = null
   openedData = null
 })
+defineExpose({ jumpToRegion })
 </script>
 
 <template>
   <!-- 右栏：版本预览（模板+绑定替换成品）——pdfjs 渲染管线 PDF + 可交互覆盖层 -->
   <section class="template-preview">
-    <!-- 顶部工具条：左组（块库展开按钮[仅收起态] + 模板下拉紧凑排列）+ 右侧图例，中间自然留白 -->
+    <!-- M13：固定块库入口、模板/版本组、导出主按钮；窄屏图例保留入口 -->
     <div class="preview-toolbar">
       <div class="toolbar-left">
         <button
-          v-if="!blocksStore.libraryOpen"
           class="library-expand"
-          title="展开块库"
+          :title="blocksStore.libraryOpen ? '收起块库' : '展开块库'"
+          :aria-expanded="blocksStore.libraryOpen"
+          aria-label="切换块库"
           @click="blocksStore.toggleLibrary()"
         >
           <svg
@@ -756,72 +823,60 @@ onBeforeUnmount(() => {
           </svg>
           块库
         </button>
-        <select
-          class="template-select"
-          :value="store.currentTemplateId ?? ''"
-          :disabled="store.templates.length === 0"
-          :title="store.templatesError ?? '选择要预览的模板'"
-          @change="onTemplateChange"
-        >
-          <option
-            value=""
-            disabled
-          >
-            {{ store.templatesError ?? (store.templates.length === 0 ? '（暂无模板）' : '（选择模板）') }}
-          </option>
-          <option
-            v-for="t in store.templates"
-            :key="t.id"
-            :value="t.id"
-          >
-            {{ t.filename }}
-          </option>
-        </select>
-        <!-- 版本控件组（M8）：下拉切换（整体刷新）+ 新建/重命名/删除；校对模式置灰 -->
-        <template v-if="store.currentVersionId !== null">
-          <select
-            class="template-select version-select"
-            :value="store.currentVersionId"
-            :disabled="store.proofreadMode"
-            title="切换内容版本（校对模式下不可用）"
-            data-testid="version-select"
-            @change="onVersionChange"
-          >
-            <option
-              v-for="v in store.versions"
-              :key="v.id"
-              :value="v.id"
+        <div class="selection-group">
+          <label class="context-select"><span>模板</span>
+            <select
+              class="template-select"
+              :value="store.currentTemplateId ?? ''"
+              :disabled="store.templates.length === 0"
+              :title="store.templatesError ?? '选择要预览的模板'"
+              @change="onTemplateChange"
             >
-              {{ v.name }}（{{ v.binding_count }} 项绑定）
-            </option>
-          </select>
-          <button
-            class="tool-btn"
-            :disabled="store.proofreadMode"
-            title="新建版本（可复制当前绑定内容为底稿）"
-            data-testid="version-create"
-            @click="versionDialog = 'create'"
-          >
-            新建
-          </button>
-          <button
-            class="tool-btn"
-            :disabled="store.proofreadMode"
-            title="重命名当前版本"
-            data-testid="version-rename"
-            @click="versionDialog = 'rename'"
-          >
-            重命名
-          </button>
-          <button
-            class="tool-btn danger"
-            :disabled="store.proofreadMode"
-            title="删除当前版本（至少保留一个）"
-            data-testid="version-delete"
-            @click="onDeleteVersion"
-          >
-            删除
-          </button>
+              <option
+                value=""
+                disabled
+              >
+                {{ store.templatesError ?? (store.templates.length === 0 ? '（暂无模板）' : '（选择模板）') }}
+              </option>
+              <option
+                v-for="t in store.templates"
+                :key="t.id"
+                :value="t.id"
+              >
+                {{ t.filename }}
+              </option>
+            </select>
+          </label>
+          <!-- 版本控件组（M8）：下拉切换（整体刷新）+ 新建/重命名/删除；校对模式置灰 -->
+          <template v-if="store.currentVersionId !== null">
+            <label class="context-select version-context"><span>内容版本</span>
+              <select
+                class="template-select version-select"
+                :value="store.currentVersionId"
+                :disabled="store.proofreadMode"
+                :title="`${currentVersionName} · 切换内容版本（校对模式下不可用）`"
+                data-testid="version-select"
+                @change="onVersionChange"
+              >
+                <option
+                  v-for="v in store.versions"
+                  :key="v.id"
+                  :value="v.id"
+                >
+                  {{ v.name }}（{{ v.binding_count }} 项绑定）
+                </option>
+              </select>
+            </label>
+          </template>
+        </div>
+        <button
+          class="tool-btn"
+          data-testid="template-manage"
+          @click="managerOpen = true"
+        >
+          模板与版本
+        </button>
+        <template v-if="store.currentVersionId !== null">
           <button
             class="tool-btn primary"
             :disabled="store.proofreadMode || store.exportBusy"
@@ -833,7 +888,34 @@ onBeforeUnmount(() => {
           </button>
         </template>
       </div>
-      <span class="legend">
+    </div>
+    <div
+      v-if="store.status === 'ready'"
+      class="preview-controls"
+    >
+      <label class="zoom-control">视图
+        <select
+          v-model="zoom"
+          aria-label="预览缩放"
+        ><option value="page">整页</option><option value="width">适合宽度</option><option value="0.5">50%</option><option value="0.75">75%</option><option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option></select>
+        <span>{{ Math.round(renderedScale * 100) }}% · {{ pages.length }} 页</span>
+      </label>
+      <span
+        v-if="blocksStore.selectedBlock"
+        class="selected-context"
+      >已选：{{ blocksStore.selectedBlock.name }} <button
+        class="clear-selection"
+        aria-label="取消选中的内容块"
+        @click="blocksStore.selectBlock(blocksStore.selectedBlock.id)"
+      >×</button></span>
+      <button
+        class="tool-btn"
+        data-testid="add-region"
+        @click="startFrame()"
+      >
+        添加遗漏区域
+      </button>
+      <span class="legend legend-wide">
         <span
           v-if="store.refreshing"
           class="refreshing"
@@ -851,11 +933,48 @@ onBeforeUnmount(() => {
         </template>
         <template v-else-if="store.status === 'ready'">
           <i class="dot bound" />已绑定 {{ boundCount }}
-          <i class="dot pending" />待校对 {{ pendingCount }}
+          <i class="dot pending" />待绑定 {{ pendingCount }}
           <i class="dot unrecognized" />未定位 {{ unplaced.length }}
         </template>
       </span>
+      <details
+        name="preview-toolbar-menu"
+        class="legend-menu"
+      >
+        <summary aria-label="显示图例">
+          ? 图例
+        </summary>
+        <span class="legend">
+          <span
+            v-if="store.refreshing"
+            class="refreshing"
+          ><span class="spinner" />正在刷新预览…</span>
+          <!-- 校对模式图例：候选按置信度分色 + 进度 -->
+          <template v-if="store.status === 'ready' && store.proofreadMode">
+            <i class="dot cand-high" />高置信候选
+            <i class="dot cand-low" />低置信候选
+            <i class="dot confirmed" />已确认
+            <i class="dot excluded" />已排除
+            <span
+              class="progress"
+              data-testid="proofread-progress"
+            >已处理 {{ proofreadProgress.done }}/{{ proofreadProgress.total }}</span>
+          </template>
+          <template v-else-if="store.status === 'ready'">
+            <i class="dot bound" />已绑定 {{ boundCount }}
+            <i class="dot pending" />待绑定 {{ pendingCount }}
+            <i class="dot unrecognized" />未定位 {{ unplaced.length }}
+          </template>
+        </span>
+      </details>
     </div>
+
+    <TemplateManager
+      v-if="managerOpen"
+      @close="managerOpen = false"
+      @use="useManagedVersion"
+      @import="importTemplate"
+    />
 
     <!-- 绑定/刷新错误横幅（不动摇 ready 态的已渲染内容） -->
     <div
@@ -873,7 +992,28 @@ onBeforeUnmount(() => {
         v-if="store.status === 'idle'"
         class="state empty"
       >
-        请在上方工具条选择模板开始预览
+        <div class="welcome-card">
+          <span
+            class="welcome-icon"
+            aria-hidden="true"
+          >▤</span>
+          <h1>把内容组合成一份文档</h1>
+          <p>选择模板版式，为不同用途保存内容版本，再导出 DOCX。</p>
+          <div class="welcome-actions">
+            <button
+              class="ui-btn ui-primary"
+              @click="importTemplate"
+            >
+              导入模板
+            </button><button
+              class="ui-btn"
+              @click="managerOpen = true"
+            >
+              打开最近模板
+            </button>
+          </div>
+          <span class="welcome-hint">请在上方工具条选择模板开始预览，或打开模板管理搜索</span>
+        </div>
       </div>
       <div
         v-else-if="store.status === 'loading'"
@@ -889,6 +1029,28 @@ onBeforeUnmount(() => {
         {{ store.error }}
       </div>
       <template v-else>
+        <div
+          v-if="store.proofreadMode"
+          class="frame-guide"
+          role="status"
+        >
+          <template v-if="frameMode">
+            {{ frameTarget ? `重新定位「${frameTarget.label}」：` : '添加遗漏区域：' }}在文字上拖出矩形框，每次框选一个段落。
+            <button
+              class="tool-btn"
+              @click="cancelFrame"
+            >
+              取消框选
+            </button>
+          </template>
+          <template v-else>
+            点击区域可确认、排除或调整边界；遗漏的内容可用“添加遗漏区域”补选。
+          </template>
+          <span
+            v-if="frameError"
+            class="error"
+          >{{ frameError }}</span>
+        </div>
         <div
           v-for="page in pages"
           :key="page.index"
@@ -924,7 +1086,7 @@ onBeforeUnmount(() => {
               class="overlay"
               :class="[
                 store.proofreadMode ? proofreadClass(region) : normalClass(region),
-                { flashing: flashRegionId === region.id },
+                { flashing: flashRegionId === region.id, heading: region.confidence === 0.9 && region.placeholder === null },
               ]"
               :style="overlayStyle(region, page)"
               :title="overlayTitle(region)"
@@ -932,7 +1094,7 @@ onBeforeUnmount(() => {
               tabindex="0"
               @click="onRegionClick(region, page)"
               @keydown.enter="onRegionClick(region, page)"
-              @mousedown.stop
+              @mousedown.stop="frameMode && beginFrameDrag($event, page)"
             />
           </template>
           <!-- 框选草稿（虚线蓝框，pointer-events 穿透） -->
@@ -947,24 +1109,50 @@ onBeforeUnmount(() => {
           v-if="unplaced.length > 0"
           class="unplaced-bar"
         >
-          <span class="unplaced-title">未定位区域（渲染未匹配，待校对）：</span>
-          <span
+          <span class="unplaced-title">以下区域还未定位，点击后在文字上重新框选：</span>
+          <button
             v-for="region in unplaced"
             :key="region.id"
             class="unplaced-chip"
-            :title="region.placeholder ?? ''"
+            :title="`重新定位：${region.label}`"
+            @click="startFrame(region)"
           >
-            {{ region.label }}
-          </span>
+            {{ region.label }} · 重新框选
+          </button>
+        </div>
+        <div
+          v-if="removedRegions.length && !store.proofreadMode"
+          class="unplaced-bar"
+          aria-label="已删除段落"
+        >
+          <span>已删除段落（当前版本）</span>
+          <button
+            v-for="region in removedRegions"
+            :key="region.id"
+            :disabled="store.refreshing"
+            @click="restoreParagraph(region.id)"
+          >
+            {{ region.label }} · 恢复
+          </button>
         </div>
         <!-- 绑定弹层（全窗模态，正常模式） -->
         <BindingDialog
           v-if="dialogRegion"
           :region="dialogRegion"
-          :blocks="blocksStore.blocks"
+          :blocks="blocksStore.libraryBlocks"
           @bind="onDialogBind"
+          @edit="openTextEditor"
           @unbind="onDialogUnbind"
           @close="dialogRegion = null"
+        />
+        <RegionTextEditor
+          v-if="textEditorTarget"
+          :region="textEditorTarget"
+          :submitting="textEditing"
+          :error="textEditError"
+          @save="saveText"
+          @remove="removeTextParagraph"
+          @close="textEditorTarget = null"
         />
         <!-- 校对操作浮层（校对模式） -->
         <ProofreadPopover
@@ -984,17 +1172,6 @@ onBeforeUnmount(() => {
           :submitting="nameSubmitting"
           @submit="onNameSubmit"
           @close="nameDialog = null"
-        />
-        <!-- 版本弹层（M8：新建/重命名共用） -->
-        <VersionDialog
-          v-if="versionDialog"
-          :mode="versionDialog"
-          :initial-name="versionDialog === 'rename' ? currentVersionName : ''"
-          :can-copy="store.currentVersionId !== null"
-          :error="versionDialogError"
-          :submitting="versionSubmitting"
-          @submit="onVersionSubmit"
-          @close="versionDialog = null"
         />
         <!-- 迁移弹层（M10：切到新模板时提示/三清单确认） -->
         <MigrationDialog
@@ -1023,33 +1200,6 @@ onBeforeUnmount(() => {
         />
       </template>
     </div>
-
-    <!-- M7 溢出状态条：固定预览区底部汇总；chip 点击跳转所在页并闪烁定位 -->
-    <div
-      v-if="overflowChips.length > 0"
-      class="overflow-bar"
-      data-testid="overflow-bar"
-    >
-      <span class="overflow-title">
-        溢出区域 {{ overflowChips.length }} 个（大超出 {{ largeOverflowCount }}）：
-      </span>
-      <button
-        v-for="chip in overflowChips"
-        :key="chip.id"
-        class="overflow-chip"
-        :class="chip.level"
-        :title="`点击定位到第 ${chip.page} 页`"
-        @click="jumpToRegion(chip.region)"
-      >
-        {{ chip.label
-        }}<template v-if="chip.clipped">
-          （裁剪）
-        </template>
-        <template v-else>
-          +{{ chip.ratioPct }}%
-        </template>
-      </button>
-    </div>
   </section>
 </template>
 
@@ -1060,108 +1210,33 @@ onBeforeUnmount(() => {
   flex-direction: column;
   min-width: 0;
   position: relative;
-  background: #eceff1;
+  background: var(--bg-preview);
+  container-type: inline-size;
 }
 
-.preview-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 16px;
-  font-size: 12px;
-  color: #646a73;
-  background: #fff;
-  border-bottom: 1px solid #e2e3e5;
-  container-type: inline-size; /* 容器查询基准：预览区宽度（抽屉挤压时隐藏图例） */
-}
-
-/* 预览区过窄时图例（已绑定/待校对/未定位）与下拉重叠 → 直接隐藏 */
-@container (max-width: 620px) {
-  .legend {
-    display: none;
-  }
-}
-
-/* 左组：块库按钮 + 模板下拉紧凑排列（中间留白由 space-between 拉开到右侧图例前） */
-.toolbar-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.library-expand {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  font-size: 12px;
-  color: #646a73;
-  background: none;
-  border: 1px solid #d0d3d6;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.library-expand:hover {
-  color: #3370ff;
-  border-color: #3370ff;
-}
-
-.template-select {
-  max-width: 280px;
-  min-width: 140px;
-  padding: 2px 4px;
-  font-size: 12px;
-  color: #1f2329;
-}
-
-/* 版本下拉：名称（N 项绑定）比文件名短，收窄留白给操作按钮 */
-.version-select {
-  max-width: 200px;
-  min-width: 120px;
-}
-
-/* 版本操作小按钮（M8）：与 library-expand 同风格 */
-.tool-btn {
-  padding: 3px 8px;
-  font-size: 12px;
-  color: #646a73;
-  background: none;
-  border: 1px solid #d0d3d6;
-  border-radius: 4px;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.tool-btn:hover:not(:disabled) {
-  color: #3370ff;
-  border-color: #3370ff;
-}
-
-.tool-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.tool-btn.danger:hover:not(:disabled) {
-  color: #f54a45;
-  border-color: #f54a45;
-}
-
-/* 导出主按钮（M9）：强调色实底，与次要操作按钮区分 */
-.tool-btn.primary {
-  color: #fff;
-  background: #3370ff;
-  border-color: #3370ff;
-}
-
-.tool-btn.primary:hover:not(:disabled) {
-  color: #fff;
-  border-color: #3370ff;
-  opacity: 0.9;
-}
+.preview-toolbar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+.toolbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; width: 100%; }
+.overlay.heading { border-style: dashed; }
+.frame-guide { position: sticky; top: 0; z-index: 5; background: var(--bg-muted); padding: 10px 12px; border: 1px solid var(--border); margin-bottom: 10px; }
+.selection-group { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
+.context-select { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; max-width: 340px; }
+.context-select > span { font-size: 11px; color: var(--text-2); }
+.version-context { max-width: 240px; }
+.template-select { width: 100%; min-width: 0; color: var(--text-1); }
+.library-expand, .tool-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 7px 12px; font-size: 13px; color: var(--text-2); background: var(--bg-surface); border: 1px solid var(--border-control); border-radius: 7px; white-space: nowrap; cursor: pointer; flex-shrink: 0; }
+.tool-btn.primary { color: var(--text-on-primary); background: var(--primary); border-color: var(--primary); }
+.preview-controls { display: flex; align-items: center; gap: 14px; min-height: 44px; padding: 6px 18px; background: var(--bg-surface); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
+.zoom-control { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.zoom-control select { min-height: 30px; padding: 4px 6px; font-size: 12px; }
+.selected-context { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--primary); }
+.clear-selection { border: none; padding: 2px 4px; color: var(--text-2); }
+.legend-wide { margin-left: auto; }
+.legend-menu { display: none; position: relative; margin-left: auto; }
+.legend-menu summary { cursor: pointer; white-space: nowrap; }
+.legend-menu > .legend { display: none; }
+.legend-menu[open] > .legend { display: flex; position: absolute; right: 0; top: 100%; width: 240px; flex-wrap: wrap; padding: 14px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; z-index: 10; box-shadow: 0 4px 16px var(--shadow-modal); }
+@container (max-width: 800px) { .legend.legend-wide { display: none; } .legend-menu { display: block; } .preview-toolbar { padding: 10px 12px; } .toolbar-left { flex-wrap: wrap; } .selection-group { order: 3; flex-basis: 100%; } .context-select { max-width: none; } .tool-btn.primary { margin-left: auto; } .preview-controls { padding: 6px 12px; gap: 8px; flex-wrap: wrap; } .selected-context { order: 3; flex-basis: 100%; } }
+@container (max-width: 420px) { .tool-btn, .library-expand { padding: 6px 9px; font-size: 12px; } .toolbar-left { gap: 6px; } .zoom-control { gap: 4px; } }
 
 .legend {
   display: flex;
@@ -1175,7 +1250,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 4px;
   margin-right: 12px;
-  color: #3370ff;
+  color: var(--primary);
 }
 
 .dot {
@@ -1187,49 +1262,47 @@ onBeforeUnmount(() => {
 }
 
 .dot.bound {
-  background: rgba(52, 199, 36, 0.25);
-  border: 1px solid #34c724;
+  background: var(--success-bg-legend);
+  border: 1px solid var(--success);
 }
 
 .dot.pending {
-  background: rgba(255, 196, 0, 0.35);
-  border: 1px solid #ffb900;
+  background: var(--candidate-bg-legend);
+  border: 1px solid var(--candidate);
 }
 
 .dot.unrecognized {
   background: transparent;
-  border: 1px dashed #909399;
+  border: 1px dashed var(--region-unplaced);
 }
 
 .error-banner {
   padding: 6px 16px;
   font-size: 12px;
-  color: #f54a45;
-  background: rgba(245, 74, 69, 0.06);
-  border-bottom: 1px solid rgba(245, 74, 69, 0.2);
+  color: var(--danger);
+  background: var(--danger-bg-hover);
+  border-bottom: 1px solid var(--danger-border-subtle);
 }
 
 .preview-scroll {
   flex: 1;
   overflow: auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 16px;
   padding: 16px;
   position: relative;
+  min-height: 0;
 }
 
 .state {
-  flex: 1;
+  height: 100%;
+  min-height: 220px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .state.error {
-  color: #f54a45;
+  color: var(--danger);
 }
 
 .state.loading {
@@ -1239,8 +1312,8 @@ onBeforeUnmount(() => {
 .spinner {
   width: 16px;
   height: 16px;
-  border: 2px solid #d0d3d6;
-  border-top-color: #3370ff;
+  border: 2px solid var(--border-control);
+  border-top-color: var(--primary);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   display: inline-block;
@@ -1254,8 +1327,8 @@ onBeforeUnmount(() => {
 
 .pdf-page {
   position: relative;
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 4px var(--shadow-page);
   flex-shrink: 0;
 }
 
@@ -1270,33 +1343,33 @@ onBeforeUnmount(() => {
 
 /* 绿=已绑定（active） */
 .overlay.bound {
-  border: 1.5px solid #34c724;
-  background: rgba(52, 199, 36, 0.15);
+  border: 1.5px solid var(--success);
+  background: var(--success-bg-region);
 }
 
 /* 黄=待校对（未绑定或 missing 回落） */
 .overlay.pending {
-  border: 1.5px solid #ffb900;
-  background: rgba(255, 196, 0, 0.18);
+  border: 1.5px solid var(--candidate);
+  background: var(--candidate-bg-region);
 }
 
 /* ---- 溢出分级（M7，正常模式，优先级高于绑定态着色）---- */
 
 /* 大超出 = 红 */
 .overlay.overflow-large {
-  border: 1.5px solid #f54a45;
-  background: rgba(245, 74, 69, 0.15);
+  border: 1.5px solid var(--danger);
+  background: var(--danger-bg-region);
 }
 
 /* 小超出 = 橙（覆盖绑定态绿：分级警示优先于绑定语义） */
 .overlay.overflow-small {
-  border: 1.5px solid #ff7d00;
-  background: rgba(255, 125, 0, 0.15);
+  border: 1.5px solid var(--warning);
+  background: var(--warning-bg-region);
 }
 
 /* 状态条 chip 跳转后的闪烁定位（蓝色环，与分级色无关） */
 .overlay.flashing {
-  animation: region-flash 0.5s ease-in-out 3;
+  animation: region-flash 0.6s ease-in-out 3;
 }
 
 @keyframes region-flash {
@@ -1305,44 +1378,44 @@ onBeforeUnmount(() => {
     box-shadow: none;
   }
   50% {
-    box-shadow: 0 0 0 4px rgba(51, 112, 255, 0.5);
+    box-shadow: 0 0 0 4px var(--primary-flash-ring);
   }
 }
 
 .overlay:hover {
-  border-color: #3370ff;
+  border-color: var(--primary);
 }
 
 /* ---- 校对模式（M5b）---- */
 
 /* 高置信候选（confidence ≥ 0.9）= 绿 */
 .overlay.cand-high {
-  border: 1.5px solid #34c724;
-  background: rgba(52, 199, 36, 0.12);
+  border: 1.5px solid var(--success);
+  background: var(--success-bg-confirmed);
 }
 
 /* 低置信候选 = 黄 */
 .overlay.cand-low {
-  border: 1.5px solid #ffb900;
-  background: rgba(255, 196, 0, 0.15);
+  border: 1.5px solid var(--candidate);
+  background: var(--candidate-bg-low);
 }
 
 /* 已确认 = 蓝 */
 .overlay.confirmed {
-  border: 1.5px solid #3370ff;
-  background: rgba(51, 112, 255, 0.12);
+  border: 1.5px solid var(--primary);
+  background: var(--primary-bg-region);
 }
 
 /* 已排除 = 灰虚线（正常模式下不渲染） */
 .overlay.excluded {
-  border: 1.5px dashed #909399;
+  border: 1.5px dashed var(--region-unplaced);
   background: transparent;
 }
 
 /* 微调中：蓝实线 + 拖移光标 */
 .overlay.adjusting {
-  border: 1.5px solid #3370ff;
-  background: rgba(51, 112, 255, 0.08);
+  border: 1.5px solid var(--primary);
+  background: var(--primary-bg-subtle);
   cursor: move;
 }
 
@@ -1350,8 +1423,8 @@ onBeforeUnmount(() => {
   position: absolute;
   width: 8px;
   height: 8px;
-  background: #fff;
-  border: 1.5px solid #3370ff;
+  background: var(--bg-surface);
+  border: 1.5px solid var(--primary);
   border-radius: 2px;
 }
 
@@ -1406,34 +1479,34 @@ onBeforeUnmount(() => {
 /* 框选草稿：虚线蓝框，不拦截鼠标 */
 .draft-frame {
   position: absolute;
-  border: 1.5px dashed #3370ff;
-  background: rgba(51, 112, 255, 0.1);
+  border: 1.5px dashed var(--primary);
+  background: var(--primary-bg-selected);
   pointer-events: none;
 }
 
 .dot.cand-high {
-  background: rgba(52, 199, 36, 0.2);
-  border: 1px solid #34c724;
+  background: var(--success-bg-marker);
+  border: 1px solid var(--success);
 }
 
 .dot.cand-low {
-  background: rgba(255, 196, 0, 0.3);
-  border: 1px solid #ffb900;
+  background: var(--candidate-bg-marker);
+  border: 1px solid var(--candidate);
 }
 
 .dot.confirmed {
-  background: rgba(51, 112, 255, 0.2);
-  border: 1px solid #3370ff;
+  background: var(--primary-bg-marker);
+  border: 1px solid var(--primary);
 }
 
 .dot.excluded {
   background: transparent;
-  border: 1px dashed #909399;
+  border: 1px dashed var(--region-unplaced);
 }
 
 .progress {
   margin-left: 12px;
-  color: #3370ff;
+  color: var(--primary);
   font-weight: 600;
 }
 
@@ -1444,11 +1517,11 @@ onBeforeUnmount(() => {
   gap: 6px;
   max-width: 100%;
   padding: 8px 12px;
-  background: #fff;
-  border: 1px solid #e2e3e5;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 12px;
-  color: #646a73;
+  color: var(--text-2);
 }
 
 .unplaced-title {
@@ -1457,52 +1530,17 @@ onBeforeUnmount(() => {
 
 /* 虚线灰=未识别（bbox=null，无几何坐标） */
 .unplaced-chip {
-  border: 1px dashed #909399;
+  border: 1px dashed var(--region-unplaced);
   border-radius: 3px;
   padding: 1px 6px;
-  color: #909399;
+  color: var(--region-unplaced);
 }
 
-/* ---- 溢出状态条（M7）：固定预览区底部 ---- */
-
-.overflow-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 16px;
-  font-size: 12px;
-  color: #646a73;
-  background: #fff;
-  border-top: 1px solid #e2e3e5;
-}
-
-.overflow-title {
-  flex-shrink: 0;
-  font-weight: 600;
-}
-
-.overflow-chip {
-  padding: 1px 8px;
-  font-size: 12px;
-  color: #1f2329;
-  background: #fff;
-  border: 1px solid #d0d3d6;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.overflow-chip.large {
-  border-color: #f54a45;
-  color: #f54a45;
-}
-
-.overflow-chip.small {
-  border-color: #ff7d00;
-  color: #ff7d00;
-}
-
-.overflow-chip:hover {
-  background: #f5f6f7;
-}
+.pdf-page { margin: 0 auto 20px; }
+.welcome-card { max-width: 520px; padding: 28px; text-align: center; }
+.welcome-icon { display: inline-flex; width: 56px; height: 56px; align-items: center; justify-content: center; font-size: 34px; color: var(--primary); background: var(--primary-bg-subtle); border-radius: 14px; }
+.welcome-card h1 { font-size: 23px; color: var(--text-1); margin: 20px 0 12px; }
+.welcome-card p { font-size: 14px; line-height: 1.8; color: var(--text-2); }
+.welcome-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; margin: 24px 0; }
+.welcome-hint { font-size: 12px; color: var(--text-3); }
 </style>

@@ -1,0 +1,106 @@
+name: macOS test release
+
+on:
+  push:
+    tags: ["v*-test.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Prepare test and build environment
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/pip install -e './backend[dev]'
+          npm ci --prefix frontend
+          brew install --cask libreoffice
+      - name: Verify backend, frontend and native app
+        run: |
+          (cd backend && .venv/bin/ruff check . && .venv/bin/mypy app tests && .venv/bin/pytest -q)
+          npm run typecheck --prefix frontend
+          npm run lint --prefix frontend
+          npm run test --prefix frontend
+          npm run build --prefix frontend
+          backend/.venv/bin/ruff check scripts/build_desktop.py scripts/test_desktop.py scripts/migrate_data.py scripts/test_packaged.py scripts/package_desktop.py scripts/release_sources.py
+          backend/.venv/bin/mypy scripts/build_desktop.py scripts/test_desktop.py scripts/migrate_data.py scripts/test_packaged.py scripts/package_desktop.py scripts/release_sources.py
+          xcrun swift-format lint --strict desktop/*.swift
+          python scripts/test_desktop.py
+      - name: Build and accept moved app with real preview and export
+        run: |
+          python scripts/build_desktop.py --arch ${{ matrix.arch }}
+          python scripts/test_packaged.py --app desktop/build/模块化文档生成助手.app --python "$(command -v python)" --conversion
+          python scripts/package_desktop.py --app desktop/build/模块化文档生成助手.app --arch ${{ matrix.arch }} --output release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macOS-${{ matrix.arch }}
+          path: release/*
+          if-no-files-found: error
+
+  sources:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Package exact project and upstream sources
+        run: |
+          mkdir release
+          git archive --format=tar.gz --prefix=ModularDocGenerator/ HEAD > release/ProjectSource.tar.gz
+          (cd release && sha256sum ProjectSource.tar.gz > ProjectSource.tar.gz.sha256)
+          python scripts/release_sources.py --output release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: corresponding-sources
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    needs: [build, sources]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = context.ref.replace('refs/tags/', '');
+            const body = 'macOS 14+ 开源测试包。Apple Silicon 选择 arm64；Intel 选择 x86_64。解压并移到 Applications。首次运行需要 Python 3.12 与 LibreOffice，App 提供官方安装入口和离线依赖初始化；无需 Node 或源码目录。\n\n测试包尚无 Developer ID 签名与 Apple 公证，不能保证互联网下载后双击通过 Gatekeeper。正式发布待签名，不建议关闭系统保护。\n\n组合 App 按 AGPL-3.0 分发，项目原创源码保留 MIT；对应项目、PyMuPDF 和 MuPDF 源码及 SHA-256 校验附件一并提供。';
+            const result = await github.rest.repos.createRelease({
+              ...context.repo, tag_name: tag, target_commitish: context.sha,
+              name: `${tag} · macOS 双架构测试版`, body, draft: true, prerelease: true
+            });
+            for (const name of fs.readdirSync('release')) {
+              await github.rest.repos.uploadReleaseAsset({
+                ...context.repo, release_id: result.data.id, name,
+                data: fs.readFileSync(`release/${name}`)
+              });
+            }
+            await github.rest.repos.updateRelease({
+              ...context.repo, release_id: result.data.id, draft: false
+            });

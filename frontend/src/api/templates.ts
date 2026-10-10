@@ -9,6 +9,8 @@ export interface BBox {
   y0: number
   x1: number
   y1: number
+  /** 跨页段落的各页框；旧数据仍使用顶层单框。 */
+  fragments?: BBox[]
 }
 
 /** 模板区域（文档流锚定，bbox=null 表示渲染未匹配，前端画虚线）。 */
@@ -21,6 +23,9 @@ export interface Region {
   anchor: { kind: string; path: number[] }
   order_index: number
   bbox: BBox | null
+  /** 当前版本该区域的可编辑文字，模板原件不受影响。 */
+  current_text?: string
+  removed?: boolean
   confidence: number | null
   review_status: string
   created_at: string
@@ -73,6 +78,11 @@ export async function listTemplates(): Promise<TemplateListItem[]> {
 /** 模板详情（含全部区域，按文档流顺序）。 */
 export function fetchTemplate(id: number): Promise<TemplateDetail> {
   return apiFetch<TemplateDetail>(`/api/templates/${id}`)
+}
+
+/** 删除模板及版本、区域、绑定；有有效绑定时服务端拒绝。 */
+export function deleteTemplate(id: number): Promise<void> {
+  return apiFetch<void>(`/api/templates/${id}`, { method: 'DELETE' })
 }
 
 /** 模板预览 PDF 地址（单管线铁律：预览即管线产物，P2）。 */

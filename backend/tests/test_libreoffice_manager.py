@@ -16,7 +16,7 @@ from docx import Document
 from app.core.errors import RENDER_FAILED, RENDER_TIMEOUT, AppError
 from app.services.libreoffice import LibreOfficeManager, find_soffice
 
-_FAKE_SOFFICE = '''#!/usr/bin/env python3
+_FAKE_SOFFICE = """#!/usr/bin/env python3
 import os
 import sys
 import time
@@ -33,7 +33,7 @@ if os.environ.get("FAKE_FAIL"):
 (outdir / (inp.stem + ".pdf")).write_bytes(b"%PDF-fake\\n%M4")
 with marker.open("a") as f:
     f.write("x")
-'''
+"""
 
 
 @pytest.fixture

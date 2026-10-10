@@ -12,6 +12,7 @@ confirmed/excluded → pending（重新校对）。每次校对操作逐笔落�
 （PRD 4.2：全部区域处理完毕，2026-09-18 用户确认 Q3 自动触发）。
 """
 
+import json
 from typing import Any
 
 from app.core.config import settings
@@ -69,9 +70,7 @@ def _validate_frame(frame: dict[str, Any]) -> None:
 def _validate_label(label: str) -> str:
     label = label.strip()
     if not label or len(label) > _LABEL_MAX:
-        raise AppError(
-            REGION_INVALID, f"区域名称需为 1–{_LABEL_MAX} 个字符", status_code=400
-        )
+        raise AppError(REGION_INVALID, f"区域名称需为 1–{_LABEL_MAX} 个字符", status_code=400)
     return label
 
 
@@ -84,13 +83,15 @@ def _frame_hits(
     rx0, ry0, rx1, ry1 = rect
     hits: list[tuple[tuple[int, ...], RegionGeometry]] = []
     for path, geo in geometry.items():
-        if geo.page != page:
-            continue
-        gx0, gy0, gx1, gy1 = geo.bbox
-        w = min(rx1, gx1) - max(rx0, gx0)
-        h = min(ry1, gy1) - max(ry0, gy0)
-        if w >= _MIN_HIT_DIM and h >= _MIN_HIT_DIM:
-            hits.append((path, geo))
+        for part in geo.fragments or (geo,):
+            if part.page != page:
+                continue
+            gx0, gy0, gx1, gy1 = part.bbox
+            w = min(rx1, gx1) - max(rx0, gx0)
+            h = min(ry1, gy1) - max(ry0, gy0)
+            if w >= _MIN_HIT_DIM and h >= _MIN_HIT_DIM:
+                hits.append((path, geo))
+                break
     return hits
 
 
@@ -110,6 +111,20 @@ def _bbox_payload(frame: dict[str, Any]) -> dict[str, Any]:
         "x1": round(float(frame["x1"]), 2),
         "y1": round(float(frame["y1"]), 2),
     }
+
+
+def _merge_bbox(region: Region, frame: dict[str, Any]) -> dict[str, Any]:
+    """微调／重新框选一页时保留同一区域其他页面的手动框。"""
+    payload = _bbox_payload(frame)
+    previous = json.loads(region.bbox_json) if region.bbox_json else {}
+    parts = previous.get("fragments")
+    if parts:
+        parts = [payload if part["page"] == payload["page"] else part for part in parts]
+        if not any(part["page"] == payload["page"] for part in previous["fragments"]):
+            parts.append(payload)
+        parts.sort(key=lambda part: part["page"])
+        payload = {**parts[0], "fragments": parts}
+    return payload
 
 
 def create_manual_region(
@@ -150,6 +165,28 @@ def create_manual_region(
     path, _geo = hits[0]
 
     with get_conn() as conn:
+        existing = next(
+            (
+                r
+                for r in regions_repo.list_regions(conn, template_id)
+                if json.loads(r.anchor)["path"] == list(path)
+            ),
+            None,
+        )
+        if existing is not None:
+            updated = regions_repo.update_region(
+                conn,
+                existing.id,
+                label=label,
+                region_type=region_type,
+                bbox=_merge_bbox(existing, frame),
+                bbox_source="manual",
+                bbox_pdf_sha=pdf_sha,
+                review_status="confirmed",
+            )
+            assert updated is not None
+            _maybe_mark_ready(conn, template_id)
+            return updated
         region = regions_repo.create_region(
             conn,
             template_id,
@@ -199,7 +236,7 @@ def update_region(
             updates["review_status"] = review_status
         if bbox is not None:
             _validate_frame(bbox)
-            updates["bbox"] = _bbox_payload(bbox)
+            updates["bbox"] = _merge_bbox(region, bbox)
             updates["bbox_source"] = "manual"
         if updates:
             updated = regions_repo.update_region(conn, region_id, **updates)

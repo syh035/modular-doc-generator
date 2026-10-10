@@ -27,6 +27,8 @@ from app.core.errors import (
 _MACOS_SOFFICE_CANDIDATES = [
     "/Applications/LibreOffice.app/Contents/MacOS/soffice",
     "/usr/local/bin/soffice",
+    "/opt/homebrew/bin/soffice",
+    str(Path.home() / "Applications/LibreOffice.app/Contents/MacOS/soffice"),
 ]
 
 _MACOS_INSTALL_HINT = (

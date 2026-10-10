@@ -23,3 +23,6 @@ frontend/dist/
 .env
 # AI 协作会话状态（本地保留，不入库）
 STATE.md
+
+# Native desktop build products
+desktop/build/

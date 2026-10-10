@@ -1,5 +1,6 @@
 """/api/blocks 测试（M6a 最小块 API）：创建 201、字段校验、列表；分类功能已移除。"""
 
+import httpx
 from fastapi.testclient import TestClient
 
 
@@ -8,7 +9,7 @@ def create_block(
     name: str,
     content: str,
     tags: list[str] | None = None,
-):
+) -> httpx.Response:
     payload: dict = {"name": name, "content": content}
     if tags is not None:
         payload["tags"] = tags
@@ -31,7 +32,7 @@ def test_create_block_name_stripped(client: TestClient) -> None:
 
 
 def test_create_block_name_too_short(client: TestClient) -> None:
-    resp = create_block(client, "名", "内容")
+    resp = create_block(client, " ", "内容")
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "BLOCK_INVALID"
 
@@ -110,7 +111,7 @@ def test_update_block_partial(client: TestClient) -> None:
 
 def test_update_block_full_validation(client: TestClient) -> None:
     block_id = create_block(client, "姓名", "张三").json()["id"]
-    resp = client.put(f"/api/blocks/{block_id}", json={"name": "名"})  # 与现内容组合校验
+    resp = client.put(f"/api/blocks/{block_id}", json={"name": " "})  # 与现内容组合校验
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "BLOCK_INVALID"
 
@@ -154,9 +155,7 @@ def test_delete_block_prunes_orphan_tags(client: TestClient) -> None:
     create_block(client, "块甲", "内容", tags=["独占标签"]).json()
     create_block(client, "块乙", "内容", tags=["共享标签"]).json()
     # 删掉引用「独占标签」的块 → 标签消失；共享标签仍有块引用 → 保留
-    block_a = next(
-        b for b in client.get("/api/blocks").json()["blocks"] if b["name"] == "块甲"
-    )
+    block_a = next(b for b in client.get("/api/blocks").json()["blocks"] if b["name"] == "块甲")
     assert client.delete(f"/api/blocks/{block_a['id']}").status_code == 204
     tag_names = {t["name"] for t in client.get("/api/tags").json()["tags"]}
     assert "独占标签" not in tag_names
@@ -200,3 +199,110 @@ def test_delete_block_sets_bindings_missing(client: TestClient) -> None:
         ).fetchone()
     assert row is not None
     assert row[0] == "missing"
+
+
+def test_one_character_block_name_matches_ui_contract(client: TestClient) -> None:
+    resp = create_block(client, "名", "内容")
+    assert resp.status_code == 201
+    assert client.put(f"/api/blocks/{resp.json()['id']}", json={"name": "字"}).status_code == 200
+
+
+def test_template_library_retains_members_across_versions_and_unbind(client: TestClient) -> None:
+    from tests.test_api_versions import bind, make_block, make_docx, upload
+
+    a = upload(client, make_docx("模板 A {{姓名}} {{电话}}"))
+    b = upload(client, make_docx("模板 B {{姓名}}"))
+    one = make_block(client, "A 块", "A")
+    two = make_block(client, "B 块", "B")
+    three = make_block(client, "未绑定", "C")
+    extra = client.post(f"/api/templates/{a['id']}/versions", json={"name": "第二版"})
+    assert extra.status_code == 201
+    second_version = extra.json()["id"]
+    rid = a["regions"][0]["id"]
+    assert bind(client, a["default_version_id"], rid, one).status_code == 200
+    assert bind(client, second_version, rid, one).status_code == 200
+    assert bind(client, second_version, a["regions"][1]["id"], two).status_code == 200
+    assert bind(client, b["default_version_id"], b["regions"][0]["id"], two).status_code == 200
+
+    def ids(template_id: int | None = None) -> set[int]:
+        response = client.get(
+            "/api/blocks", params={} if template_id is None else {"template_id": template_id}
+        )
+        assert response.status_code == 200
+        return {block["id"] for block in response.json()["blocks"]}
+
+    assert ids() == {one, two, three}
+    assert ids(a["id"]) == {one, two}  # shared block deduplicated across versions
+    assert ids(b["id"]) == {two}
+    assert ids(999999) == set()
+    assert (
+        client.delete(
+            f"/api/versions/{second_version}/bindings/{a['regions'][1]['id']}"
+        ).status_code
+        == 204
+    )
+    assert ids(a["id"]) == {one, two}
+    assert client.delete(f"/api/blocks/{one}").status_code == 204
+    assert ids(a["id"]) == {two}
+    assert ids(b["id"]) == {two}
+
+
+def test_create_template_member_share_and_history(client: TestClient) -> None:
+    from tests.test_api_versions import make_docx, upload
+
+    a = upload(client, make_docx("A {{姓名}}"))
+    b = upload(client, make_docx("B {{姓名}}"))
+    created = client.post(
+        "/api/blocks", json={"name": "模板新块", "content": "保留内容", "template_id": a["id"]}
+    )
+    assert created.status_code == 201
+    block_id = created.json()["id"]
+
+    def ids(tid: int) -> list[int]:
+        return [
+            block["id"]
+            for block in client.get("/api/blocks", params={"template_id": tid}).json()["blocks"]
+        ]
+
+    assert ids(a["id"]) == [block_id]  # Visible before any region is bound.
+    assert ids(b["id"]) == []
+    assert client.post("/api/history/undo").status_code == 200
+    assert ids(a["id"]) == []
+    assert client.post("/api/history/redo").status_code == 200
+    assert ids(a["id"]) == [block_id]
+    share = f"/api/blocks/{block_id}/templates/{b['id']}"
+    assert client.post(share).status_code == 200
+    assert ids(b["id"]) == [block_id]
+    history = client.get("/api/history/status").json()["undo_count"]
+    assert client.post(share).status_code == 200
+    assert client.get("/api/history/status").json()["undo_count"] == history
+    assert client.post("/api/history/undo").status_code == 200
+    assert ids(b["id"]) == [] and ids(a["id"]) == [block_id]
+    assert client.post("/api/history/redo").status_code == 200
+    assert client.put(f"/api/blocks/{block_id}", json={"content": "共享更新"}).status_code == 200
+    assert (
+        client.get("/api/blocks", params={"template_id": b["id"]}).json()["blocks"][0]["content"]
+        == "共享更新"
+    )
+    assert client.delete(f"/api/templates/{a['id']}").status_code == 204
+    assert ids(b["id"]) == [block_id]
+    assert client.get(f"/api/blocks/{block_id}").status_code == 200
+
+
+def test_template_member_invalid_targets_do_not_create_assets(client: TestClient) -> None:
+    from tests.test_api_versions import make_block, make_docx, upload
+
+    before = client.get("/api/blocks").json()
+    assert (
+        client.post(
+            "/api/blocks", json={"name": "不会创建", "content": "内容", "template_id": 999999}
+        ).status_code
+        == 404
+    )
+    assert client.get("/api/blocks").json() == before
+    template = upload(client, make_docx("测试 {{姓名}}"))
+    block_id = make_block(client, "原块", "内容")
+    assert client.post(f"/api/blocks/{block_id}/templates/999999").status_code == 404
+    assert client.post(f"/api/blocks/999999/templates/{template['id']}").status_code == 404
+    assert client.delete(f"/api/blocks/{block_id}").status_code == 204
+    assert client.post(f"/api/blocks/{block_id}/templates/{template['id']}").status_code == 404

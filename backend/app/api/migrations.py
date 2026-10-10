@@ -4,6 +4,8 @@
 匹配规则与守门见 services/migration_service.py 模块注释。
 """
 
+from typing import Literal
+
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
@@ -20,6 +22,8 @@ class MigrationPlanRequest(BaseModel):
 class MigrationPair(BaseModel):
     region_id: int
     block_id: int
+    line_break_mode: Literal["paragraph", "soft"] = "paragraph"
+    position: Literal["inside", "before", "after"] = "inside"
 
 
 class MigrationApplyRequest(BaseModel):
@@ -40,5 +44,11 @@ def apply_migration(template_id: int, payload: MigrationApplyRequest) -> dict[st
     pairs = [(p.region_id, p.block_id) for p in payload.bindings]
     with get_conn() as conn:
         return migration_service.apply_migration(
-            conn, payload.source_version_id, template_id, pairs
+            conn,
+            payload.source_version_id,
+            template_id,
+            pairs,
+            settings_by_region={
+                p.region_id: (p.line_break_mode, p.position) for p in payload.bindings
+            },
         )

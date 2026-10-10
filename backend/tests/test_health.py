@@ -27,3 +27,17 @@ def test_health_libreoffice_fields() -> None:
         assert lo["hint"] is None
     else:
         assert lo["hint"]  # 缺依赖必须给安装指引（D2）
+
+
+def test_launcher_identity_tracks_checkout_without_exposing_path() -> None:
+    import hashlib
+
+    from app.core.config import settings
+
+    body = make_client().get("/api/health").json()
+    assert body["application"] == "modular-doc-generator"
+    assert (
+        body["project_fingerprint"]
+        == hashlib.sha256(str(settings.project_root.resolve()).encode()).hexdigest()
+    )
+    assert str(settings.project_root) not in str(body)
