@@ -141,3 +141,7 @@ E2E 同秒 fixture 去重、全文候选及本地 CMap 资源见 P44。
 ### P51 环境初始化退出保护（M29）
 
 初始化依赖／迁移尚未拥有后端时也属于 busy；退出检查必须先判断 busy，再判断服务所有权，否则 ⌘Q 会让环境子进程失去宿主。
+
+### P52 分发 CI 环境一致性（M29）
+
+渲染／导出回归需要真实 LibreOffice；Ubuntu CI 安装 libreoffice-writer 和 CJK 字体，不依靠缺环境时跳过测试。分发验证的后端依赖须用 requirements-release.txt 约束，避免测试环境升级而安装包仍使用旧版本。

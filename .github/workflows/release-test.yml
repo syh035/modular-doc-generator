@@ -31,7 +31,7 @@ jobs:
       - name: Prepare test and build environment
         run: |
           python -m venv backend/.venv
-          backend/.venv/bin/pip install -e './backend[dev]'
+          backend/.venv/bin/pip install -c backend/requirements-release.txt -e './backend[dev]'
           npm ci --prefix frontend
           brew install --cask libreoffice
       - name: Verify backend, frontend and native app

@@ -20,13 +20,15 @@ jobs:
           cache: pip
           cache-dependency-path: backend/pyproject.toml
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -c requirements-release.txt -e ".[dev]"
+      - name: Install real document conversion dependencies
+        run: sudo apt-get update && sudo apt-get install -y libreoffice-writer fonts-noto-cjk
       - name: Lint (ruff)
         run: ruff check .
       - name: Type check (mypy)
         run: mypy app tests
       - name: Tests (pytest)
-        # LibreOffice 相关用例自带 skipif 守卫，CI 环境无 LO 自动跳过，其余全绿
+        # CI 也安装 LibreOffice，渲染／导出回归使用真实转换。
         run: pytest -q
 
   frontend:
