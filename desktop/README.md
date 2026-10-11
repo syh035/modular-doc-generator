@@ -30,6 +30,19 @@ python3 scripts/package_desktop.py --app /tmp/modudoc-arm64/模块化文档生�
 
 用户数据位于 `~/Library/Application Support/ModularDocGenerator/Data`，专用 Python venv 位于 `Runtime/py312-架构-依赖摘要`，日志位于 `Logs`。App 更新／移动不影响用户数据。服务管理「导入旧版数据」仅接受空目标，复制 SQLite 一致性备份、校验模板指纹并保留源目录；先停止旧版服务。初始化过的空目标也会保留为 `Data-before-import-*`。既有非空数据不会被覆盖。
 
+## 使用流程
+
+1. **导入模板**：顶栏「导入模板」选 .docx → 自动解析出候选区域并选中新模板
+2. **校对**：状态栏开启校对模式 → 确认 / 排除候选、调整边界；点击「添加遗漏区域」可进入拖拽补选，每次框选一个段落。未定位项可点击后直接重新框选，保留已有区域与绑定；全部处理完模板自动转「可用」
+3. **建块绑定**：左缘展开字符块库 → 新建块 → 点选块、点预览上的区域完成绑定（或区域浮层反向绑定）
+4. **版本与导出**：「模板与版本」面板新建 / 复制 / 重命名 / 删除版本，点「使用」打开 →「导出 DOCX」下载；工具条下拉可快速切换版本
+
+弹层打开时背景操作暂停，按 Esc 或点遮罩关闭，Tab/Shift+Tab 在弹层内切换焦点，关闭后回到打开前的位置。块库分隔条可用 Tab 聚焦，再按左右方向键每次调整 16px；宽度随鼠标或键盘调整自动记忆。
+
+溢出区域提示集中在底部状态栏，点击可滚页定位并闪烁 1.8 秒；提示增减不改变画布高度。工具条保留模板／内容版本快速选择，「模板与版本」打开管理面板，浏览模板不会切换工作台，点击「使用」才打开版本。视图工具条提供缩放，窄屏保留「? 图例」和块库抽屉入口。
+
+块库和模板管理的「批量管理」均支持全选当前搜索／筛选结果；切换筛选清除勾选，删除前二次确认，部分失败保留失败项并显示原因。模板删除永久移除原件、全部版本、区域及绑定；有有效绑定时先解绑或删除对应块。字符块仍采用软删除，保留原有恢复规则。
+
 ## 服务与通知
 
 - 分发 App 只有一个后端进程，固定 127.0.0.1:8740 同源提供 API 与生产前端；源码开发模式仍使用 8740／5173。健康身份须同时匹配应用资源与数据目录才能复用。
@@ -42,10 +55,6 @@ python3 scripts/package_desktop.py --app /tmp/modudoc-arm64/模块化文档生�
 
 Swift 编译警告按错误处理，swift-format lint；Python 构建脚本通过 ruff 和 mypy。生命周期用合成服务验证启动、复用、所有权、不同项目保护、正常停止、外部端口保护与部分启动回滚；导出文件测试覆盖新建、替换、失败保留与并发保护。真实窗口验收另外验证启动／停止／重启及 LibreOffice 预览导出。
 
-交付验证：两种架构在各自 macOS 15 runner 上通过后端 351 测试、前端 224 测试、类型／lint／构建和原生生命周期检查；移动 App 后使用全新离线 venv 完成真实 LibreOffice 预览／导出。公开下载的两份 ZIP 已核对 SHA-256、Mach-O 架构与严格签名，对应项目源码与发布标签一致。最低 macOS 14 的干净机器体验仍待正式发布前验证。
-
 实现依据：[AppKit NSStatusBar](https://developer.apple.com/documentation/appkit/nsstatusbar)、[Foundation Process](https://developer.apple.com/documentation/foundation/process)、[UserNotifications](https://developer.apple.com/documentation/usernotifications)。
 
-不传 --output 时产物位于 desktop/build。文稿目录受 FileProvider 管理时，启动可能重新写入包根 FinderInfo，触发严格验签的附加元数据错误；本机正式交付改用个人 Applications 目录，并在实际启动后再次严格验签通过。不要移除 quarantine 或关闭系统保护来处理此现象。
-
-正式发布待办：Developer ID 签名与 Apple 公证、干净 macOS 14 机器验收；Windows 外壳暂不支持。本次依照用户最新决定采用环境检测与安装引导，替代完整运行时打包。
+不传 --output 时产物位于 desktop/build。文稿目录受 FileProvider 管理时，启动可能重新写入包根 FinderInfo，触发严格验签的附加元数据错误；建议安装到 Applications，并在实际启动后复核严格签名。不要移除 quarantine 或关闭系统保护来处理此现象。
