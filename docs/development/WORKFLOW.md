@@ -96,8 +96,6 @@ cd modular-doc-generator
 
 浏览器访问 <http://localhost:5173>（vite 绑 localhost，勿用 127.0.0.1，见 [技术经验 P26](KNOWN_ISSUES.md)）；验证后端：`curl http://127.0.0.1:8740/api/health`。
 
-**终端一键启动**（macOS）：双击仓库根目录的 `一键启动.command`——弹出终端窗口自动拉起前后端服务，就绪后自动打开浏览器；Ctrl-C 或关闭窗口即停止服务。脚本位置自适应：放项目根目录、`scripts/` 内或桌面均可。
-
 手动启动（可选）：
 
 ```sh
