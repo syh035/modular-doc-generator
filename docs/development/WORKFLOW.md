@@ -64,3 +64,93 @@ CI 定义见 [.github/workflows/ci.yml](../../.github/workflows/ci.yml)：后端
 
 
 桌面模块（macOS）补充门禁：`xcrun swift-format lint --strict desktop/*.swift`、`backend/.venv/bin/ruff check scripts/build_desktop.py scripts/test_desktop.py`、`backend/.venv/bin/mypy scripts/build_desktop.py scripts/test_desktop.py`、`python3 scripts/test_desktop.py` 和 `python3 scripts/build_desktop.py`。生命周期测试使用独立临时目录与随机回环端口，不触碰正式库；完整验收另检查原生窗口、实际服务和 LibreOffice 转换。CI 新增 macOS desktop job，远程运行结果须待推送后查看。
+
+
+## 源码启动与运行数据
+
+| 依赖 | 要求 | 说明 |
+|------|------|------|
+| 操作系统 | macOS | 已在本机环境验证 |
+| Python | 3.11+（本机 3.12） | 仅后端 venv 使用 |
+| Node.js | 22（与 CI 一致） | 前端 Vite |
+| LibreOffice | 必装 | DOCX→PDF 转换引擎 |
+
+**LibreOffice 安装**（一次性，D2）：
+
+```sh
+brew install --cask libreoffice
+```
+
+- 应用启动时自动检测：未安装时启动脚本提示安装命令，`/api/health` 返回 `available: false` 与指引，其余功能不受影响
+- 首次转换可能耗时数分钟（字体配置冷缓存需扫描系统字体，含全部 CJK），属一次性成本；之后命中内容寻址缓存，毫秒级
+
+### 启动
+
+```sh
+git clone https://github.com/syh035/modular-doc-generator.git
+cd modular-doc-generator
+./scripts/dev.sh
+```
+
+脚本自动完成：后端 venv 与依赖初始化（首次约 1–2 分钟，自动探测 Python 3.11+）→ 前端依赖安装 → **端口预检查**（8740/5173 被占用即报错退出）→ 启动双进程（Ctrl-C 同时结束）→ 前端就绪后**自动打开浏览器**。
+
+浏览器访问 <http://localhost:5173>（vite 绑 localhost，勿用 127.0.0.1，见 [技术经验 P26](KNOWN_ISSUES.md)）；验证后端：`curl http://127.0.0.1:8740/api/health`。
+
+**终端一键启动**（macOS）：双击仓库根目录的 `一键启动.command`——弹出终端窗口自动拉起前后端服务，就绪后自动打开浏览器；Ctrl-C 或关闭窗口即停止服务。脚本位置自适应：放项目根目录、`scripts/` 内或桌面均可。
+
+手动启动（可选）：
+
+```sh
+# 后端（必须 127.0.0.1:8740）
+cd backend && .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8740
+# 前端（另一终端）
+cd frontend && npm run dev
+```
+
+### 运行数据
+
+源码开发模式的数据位于 `data/`（已 gitignore）；下载 App 的数据位于 `~/Library/Application Support/ModularDocGenerator/Data`。**备份 = 退出应用后拷贝整个数据目录**，下表为源码模式的相对路径：
+
+| 路径 | 内容 |
+|------|------|
+| `data/app.db` | SQLite（WAL 模式），全部业务数据 |
+| `data/templates/` | 模板原件，落盘名 `{id}_{原文件名}` |
+| `data/render_cache/` | LibreOffice 转换缓存（按内容 SHA-256 寻址，可整目录删除重建） |
+| `data/exports/` | 导出 DOCX 落盘（同名覆盖不累积） |
+| `data/fontconfig/` | 自产字体配置（中文渲染必需，自动生成） |
+| `data/lo_profile/` | LibreOffice 独立 profile（自动生成） |
+
+### 仓库结构
+
+当前能力见上方功能总览，下一阶段安排见 [下期规划](../product/NEXT_PLAN.md)，具体任务状态和依赖见 [任务池](../../TODO.md)。
+
+```text
+modular-doc-generator/
+├── README.md / AGENTS.md / TODO.md / CHANGELOG.md
+├── docs/
+│   ├── README.md
+│   ├── product/       # 原始需求、下期规划
+│   ├── architecture/  # 当前架构和必要设计
+│   └── development/   # 开发规范、技术经验和历史
+├── backend/           # FastAPI、SQLite、业务服务与测试
+├── frontend/          # Vue 工作台与 PDF 预览
+├── desktop/           # 原生 macOS 状态栏应用、服务生命周期测试
+├── scripts/           # 启动、桌面构建、一致性检查、场景 E2E
+└── .github/           # CI、Bug/功能 Issue 模板
+```
+
+完整文档入口见 [文档导航](../README.md)。运行数据 `data/` 和本地交接 `STATE.md` 已被 Git 忽略。
+
+### 自验工具
+
+```sh
+# 一致性专项：预览 PDF vs 导出重转 PDF 逐页容差 diff（exit 0 一致 / 1 差异）
+backend/.venv/bin/python scripts/consistency_check.py <预览.pdf> <重转.pdf>
+
+# 三大场景 E2E（日常沉淀 / 定向投递 / 模板换装；服务未起会自动拉起）
+/usr/bin/python3 scripts/e2e/run_e2e.py all
+
+# 单元测试
+cd backend && .venv/bin/python -m pytest
+cd frontend && npm run test       # vitest
+```
