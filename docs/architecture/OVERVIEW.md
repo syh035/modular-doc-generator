@@ -46,7 +46,7 @@ BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜�
 
 ## 内容资产和持久化
 
-[schema.py](../../backend/app/models/schema.py) 定义 `blocks / tags / block_tags / templates / regions / versions / bindings / template_blocks / template_candidate_scans`。
+[schema.py](../../backend/app/models/schema.py) 定义 `blocks / tags / block_tags / templates / regions / versions / bindings / template_blocks / template_candidate_scans / version_region_actions`。
 
 - 块是独立于模板的多行纯文本资产，通过标签组织；删除采用软删除。
 - 模板保存原文件路径、SHA-256 指纹和解析/校对状态；同内容重传关联已有模板。

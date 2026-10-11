@@ -55,10 +55,6 @@ python3 scripts/package_desktop.py --app /tmp/modudoc-arm64/模块化文档生�
 
 Swift 编译警告按错误处理，swift-format lint；Python 构建脚本通过 ruff 和 mypy。生命周期用合成服务验证启动、复用、所有权、不同项目保护、正常停止、外部端口保护与部分启动回滚；导出文件测试覆盖新建、替换、失败保留与并发保护。真实窗口验收另外验证启动／停止／重启及 LibreOffice 预览导出。
 
-交付验证：两种架构在各自 macOS 15 runner 上通过后端 351 测试、前端 224 测试、类型／lint／构建和原生生命周期检查；移动 App 后使用全新离线 venv 完成真实 LibreOffice 预览／导出。公开下载的两份 ZIP 已核对 SHA-256、Mach-O 架构与严格签名，对应项目源码与发布标签一致。最低 macOS 14 的干净机器体验仍待正式发布前验证。
-
 实现依据：[AppKit NSStatusBar](https://developer.apple.com/documentation/appkit/nsstatusbar)、[Foundation Process](https://developer.apple.com/documentation/foundation/process)、[UserNotifications](https://developer.apple.com/documentation/usernotifications)。
 
-不传 --output 时产物位于 desktop/build。文稿目录受 FileProvider 管理时，启动可能重新写入包根 FinderInfo，触发严格验签的附加元数据错误；本机正式交付改用个人 Applications 目录，并在实际启动后再次严格验签通过。不要移除 quarantine 或关闭系统保护来处理此现象。
-
-正式发布待办：Developer ID 签名与 Apple 公证、干净 macOS 14 机器验收；Windows 外壳暂不支持。本次依照用户最新决定采用环境检测与安装引导，替代完整运行时打包。
+不传 --output 时产物位于 desktop/build。文稿目录受 FileProvider 管理时，启动可能重新写入包根 FinderInfo，触发严格验签的附加元数据错误；建议安装到 Applications，并在实际启动后复核严格签名。不要移除 quarantine 或关闭系统保护来处理此现象。
