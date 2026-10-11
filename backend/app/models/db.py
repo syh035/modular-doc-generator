@@ -51,11 +51,19 @@ def init_db(conn: sqlite3.Connection) -> None:
     for ddl in DDL_STATEMENTS:
         conn.execute(ddl)
     _migrate(conn)
+    # Legacy bound assets become members without moving or duplicating their identities.
+    conn.execute(
+        "INSERT OR IGNORE INTO template_blocks (template_id, block_id) "
+        "SELECT DISTINCT v.template_id, b.block_id FROM bindings b "
+        "JOIN versions v ON v.id = b.version_id WHERE b.status = 'active'"
+    )
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """开发期轻量迁移（幂等）：旧库补列 / 废列即删。"""
     cols = [r[1] for r in conn.execute("PRAGMA table_info(blocks)")]
+    if "kind" not in cols:
+        conn.execute("ALTER TABLE blocks ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'")
     if "category" in cols:
         conn.execute("ALTER TABLE blocks DROP COLUMN category")  # 2026-09-18 用户确认移除分类
     # M5b（P21 bbox 生命周期）：bbox_pdf_sha 记录测量来源 PDF，bbox_source 区分自动/人工
@@ -64,3 +72,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE regions ADD COLUMN bbox_pdf_sha TEXT")
     if "bbox_source" not in region_cols:
         conn.execute("ALTER TABLE regions ADD COLUMN bbox_source TEXT NOT NULL DEFAULT 'auto'")
+
+    binding_cols = [r[1] for r in conn.execute("PRAGMA table_info(bindings)")]
+    if "position" not in binding_cols:
+        conn.execute("ALTER TABLE bindings ADD COLUMN position TEXT NOT NULL DEFAULT 'inside'")
+    if "line_break_mode" not in binding_cols:
+        conn.execute(
+            "ALTER TABLE bindings ADD COLUMN line_break_mode TEXT NOT NULL DEFAULT 'paragraph'"
+        )

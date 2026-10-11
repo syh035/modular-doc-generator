@@ -38,6 +38,22 @@ beforeEach(() => {
   localStorage.clear()
 })
 
+it('标签刷新丢弃旧响应，防止批量删除后恢复过期标签', async () => {
+  let resolveOld!: (response: Response) => void
+  const fetchFn = vi.fn()
+    .mockImplementationOnce(() => new Promise<Response>(resolve => { resolveOld = resolve }))
+    .mockResolvedValueOnce(Response.json({ tags: [] }))
+  vi.stubGlobal('fetch', fetchFn)
+  const store = useBlocksStore()
+  store.activeTagId = 1
+  const older = store.loadTags()
+  await store.loadTags()
+  resolveOld(Response.json({ tags: [{ id: 1, name: '过期标签', block_count: 1 }] }))
+  await older
+  expect(store.tags).toEqual([])
+  expect(store.activeTagId).toBeNull()
+})
+
 describe('块库抽屉宽度与开合（UI 调整②批）', () => {
   it('默认宽度 320、默认展开', () => {
     const store = useBlocksStore()
@@ -190,6 +206,7 @@ describe('blocks store（M2 更新/删除）', () => {
     const store = useBlocksStore()
     store.blocks = [block(1, '姓名'), block(2, '电话')]
     store.selectedBlockId = 1
+    store.activeTagId = 7
     stubFetch({ '/api/tags': () => ({ tags: [] }) })
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       if (String(input) === '/api/blocks/1') {
@@ -204,6 +221,7 @@ describe('blocks store（M2 更新/删除）', () => {
     expect(ok).toBe(true)
     expect(store.blocks.map(b => b.id)).toEqual([2])
     expect(store.selectedBlockId).toBeNull() // 删的是选中块
+    expect(store.activeTagId).toBeNull() // 已清理的标签不能留下隐藏筛选
   })
 
   it('removeBlock：失败写 mutationError', async () => {
@@ -315,4 +333,85 @@ describe('blocks store（M2 标签筛选与管理）', () => {
     store.libraryOpen = false
     expect(store.libraryOpen).toBe(false)
   })
+})
+
+
+describe('批量标签', () => {
+  it.each([['add', ['旧标签', '新标签']], ['replace', ['新标签']], ['remove', ['旧标签']]] as const)(
+    '%s 保留相应标签语义和部分失败结果', async (mode, expected) => {
+      const store = useBlocksStore()
+      const base = { id: 1, name: '内容', content: '文字', tags: [{ id: 1, name: '旧标签' }], created_at: '', updated_at: '' }
+      store.blocks = [base, { ...base, id: 2 }]
+      const calls: string[][] = []
+      vi.stubGlobal('fetch', vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'PUT') {
+          const tags = JSON.parse(init.body as string).tags as string[]
+          calls.push(tags)
+          if (String(url).endsWith('/2')) return Response.json({ error: { code: 'BLOCK_NOT_FOUND', message: '已删除' } }, { status: 404 })
+          return Response.json({ ...base, tags: [] })
+        }
+        return Response.json(String(url).includes('/tags') ? { tags: [] } : { blocks: [base] })
+      }))
+      const result = await store.retagBlocks([1, 2], ['新标签'], mode)
+      expect(calls[0]).toEqual(expected)
+      expect(result.updated).toBe(1)
+      expect(result.failedIds).toEqual([2])
+      expect(result.failures[0]).toContain('已删除')
+    },
+  )
+})
+
+
+it('模板块库只显示绑定集合，切换立即清空并丢弃旧响应，全局资产保留', async () => {
+  let resolveOld!: (response: Response) => void
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input).endsWith('=1')
+    ? new Promise<Response>(resolve => { resolveOld = resolve })
+    : Promise.resolve(Response.json({ blocks: [block(2, 'B')] }))))
+  const store = useBlocksStore()
+  store.blocks = [block(1, 'A'), block(2, 'B'), block(3, '未绑定')]
+  const old = store.loadTemplateBlocks(1)
+  expect(store.libraryBlocks).toEqual([])
+  await store.loadTemplateBlocks(2)
+  expect(store.libraryBlocks.map(b => b.id)).toEqual([2])
+  resolveOld(Response.json({ blocks: [block(1, 'A')] }))
+  await old
+  expect(store.libraryBlocks.map(b => b.id)).toEqual([2])
+  expect(store.blocks).toHaveLength(3)
+  await store.loadTemplateBlocks(null)
+  expect(store.libraryBlocks).toEqual([])
+})
+
+it('模板块库刷新失败隐藏过期详情，绑定成功后可重新加载', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(Response.json({ blocks: [block(1, 'A')] }))
+    .mockResolvedValueOnce(Response.json({ error: { code: 'FAILED', message: '加载失败' } }, { status: 500 }))
+    .mockResolvedValueOnce(Response.json({ blocks: [block(2, 'B')] })))
+  const store = useBlocksStore()
+  store.blocks = [block(1, 'A'), block(2, 'B')]
+  await store.loadTemplateBlocks(1)
+  await store.loadTemplateBlocks(1)
+  expect(store.libraryBlocks).toEqual([])
+  expect(store.libraryError).toBe('加载失败')
+  await store.loadTemplateBlocks(1)
+  expect(store.libraryBlocks.map(b => b.id)).toEqual([2])
+})
+
+
+it('模板中新建块保留归属；切换期间创建完成不选中其他模板的块', async () => {
+  let resolveCreate!: (response: Response) => void
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'POST') return new Promise<Response>(resolve => { resolveCreate = resolve })
+    return Promise.resolve(Response.json(String(input) === '/api/tags' ? { tags: [] } : { blocks: [] }))
+  }))
+  const store = useBlocksStore()
+  await store.loadTemplateBlocks(1)
+  const creating = store.createNewBlock('新块', '内容', [], 'text', 1)
+  await store.loadTemplateBlocks(2)
+  resolveCreate(Response.json(block(7, '新块')))
+  expect(await creating).toBe(true)
+  expect(store.selectedBlockId).toBeNull()
+  expect(store.libraryBlocks).toEqual([])
+  expect(store.blocks.map(b => b.id)).toContain(7)
+  const fetchFn = vi.mocked(fetch)
+  const creation = fetchFn.mock.calls.find(([, init]) => init?.method === 'POST')
+  expect(JSON.parse(String(creation?.[1]?.body))).toMatchObject({ template_id: 1 })
 })

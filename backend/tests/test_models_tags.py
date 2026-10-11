@@ -7,15 +7,17 @@ import pytest
 from app.models.repositories import blocks, tags
 
 
-def test_tag_crud_and_lookup(conn) -> None:
+def test_tag_crud_and_lookup(conn: sqlite3.Connection) -> None:
     tag = tags.create_tag(conn, "后端")
     assert tags.get_tag(conn, tag.id) == tag
-    assert tags.get_tag_by_name(conn, "后端").id == tag.id
+    found_1 = tags.get_tag_by_name(conn, "后端")
+    assert found_1 is not None
+    assert found_1.id == tag.id
     assert [t.name for t in tags.list_tags(conn)] == ["后端"]
     assert tags.get_tag_by_name(conn, "不存在") is None
 
 
-def test_rename_propagates_via_join(conn) -> None:
+def test_rename_propagates_via_join(conn: sqlite3.Connection) -> None:
     """重命名就地改 tags.name——联结表存 id，块上的标签视图自动生效。"""
     block = blocks.create_block(conn, "块", "内容")
     tag = tags.create_tag(conn, "后端")
@@ -26,7 +28,7 @@ def test_rename_propagates_via_join(conn) -> None:
     assert [t.name for t in tags.tags_of_block(conn, block.id)] == ["服务端"]
 
 
-def test_rename_to_existing_name_rejected(conn) -> None:
+def test_rename_to_existing_name_rejected(conn: sqlite3.Connection) -> None:
     """重命名撞已有标签名 → UNIQUE 拒绝（合并语义由 M2 service 层实现）。"""
     tags.create_tag(conn, "后端")
     tag = tags.create_tag(conn, "前端")
@@ -34,7 +36,7 @@ def test_rename_to_existing_name_rejected(conn) -> None:
         tags.rename_tag(conn, tag.id, "后端")
 
 
-def test_attach_idempotent_and_detach(conn) -> None:
+def test_attach_idempotent_and_detach(conn: sqlite3.Connection) -> None:
     block = blocks.create_block(conn, "块", "内容")
     t1 = tags.create_tag(conn, "标签1")
     t2 = tags.create_tag(conn, "标签2")
@@ -49,7 +51,7 @@ def test_attach_idempotent_and_detach(conn) -> None:
     assert [t.name for t in tags.tags_of_block(conn, block.id)] == ["标签2"]
 
 
-def test_delete_tag_cleans_join_rows(conn) -> None:
+def test_delete_tag_cleans_join_rows(conn: sqlite3.Connection) -> None:
     """物理删标签 → 联结行 CASCADE 清理，块本身不受影响。"""
     block = blocks.create_block(conn, "块", "内容")
     tag = tags.create_tag(conn, "后端")

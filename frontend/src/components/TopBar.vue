@@ -1,12 +1,32 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAppStore } from '../stores/app'
+import { useHistoryStore } from '../stores/history'
+import { useBlocksStore } from '../stores/blocks'
 import { usePreviewStore } from '../stores/preview'
 
 const appStore = useAppStore()
 const previewStore = usePreviewStore()
+const history = useHistoryStore()
+const blocks = useBlocksStore()
+async function moveHistory(redo: boolean): Promise<void> {
+  await history.move(redo, async () => {
+    await Promise.all([blocks.loadBlocks(), blocks.loadTags()])
+    await previewStore.reloadAfterHistory()
+  })
+}
 const fileInput = ref<HTMLInputElement | null>(null)
-const uploading = ref(false)
+const uploading = computed(() => previewStore.uploadPhase !== 'idle')
+const now = ref(Date.now())
+let ticker: ReturnType<typeof setInterval> | null = null
+const elapsed = computed(() => Math.floor((now.value - (previewStore.uploadStartedAt ?? now.value)) / 1000))
+watch(() => previewStore.uploadStartedAt, started => {
+  if (ticker) clearInterval(ticker)
+  ticker = null
+  now.value = Date.now()
+  if (started !== null) ticker = setInterval(() => { now.value = Date.now() }, 1000)
+})
+onBeforeUnmount(() => { if (ticker) clearInterval(ticker) })
 
 onMounted(() => {
   void appStore.refreshHealth()
@@ -25,17 +45,17 @@ async function onFileChange(event: Event): Promise<void> {
   if (file === null) {
     return
   }
-  uploading.value = true
   const result = await previewStore.uploadTemplate(file)
-  uploading.value = false
   if (!result.ok) {
     alert(result.error ?? '导入失败')
   }
 }
+defineExpose({ pickFile })
 </script>
 
 <template>
   <header class="top-bar">
+    <strong class="brand">模块化文档生成助手</strong>
     <!-- UI 调整①：顶部 tab 切换（工作台 / 模板制作指南） -->
     <nav class="tabs">
       <button
@@ -54,6 +74,22 @@ async function onFileChange(event: Event): Promise<void> {
       </button>
     </nav>
     <div class="actions">
+      <button
+        v-if="history.enabled"
+        :disabled="!history.canUndo || previewStore.refreshing || uploading || previewStore.exportBusy"
+        :title="`撤销 ${history.undoLabel}（⌘Z）`"
+        @click="moveHistory(false)"
+      >
+        撤销
+      </button>
+      <button
+        v-if="history.enabled"
+        :disabled="!history.canRedo || previewStore.refreshing || uploading || previewStore.exportBusy"
+        :title="`重做 ${history.redoLabel}（⌘⇧Z）`"
+        @click="moveHistory(true)"
+      >
+        重做
+      </button>
       <!-- 导入模板（占位按钮转正，M9 验收开放项）：导出功能在预览工具条，顶栏不再放导出占位 -->
       <input
         ref="fileInput"
@@ -69,18 +105,40 @@ async function onFileChange(event: Event): Promise<void> {
         {{ uploading ? '导入中…' : '导入模板' }}
       </button>
     </div>
+    <p
+      v-if="history.error"
+      role="alert"
+    >
+      {{ history.error }} <button @click="history.clear()">
+        清空撤销记录
+      </button>
+    </p>
+    <p
+      v-if="uploading"
+      class="upload-progress"
+      role="status"
+      data-testid="upload-progress"
+    >
+      {{ previewStore.uploadPhase === 'request' ? '正在上传并解析模板…' : '解析完成，正在生成预览…' }}
+      <span v-if="elapsed >= 5">已等待 {{ elapsed }} 秒；首次转换或较大模板可能需要更久。</span>
+    </p>
   </header>
 </template>
 
 <style scoped>
 .top-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   padding: 8px 16px;
-  background: #fff;
-  border-bottom: 1px solid #e2e3e5;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
 }
+.upload-progress { flex-basis: 100%; padding-top: 8px; color: var(--text-2); font-size: 12px; }
+.brand { font-size: 15px; margin-right: 24px; color: var(--text-1); }
+.tabs { margin-right: auto; }
+@media (max-width: 760px) { .brand { display: none; } .top-bar { padding: 8px 12px; } }
 
 .tabs {
   display: flex;
@@ -91,7 +149,7 @@ async function onFileChange(event: Event): Promise<void> {
 .tab {
   padding: 5px 14px;
   font-size: 13px;
-  color: #646a73;
+  color: var(--text-2);
   background: none;
   border: none;
   border-radius: 4px;
@@ -99,13 +157,13 @@ async function onFileChange(event: Event): Promise<void> {
 }
 
 .tab:hover {
-  background: #f2f3f5;
-  color: #1f2329;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .tab.active {
-  color: #3370ff;
-  background: rgba(51, 112, 255, 0.08);
+  color: var(--primary);
+  background: var(--primary-bg-subtle);
   font-weight: 600;
 }
 
@@ -114,4 +172,5 @@ async function onFileChange(event: Event): Promise<void> {
   align-items: center;
   gap: 8px;
 }
+.actions > button { min-height: 32px; border-radius: 7px; font-size: 13px; }
 </style>

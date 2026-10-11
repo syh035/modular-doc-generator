@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
 
+import httpx
 import pymupdf
 import pytest
 from docx import Document
@@ -23,7 +24,7 @@ def make_docx(text: str = "{{姓名}}求职，电话{{电话}}") -> bytes:
     return buf.getvalue()
 
 
-def post_upload(client: TestClient, filename: str, data: bytes) -> object:
+def post_upload(client: TestClient, filename: str, data: bytes) -> httpx.Response:
     return client.post(
         "/api/templates", files={"file": (filename, data, "application/octet-stream")}
     )
@@ -123,7 +124,7 @@ def test_upload_m3b_candidates_persisted(client: TestClient) -> None:
     doc.add_paragraph("姓名：李四")  # labeled → name / 0.7
     # ≥30 字成段正文 → custom / 0.4
     doc.add_paragraph("负责核心模块的架构设计与性能优化工作，主导完成了多个关键项目的交付落地。")
-    doc.add_paragraph("张三")  # 过短非词表 → 不产候选
+    doc.add_paragraph("张三")  # 全文识别：短文字也成为候选
     buf = BytesIO()
     doc.save(buf)
     body = post_upload(client, "素模板.docx", buf.getvalue()).json()
@@ -132,6 +133,7 @@ def test_upload_m3b_candidates_persisted(client: TestClient) -> None:
     assert [(r["type"], r["confidence"]) for r in regions] == [
         ("education", 0.9),
         ("name", 0.7),
+        ("custom", 0.4),
         ("custom", 0.4),
     ]
     assert all(r["placeholder"] is None for r in regions)
@@ -289,7 +291,7 @@ def test_preview_end_to_end_real_lo(
 
     regions = client.get(f"/api/templates/{tid}/regions").json()["regions"]
     by_label = {r["label"]: r for r in regions}
-    assert set(by_label) == {"手机号", "自我评价", "教育经历"}
+    assert set(by_label) == {"手机号", "自我评价", "教育经历", "张三的简历", "对照单元格"}
     for r in regions:
         assert r["bbox"] is not None, f"{r['label']} 未匹配到渲染位置"
         assert r["bbox"]["page"] == 0
@@ -297,9 +299,7 @@ def test_preview_end_to_end_real_lo(
     assert by_label["手机号"]["bbox"]["y1"] < by_label["自我评价"]["bbox"]["y0"]
     assert by_label["自我评价"]["bbox"]["y1"] < by_label["教育经历"]["bbox"]["y0"]
     # 折行段落应明显高于单行高度
-    assert (
-        by_label["自我评价"]["bbox"]["y1"] - by_label["自我评价"]["bbox"]["y0"]
-    ) > 30
+    assert (by_label["自我评价"]["bbox"]["y1"] - by_label["自我评价"]["bbox"]["y0"]) > 30
 
     # 二次预览：缓存命中，缓存目录恰一份产物
     assert client.get(f"/api/templates/{tid}/preview").status_code == 200

@@ -134,3 +134,36 @@ def test_extract_pdf_lines_from_generated_pdf(tmp_path: Path) -> None:
     assert geo[(0,)].page == 0
     assert geo[(0,)].bbox[3] < geo[(1,)].bbox[1]  # 上行底边在下行顶边之上
     assert 0 < geo[(1,)].bbox[0] < 200  # 合理横坐标（PDF 点）
+
+
+def test_late_table_does_not_consume_body_or_reuse_duplicate_lines() -> None:
+    lines = [line(0, "正文重复", (50, 120, 150, 140)), line(0, "正文重复", (50, 150, 150, 170))]
+    lines += [line(0, f"其他行{i}", (50, 180 + i * 15, 150, 190 + i * 15)) for i in range(20)]
+    lines += [line(0, "联系方式", (50, 60, 150, 80))]
+    geo = align_flow_to_lines(
+        [
+            flow_item([0], "联系方式"),
+            flow_item([1], "正文重复"),
+            flow_item([2], "正文重复"),
+            flow_item([3], "正文重复"),
+        ],
+        lines,
+    )
+    assert geo[(0,)].bbox[1] == 60
+    assert geo[(1,)].bbox[1] == 120
+    assert geo[(2,)].bbox[1] == 150
+    assert (3,) not in geo
+
+
+def test_cross_page_text_with_interleaved_table_has_separate_frames() -> None:
+    lines = [
+        line(0, "主要工作：开发", (50, 780, 300, 800)),
+        line(0, "联系方式", (50, 60, 150, 80)),
+        line(1, "与维护", (50, 40, 180, 60)),
+    ]
+    geo = align_flow_to_lines(
+        [flow_item([0], "联系方式"), flow_item([1], "主要工作：开发与维护")], lines
+    )
+    parts = geo[(1,)].fragments
+    assert [(g.page, g.bbox) for g in parts] == [(0, (50, 780, 300, 800)), (1, (50, 40, 180, 60))]
+    assert geo[(1,)].line_count == 2

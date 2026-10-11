@@ -17,6 +17,8 @@ export interface MigrationAutoItem {
   target_label: string
   block_id: number
   block_name: string | null
+  line_break_mode?: 'paragraph' | 'soft'
+  position?: 'inside' | 'before' | 'after'
 }
 
 /** ② 多候选行：用户从同类型候选中点选一个（前端按序预选默认）。 */
@@ -25,6 +27,8 @@ export interface MigrationCandidateItem {
   source_label: string
   block_id: number
   block_name: string | null
+  line_break_mode?: 'paragraph' | 'soft'
+  position?: 'inside' | 'before' | 'after'
   options: MigrationOption[]
 }
 
@@ -34,6 +38,8 @@ export interface MigrationUnmatchedItem {
   source_label: string
   block_id: number
   block_name: string | null
+  line_break_mode?: 'paragraph' | 'soft'
+  position?: 'inside' | 'before' | 'after'
   manual_options: MigrationOption[]
 }
 
@@ -65,7 +71,7 @@ export function fetchMigrationPlan(
 export function applyMigration(
   templateId: number,
   sourceVersionId: number,
-  bindings: { region_id: number; block_id: number }[],
+  bindings: { region_id: number; block_id: number; line_break_mode?: 'paragraph' | 'soft'; position?: 'inside' | 'before' | 'after' }[],
 ): Promise<{ version_id: number; created: number }> {
   return apiFetch<{ version_id: number; created: number }>(
     `/api/templates/${templateId}/migrate/apply`,

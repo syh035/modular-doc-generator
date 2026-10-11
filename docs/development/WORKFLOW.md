@@ -28,7 +28,7 @@
 | 范围 | 工作目录 | 命令 |
 |------|----------|------|
 | 后端 lint | `backend/` | `.venv/bin/ruff check .` |
-| 后端类型 | `backend/` | `.venv/bin/mypy app` |
+| 后端类型 | `backend/` | `.venv/bin/mypy app tests` |
 | 后端测试 | `backend/` | `.venv/bin/python -m pytest -q` |
 | 前端 lint | `frontend/` | `npm run lint` |
 | 前端类型 | `frontend/` | `npm run typecheck` |
@@ -61,3 +61,6 @@ CI 定义见 [.github/workflows/ci.yml](../../.github/workflows/ci.yml)：后端
 
 - 每模块：类型检查 + lint + 模块测试全绿
 - v1 整体：三大场景 E2E（日常沉淀 / 定向投递 / 模板换装）+ 一致性专项（预览 PDF vs 导出重转 PDF 逐页 diff + 3–5 个真实模板人工比对）
+
+
+桌面模块（macOS）补充门禁：`xcrun swift-format lint --strict desktop/*.swift`、`backend/.venv/bin/ruff check scripts/build_desktop.py scripts/test_desktop.py`、`backend/.venv/bin/mypy scripts/build_desktop.py scripts/test_desktop.py`、`python3 scripts/test_desktop.py` 和 `python3 scripts/build_desktop.py`。生命周期测试使用独立临时目录与随机回环端口，不触碰正式库；完整验收另检查原生窗口、实际服务和 LibreOffice 转换。CI 新增 macOS desktop job，远程运行结果须待推送后查看。

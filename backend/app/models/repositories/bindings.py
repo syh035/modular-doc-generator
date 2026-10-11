@@ -10,28 +10,54 @@ from app.models.db import utcnow
 from app.models.entities import Binding
 
 _SELECT = (
-    "SELECT id, version_id, region_id, block_id, status, created_at, updated_at FROM bindings"
+    "SELECT id, version_id, region_id, block_id, status, created_at, updated_at, "
+    "line_break_mode, position FROM bindings"
 )
 
 
 def upsert_binding(
-    conn: sqlite3.Connection, version_id: int, region_id: int, block_id: int
+    conn: sqlite3.Connection,
+    version_id: int,
+    region_id: int,
+    block_id: int,
+    *,
+    line_break_mode: str | None = None,
+    position: str | None = None,
 ) -> Binding:
     """绑定/换绑（同 version+region 冲突时覆盖 block_id 并重置为 active）。
 
     重绑到软删除块的场景由 M6 service 层校验拦截；存储层不重复守门。
     """
+    conn.execute(
+        "INSERT OR IGNORE INTO template_blocks (template_id, block_id) "
+        "SELECT template_id, ? FROM versions WHERE id = ?",
+        (block_id, version_id),
+    )
     now = utcnow()
     cur = conn.execute(
-        "INSERT INTO bindings (version_id, region_id, block_id, status, created_at, updated_at) "
-        "VALUES (?, ?, ?, 'active', ?, ?) "
+        "INSERT INTO bindings (version_id, region_id, block_id, status, created_at, "
+        "updated_at, line_break_mode, position) "
+        "VALUES (?, ?, ?, 'active', ?, ?, COALESCE(?, 'paragraph'), COALESCE(?, 'inside')) "
         "ON CONFLICT (version_id, region_id) DO UPDATE SET "
-        "block_id = excluded.block_id, status = 'active', updated_at = excluded.updated_at",
-        (version_id, region_id, block_id, now, now),
+        "block_id = excluded.block_id, status = 'active', updated_at = excluded.updated_at, "
+        "line_break_mode = COALESCE(?, bindings.line_break_mode), "
+        "position = COALESCE(?, bindings.position)",
+        (
+            version_id,
+            region_id,
+            block_id,
+            now,
+            now,
+            line_break_mode,
+            position,
+            line_break_mode,
+            position,
+        ),
     )
     assert cur.lastrowid is not None
-    binding = conn.execute(f"{_SELECT} WHERE version_id = ? AND region_id = ?",
-                           (version_id, region_id)).fetchone()
+    binding = conn.execute(
+        f"{_SELECT} WHERE version_id = ? AND region_id = ?", (version_id, region_id)
+    ).fetchone()
     assert binding is not None
     return Binding.from_row(binding)
 

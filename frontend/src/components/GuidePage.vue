@@ -98,28 +98,30 @@ async function copy(line: string): Promise<void> {
   flex: 1;
   overflow: auto;
   padding: 24px;
-  background: #f5f6f7;
+  background: var(--bg-muted);
 }
 
 h1 {
   margin: 0 0 16px;
   font-size: 20px;
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 .card {
-  max-width: 720px;
+  max-width: 840px;
   margin-bottom: 16px;
   padding: 16px 20px;
-  background: #fff;
-  border: 1px solid #e2e3e5;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
+.guide-page > h1, .guide-page > .card { width: min(100%, 840px); margin-left: auto; margin-right: auto; }
+@media (max-width: 760px) { .guide-page { padding: 20px 14px; } .card { padding: 18px; } }
 
 h2 {
   margin: 0 0 10px;
   font-size: 15px;
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 ul {
@@ -127,14 +129,14 @@ ul {
   padding-left: 20px;
   font-size: 13px;
   line-height: 2;
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 code {
   padding: 1px 6px;
   font-size: 12px;
-  color: #c7392c;
-  background: rgba(199, 57, 44, 0.06);
+  color: var(--guide-example);
+  background: var(--guide-example-bg);
   border-radius: 3px;
 }
 
@@ -144,7 +146,7 @@ code {
   justify-content: space-between;
   gap: 12px;
   padding: 6px 0;
-  border-bottom: 1px dashed #f2f3f5;
+  border-bottom: 1px dashed var(--bg-hover);
 }
 
 .sample-row:last-of-type {
@@ -161,28 +163,28 @@ code {
   flex-shrink: 0;
   padding: 3px 12px;
   font-size: 12px;
-  color: #3370ff;
+  color: var(--primary);
   background: none;
-  border: 1px solid #3370ff;
+  border: 1px solid var(--primary);
   border-radius: 4px;
   cursor: pointer;
 }
 
 .copy-btn:hover {
-  background: rgba(51, 112, 255, 0.06);
+  background: var(--primary-bg-hover);
 }
 
 .download-link {
   display: inline-block;
   padding: 6px 16px;
   font-size: 13px;
-  color: #fff;
-  background: #3370ff;
+  color: var(--text-on-primary);
+  background: var(--primary);
   border-radius: 4px;
   text-decoration: none;
 }
 
 .download-link:hover {
-  background: #2b5fd9;
+  background: var(--primary-hover);
 }
 </style>

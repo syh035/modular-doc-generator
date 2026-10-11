@@ -13,6 +13,7 @@ from pathlib import Path
 import pymupdf
 import pytest
 from docx import Document
+from docx.document import Document as DocxDocument
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 from fastapi.testclient import TestClient
@@ -30,21 +31,21 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _cjk_run(doc: Document, text: str) -> None:
+def _cjk_run(doc: DocxDocument, text: str) -> None:
     p = doc.add_paragraph(text)
     run = p.runs[0]
     run.font.name = "宋体"
-    run._element.rPr.rFonts.set(_EAST, "宋体")
+    run._element.get_or_add_rPr().get_or_add_rFonts().set(_EAST, "宋体")
 
 
 def _cell_run(cell: object, text: str) -> None:
     p = cell.paragraphs[0]  # type: ignore[attr-defined]
     run = p.add_run(text)
     run.font.name = "宋体"
-    run._element.rPr.rFonts.set(_EAST, "宋体")
+    run._element.get_or_add_rPr().get_or_add_rFonts().set(_EAST, "宋体")
 
 
-def _add_textbox(doc: Document, text: str) -> None:
+def _add_textbox(doc: DocxDocument, text: str) -> None:
     """VML 文本框（D6：解析跳过、导出保留原样）。"""
     p = doc.add_paragraph()
     run = p.add_run()
@@ -61,7 +62,7 @@ def _add_textbox(doc: Document, text: str) -> None:
     run._r.append(pict)
 
 
-def _set_two_columns(doc: Document) -> None:
+def _set_two_columns(doc: DocxDocument) -> None:
     """当前节设双栏（CT_SectPr 无 get_or_add_cols，直接操作 w:cols）。"""
     sect_pr = doc.sections[0]._sectPr
     cols = sect_pr.xpath("./w:cols")
@@ -73,13 +74,13 @@ def _set_two_columns(doc: Document) -> None:
         sect_pr.append(cols_el)
 
 
-def _docx_bytes(doc: Document) -> bytes:
+def _docx_bytes(doc: DocxDocument) -> bytes:
     buf = BytesIO()
     doc.save(buf)
     return buf.getvalue()
 
 
-def _convert(lo: LibreOfficeManager, doc: Document, name: str, tmp_path: Path) -> Path:
+def _convert(lo: LibreOfficeManager, doc: DocxDocument, name: str, tmp_path: Path) -> Path:
     path = tmp_path / name
     path.write_bytes(_docx_bytes(doc))
     return lo.convert(path)
@@ -268,7 +269,7 @@ def test_e2e_table_placeholder(client: TestClient, tmp_path: Path) -> None:
     _cell_run(table.cell(1, 0), "{{教育背景}}")
     _cell_run(table.cell(1, 1), "某大学计算机专业本科")
     tpl = _upload(client, _docx_bytes(doc))
-    assert len(tpl["regions"]) == 2
+    assert len(tpl["regions"]) == 5
 
     vid = tpl["default_version_id"]
     name_block = _make_block(client, "姓名块", "李四")

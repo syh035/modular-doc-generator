@@ -70,7 +70,7 @@ def scenario_1() -> list[dict]:
     _run(doc, "个人简历", size=18, bold=True)
     _run(doc, "{{姓名}}")
     _run(doc, "{{工作经历}}")
-    _run(doc, f"fixture-ts-{TS}")
+    _run(doc, f"fixture-ts-{TS}-{time.time_ns()}")
     return [_upload(doc, f"e2e_s1_日常沉淀_{TS}.docx")]
 
 
@@ -78,7 +78,7 @@ def scenario_2() -> list[dict]:
     doc = Document()
     _run(doc, "项目概述模板", size=16, bold=True)
     _exact_row_table(doc, "{{概述}}")
-    _run(doc, f"fixture-ts-{TS}")
+    _run(doc, f"fixture-ts-{TS}-{time.time_ns()}")
     return [_upload(doc, f"e2e_s2_定向投递_{TS}.docx")]
 
 
@@ -87,12 +87,12 @@ def scenario_3() -> list[dict]:
     _run(src, "个人简历", size=18, bold=True)
     _run(src, "{{姓名}}")
     _run(src, "{{工作经历}}")
-    _run(src, f"fixture-ts-{TS}")
+    _run(src, f"fixture-ts-{TS}-{time.time_ns()}")
     tgt = Document()
     _run(tgt, "求职简历", size=20, bold=True)
     _run(tgt, "{{工作经历}}")
     _run(tgt, "{{姓名}}")
-    _run(tgt, f"fixture-ts-{TS}")
+    _run(tgt, f"fixture-ts-{TS}-{time.time_ns()}")
     return [
         _upload(src, f"e2e_s3_迁移源_{TS}.docx"),
         _upload(tgt, f"e2e_s3_迁移目标_{TS}.docx"),

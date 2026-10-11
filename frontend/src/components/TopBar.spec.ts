@@ -220,3 +220,25 @@ describe('导入模板上传（占位按钮转正）', () => {
     expect(store.status).toBe('idle')
   })
 })
+
+
+it('导入进度区分请求和渲染，超五秒提示，结束后消失', async () => {
+  vi.useFakeTimers()
+  const w = mountTopBar()
+  const store = usePreviewStore()
+  store.uploadStartedAt = Date.now()
+  store.uploadPhase = 'request'
+  await flushPromises()
+  expect(w.get('[data-testid=upload-progress]').text()).toContain('上传并解析')
+  await vi.advanceTimersByTimeAsync(6000)
+  expect(w.get('[data-testid=upload-progress]').text()).toContain('已等待 6 秒')
+  store.uploadPhase = 'render'
+  await flushPromises()
+  expect(w.get('[data-testid=upload-progress]').text()).toContain('解析完成')
+  store.uploadPhase = 'idle'
+  store.uploadStartedAt = null
+  await flushPromises()
+  expect(w.find('[data-testid=upload-progress]').exists()).toBe(false)
+  w.unmount()
+  vi.useRealTimers()
+})

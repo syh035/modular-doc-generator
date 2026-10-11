@@ -1,10 +1,14 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { createPinia, setActivePinia } from 'pinia'
+import { createPinia, getActivePinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Region } from '../api/templates'
+import * as blocksApi from '../api/blocks'
+import { useAppStore } from '../stores/app'
 import { useBlocksStore } from '../stores/blocks'
 import { usePreviewStore, type DisplayRegion } from '../stores/preview'
 import TemplatePreview from './TemplatePreview.vue'
+import { openDocument } from '../pdf/viewer'
+import StatusBar from './StatusBar.vue'
 
 /** 假 PDF 页（612×792pt，rotation=0），与真实 pdfjs 行为对齐。 */
 const fakePage = {
@@ -30,8 +34,8 @@ vi.mock('../pdf/viewer', () => {
       },
       destroy: vi.fn(),
     })),
-    preparePage: vi.fn(() => ({
-      index: 0,
+    preparePage: vi.fn((page: { pageNumber?: number }) => ({
+      index: (page.pageNumber ?? 1) - 1,
       width: 61.2,
       height: 79.2,
       viewport: fakeViewport(0.1),
@@ -144,12 +148,12 @@ describe('TemplatePreview（M5a 只读预览）', () => {
     // 未定位（bbox=null）→ 虚线徽标列表
     const chip = wrapper.find('.unplaced-chip')
     expect(chip.exists()).toBe(true)
-    expect(chip.text()).toBe('字段2')
+    expect(chip.text()).toBe('字段2 · 重新框选')
 
     // 工具条图例统计
-    expect(wrapper.find('.preview-toolbar').text()).toContain('已绑定 1')
-    expect(wrapper.find('.preview-toolbar').text()).toContain('待校对 1')
-    expect(wrapper.find('.preview-toolbar').text()).toContain('未定位 1')
+    expect(wrapper.find('.preview-controls').text()).toContain('已绑定 1')
+    expect(wrapper.find('.preview-controls').text()).toContain('待绑定 1')
+    expect(wrapper.find('.preview-controls').text()).toContain('未定位 1')
   })
 
   it('Q4 回归：excluded 区域不计入「待校对」统计（与 overlay 可见数一致）', async () => {
@@ -163,7 +167,7 @@ describe('TemplatePreview（M5a 只读预览）', () => {
     ])
     // overlay 只渲染非 excluded 的 1 个，统计同口径
     expect(wrapper.findAll('.overlay')).toHaveLength(1)
-    expect(wrapper.find('.preview-toolbar').text()).toContain('待校对 1')
+    expect(wrapper.find('.preview-controls').text()).toContain('待绑定 1')
   })
 
   it('missing 绑定回落黄框且 title 提示', async () => {
@@ -213,7 +217,7 @@ describe('TemplatePreview（M5a 只读预览）', () => {
     store.regions = [region(2, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 })]
     await flushPromises()
     expect(cancelSpy).toHaveBeenCalledTimes(1) // 旧批次先取消再重排
-    expect(renderSpy).toHaveBeenCalledTimes(2)
+    expect(renderSpy).toHaveBeenCalledTimes(1) // 同一 PDF，仅更新覆盖层
     expect(wrapper.find('.overlay.pending').attributes('title')).toBe('字段2（未绑定，点击选择字符块）')
   })
 })
@@ -245,6 +249,9 @@ describe('TemplatePreview 绑定交互（M6a）', () => {
       },
     ]
 
+    const listSpy = vi.spyOn(blocksApi, 'listBlocks').mockResolvedValueOnce(blocksStore.blocks)
+    await blocksStore.loadTemplateBlocks(1)
+    listSpy.mockRestore()
     await wrapper.find('.overlay').trigger('click')
     const dialog = wrapper.find('[data-testid="binding-dialog"]')
     expect(dialog.exists()).toBe(true)
@@ -295,7 +302,7 @@ describe('TemplatePreview 绑定交互（M6a）', () => {
     const { wrapper, store } = await readyWith([region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 })])
     store.refreshing = true
     await flushPromises()
-    expect(wrapper.find('.preview-toolbar').text()).toContain('正在刷新预览')
+    expect(wrapper.find('.preview-controls').text()).toContain('正在刷新预览')
   })
 })
 
@@ -356,11 +363,15 @@ describe('块库展开按钮（UI 调整②批）', () => {
     )
   })
 
-  it('展开态：工具条不显示展开按钮', async () => {
+  it('展开态：切换入口保持原位置，可收起块库', async () => {
     const wrapper = mountPreview()
     await flushPromises()
     expect(useBlocksStore().libraryOpen).toBe(true)
-    expect(wrapper.find('button.library-expand').exists()).toBe(false)
+    const button = wrapper.get('button.library-expand')
+    expect(button.attributes('aria-expanded')).toBe('true')
+    await button.trigger('click')
+    expect(useBlocksStore().libraryOpen).toBe(false)
+    expect(button.attributes('aria-expanded')).toBe('false')
   })
 
   it('收起态：工具条最左显示 [块库] 按钮，点击展开', async () => {
@@ -378,7 +389,7 @@ describe('块库展开按钮（UI 调整②批）', () => {
 })
 
 describe('TemplatePreview 版本控件（M8）', () => {
-  it('当前版本存在：工具条渲染版本下拉与新建/重命名/删除', async () => {
+  it('当前版本存在：工具条快速切换，统一管理入口常驻', async () => {
     const { wrapper, store } = await readyWith([])
     store.currentVersionId = 5
     store.versions = [
@@ -390,9 +401,7 @@ describe('TemplatePreview 版本控件（M8）', () => {
     const select = wrapper.find('[data-testid="version-select"]')
     expect(select.exists()).toBe(true)
     expect(select.text()).toContain('默认版本（1 项绑定）')
-    expect(wrapper.find('[data-testid="version-create"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="version-rename"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="version-delete"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="template-manage"]').exists()).toBe(true)
   })
 
   it('无版本（历史模板兜底）：不渲染版本控件', async () => {
@@ -409,8 +418,7 @@ describe('TemplatePreview 版本控件（M8）', () => {
     store.proofreadMode = true
     await flushPromises()
     expect((wrapper.find('[data-testid="version-select"]').element as HTMLSelectElement).disabled).toBe(true)
-    expect((wrapper.find('[data-testid="version-create"]').element as HTMLButtonElement).disabled).toBe(true)
-    expect((wrapper.find('[data-testid="version-delete"]').element as HTMLButtonElement).disabled).toBe(true)
+    expect(wrapper.find('[data-testid="template-manage"]').exists()).toBe(true)
   })
 
   it('切换版本触发 store.selectVersion', async () => {
@@ -426,44 +434,12 @@ describe('TemplatePreview 版本控件（M8）', () => {
     expect(spy).toHaveBeenCalledWith(6)
   })
 
-  it('新建弹层：版本弹层出现（create 模式）；重命名弹层预填当前名', async () => {
+  it('管理入口打开面板，浏览模板不会切换当前文档', async () => {
     const { wrapper, store } = await readyWith([])
-    store.currentVersionId = 5
-    store.versions = [
-      { id: 5, template_id: 1, name: '默认版本', binding_count: 0, created_at: '', updated_at: '' },
-    ]
-    await flushPromises()
-
-    await wrapper.find('[data-testid="version-create"]').trigger('click')
-    let dialog = wrapper.find('[data-testid="version-dialog"]')
-    expect(dialog.exists()).toBe(true)
-    expect(dialog.text()).toContain('新建内容版本')
-    await dialog.find('.ghost').trigger('click') // 取消关闭
-    expect(wrapper.find('[data-testid="version-dialog"]').exists()).toBe(false)
-
-    await wrapper.find('[data-testid="version-rename"]').trigger('click')
-    dialog = wrapper.find('[data-testid="version-dialog"]')
-    expect(dialog.text()).toContain('重命名版本')
-    expect(
-      (dialog.find('[data-testid="version-name-input"]').element as HTMLInputElement).value,
-    ).toBe('默认版本')
-  })
-
-  it('删除：confirm 确认后调用 store.deleteCurrentVersion', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const { wrapper, store } = await readyWith([])
-    store.currentVersionId = 5
-    store.versions = [
-      { id: 5, template_id: 1, name: '默认版本', binding_count: 0, created_at: '', updated_at: '' },
-    ]
-    await flushPromises()
-    const spy = vi
-      .spyOn(store, 'deleteCurrentVersion')
-      .mockResolvedValue({ ok: true, error: null })
-
-    await wrapper.find('[data-testid="version-delete"]').trigger('click')
-    expect(confirmSpy).toHaveBeenCalled()
-    expect(spy).toHaveBeenCalledTimes(1)
+    const spy = vi.spyOn(store, 'selectTemplate').mockResolvedValue(undefined)
+    await wrapper.find('[data-testid="template-manage"]').trigger('click')
+    expect(wrapper.find('[aria-label="模板与版本管理"]').exists()).toBe(true)
+    expect(spy).not.toHaveBeenCalled()
   })
 })
 
@@ -541,7 +517,12 @@ describe('TemplatePreview 溢出分级（M7）', () => {
         region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 }, null, SMALL),
         region(2, { page: 0, x0: 5, y0: 6, x1: 7, y1: 8 }, null, LARGE),
       ])
-      const bar = wrapper.find('[data-testid="overflow-bar"]')
+      const status = mount(StatusBar, {
+        global: { plugins: [getActivePinia()!] },
+        props: { onLocate: (r: DisplayRegion) => wrapper.vm.jumpToRegion(r) },
+      })
+      expect(wrapper.find('[data-testid="overflow-bar"]').exists()).toBe(false)
+      const bar = status.find('[data-testid="overflow-bar"]')
       expect(bar.exists()).toBe(true)
       expect(bar.text()).toContain('溢出区域 2 个')
       expect(bar.text()).toContain('大超出 1')
@@ -567,8 +548,134 @@ describe('TemplatePreview 溢出分级（M7）', () => {
       vi.advanceTimersByTime(1800)
       await flushPromises()
       expect(wrapper.find('.overlay.flashing').exists()).toBe(false)
+      useAppStore().activeTab = 'guide'
+      await flushPromises()
+      expect(status.find('[data-testid="overflow-bar"]').exists()).toBe(false)
+      status.unmount()
+      wrapper.unmount()
     } finally {
       vi.useRealTimers()
     }
   })
+})
+
+
+it('添加遗漏区域提供显式框选指引，Esc 取消', async () => {
+  const store = usePreviewStore()
+  store.status = 'ready'
+  store.pdfData = new ArrayBuffer(8)
+  store.proofreadMode = true
+  const wrapper = mount(TemplatePreview)
+  await flushPromises()
+  await wrapper.get('[data-testid="add-region"]').trigger('click')
+  await flushPromises()
+  expect(wrapper.find('.frame-guide').text()).toContain('添加遗漏区域：')
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+  await flushPromises()
+  expect(wrapper.find('.frame-guide').text()).not.toContain('添加遗漏区域：')
+  wrapper.unmount()
+})
+
+
+it('未定位项可直接重新框选并保留原区域身份', async () => {
+  const { wrapper, store } = await readyWith([region(7, null)])
+  store.proofreadMode = true
+  await flushPromises()
+  await wrapper.get('.unplaced-chip').trigger('click')
+  await flushPromises()
+  expect(wrapper.find('.frame-guide').text()).toContain('重新定位「字段7」')
+  expect(store.regions.map(r => r.id)).toEqual([7])
+  await wrapper.get('.frame-guide button').trigger('click')
+  await flushPromises()
+  expect(wrapper.find('.frame-guide').text()).not.toContain('重新定位「字段7」')
+  wrapper.unmount()
+})
+
+
+it('按当前页选择跨页片段，不使用另一页的首框坐标', async () => {
+  const otherPage = { page: 1, x0: 400, y0: 400, x1: 500, y1: 450 }
+  const thisPage = { page: 0, x0: 100, y0: 200, x1: 300, y1: 250 }
+  const { wrapper } = await readyWith([region(9, { ...otherPage, fragments: [otherPage, thisPage] })])
+  const overlay = wrapper.get('.overlay')
+  expect(overlay.attributes('style')).toContain('left: 10px')
+  expect(overlay.attributes('style')).toContain('top: 20px')
+  expect(overlay.attributes('style')).toContain('width: 20px')
+  wrapper.unmount()
+})
+
+
+describe('M15 标题着色和溢出显示', () => {
+  it('新词表标题使用高置信候选和标题样式', async () => {
+    const r = { ...region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 }),
+      label: '个人技能', placeholder: null, type: 'skills', confidence: 0.9 }
+    const { wrapper, store } = await readyWith([r])
+    store.proofreadMode = true
+    await flushPromises()
+    const overlay = wrapper.get('.overlay')
+    expect(overlay.classes()).toContain('cand-high')
+    expect(overlay.classes()).toContain('heading')
+    expect(overlay.attributes('title')).toContain('标题候选：个人技能')
+    wrapper.unmount()
+  })
+  it('真实小幅增高在区域与状态栏使用相同小数，裁剪仍保留警告', async () => {
+    const binding = { block_id: 1, block_name: '块', status: 'active' as const }
+    const ov = { orig_height: 20, new_height: 20.04, ratio: 0.002,
+      level: 'small' as const, clipped: false, fixed_row: false }
+    const { wrapper } = await readyWith([
+      { ...region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 }, binding, ov), confidence: 0.9, placeholder: null },
+      region(2, { page: 0, x0: 1, y0: 5, x1: 3, y1: 7 }, binding,
+        { ...ov, ratio: 0, level: 'large', clipped: true, fixed_row: true }),
+    ])
+    const status = mount(StatusBar, { global: { plugins: [getActivePinia()!] } })
+    expect(wrapper.get('.overlay.overflow-small').attributes('title')).toContain('+0.2%')
+    expect(status.get('.overflow-chip.small').text()).toContain('+0.2%')
+    expect(status.get('.overflow-chip.large').text()).toContain('裁剪')
+    expect(status.text()).not.toContain('+0%')
+    status.unmount()
+    wrapper.unmount()
+  })
+})
+
+
+it('M24 两页绑定刷新只重画变化页；缩放后全部重画', async () => {
+  const open = vi.mocked(openDocument)
+  const oldImpl = open.getMockImplementation()
+  const page = { ...fakePage }
+  open.mockImplementation(async () => ({ document: { numPages: 2, getPage: vi.fn(async (i: number) => ({ ...page, pageNumber: i })) }, destroy: vi.fn() }) as never)
+  try {
+    const wrapper = mountPreview(), store = usePreviewStore()
+    store.status = 'ready'
+    store.pdfData = new ArrayBuffer(8)
+    store.pageFingerprints = ['first', 'second']
+    await flushPromises()
+    expect(renderSpy).toHaveBeenCalledTimes(2)
+    const canvases = wrapper.findAll('canvas').map(c => c.element)
+    store.pageFingerprints = ['edited', 'second']
+    store.pdfData = new ArrayBuffer(9)
+    await flushPromises()
+    expect(renderSpy).toHaveBeenCalledTimes(3)
+    expect(wrapper.findAll('canvas').map(c => c.element)).toEqual(canvases)
+    await wrapper.get('[aria-label="预览缩放"]').setValue('1')
+    await flushPromises()
+    expect(renderSpy).toHaveBeenCalledTimes(5)
+    wrapper.unmount()
+  } finally { if (oldImpl) open.mockImplementation(oldImpl) }
+})
+
+
+it('M24 在飞渲染取消后不能复用未完成画布', async () => {
+  let release: (() => void) | undefined
+  renderSpy.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve }))
+  const { wrapper, store } = await readyWith([])
+  expect(renderSpy).toHaveBeenCalledTimes(1)
+  store.regions = [region(3, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 })]
+  await flushPromises()
+  expect(cancelSpy).toHaveBeenCalled()
+  expect(renderSpy).toHaveBeenCalledTimes(2)
+  release?.()
+  await flushPromises()
+  store.regions = []
+  await flushPromises()
+  expect(renderSpy).toHaveBeenCalledTimes(2)
+  wrapper.unmount()
 })

@@ -29,7 +29,7 @@ _EAST = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}eastAsia"
 
 def test_sanitize_filename_part() -> None:
     assert sanitize_filename_part("投递A岗") == "投递A岗"
-    assert sanitize_filename_part("a/b\\c:d*e?f\"g<h>i|j") == "a_b_c_d_e_f_g_h_i_j"
+    assert sanitize_filename_part('a/b\\c:d*e?f"g<h>i|j') == "a_b_c_d_e_f_g_h_i_j"
     assert sanitize_filename_part("  .x. ") == "x"
     assert sanitize_filename_part("///") == "___"  # 非法字符换下划线后仍合法
 
@@ -74,7 +74,7 @@ def _simple_docx() -> bytes:
     p = doc.add_paragraph("姓名：{{姓名}}")
     run = p.runs[0]
     run.font.name = "宋体"
-    run._element.rPr.rFonts.set(_EAST, "宋体")  # type: ignore[union-attr]
+    run._element.get_or_add_rPr().get_or_add_rFonts().set(_EAST, "宋体")
     buf = BytesIO()
     doc.save(buf)
     return buf.getvalue()
@@ -104,7 +104,8 @@ def test_export_ok_writes_file_and_disposition(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     vid = _setup_version(client, "投递A岗")
-    _patch_render(monkeypatch, _simple_docx(), [])
+    source_docx = _simple_docx()
+    _patch_render(monkeypatch, source_docx, [])
 
     resp = client.post(f"/api/versions/{vid}/export", json={})
 
@@ -117,8 +118,8 @@ def test_export_ok_writes_file_and_disposition(
     # 落盘存在且内容 = 同源产物；浏览器下载体 = 落盘文件
     files = list(settings.exports_dir.glob("简历-投递A岗-*.docx"))
     assert len(files) == 1
-    assert files[0].read_bytes() == _simple_docx()
-    assert resp.content == _simple_docx()
+    assert files[0].read_bytes() == source_docx
+    assert resp.content == source_docx
 
 
 def test_export_document_opens_with_python_docx(
@@ -222,7 +223,7 @@ def test_export_e2e_large_overflow_flow(client: TestClient) -> None:
     p = doc.add_paragraph("项目经历：{{项目经历}}")
     run = p.runs[0]
     run.font.name = "宋体"
-    run._element.rPr.rFonts.set(_EAST, "宋体")  # type: ignore[union-attr]
+    run._element.get_or_add_rPr().get_or_add_rFonts().set(_EAST, "宋体")
     buf = BytesIO()
     doc.save(buf)
 

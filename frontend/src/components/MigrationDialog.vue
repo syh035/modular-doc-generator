@@ -93,6 +93,10 @@ const applyCount = computed(() => {
   return autoCount.value + picked(candidatePicks.value) + picked(unmatchedPicks.value)
 })
 
+function bindingSettings(row: { line_break_mode?: 'paragraph' | 'soft'; position?: 'inside' | 'before' | 'after' }) {
+  return { ...(row.line_break_mode === 'soft' ? { line_break_mode: row.line_break_mode } : {}),
+    ...(row.position && row.position !== 'inside' ? { position: row.position } : {}) }
+}
 function onApply(): void {
   const plan = props.plan
   if (!plan) {
@@ -100,19 +104,21 @@ function onApply(): void {
   }
   const bindings = [
     ...plan.auto.map(
-      (a: MigrationAutoItem) => ({ region_id: a.target_region_id, block_id: a.block_id }),
+      (a: MigrationAutoItem) => ({ region_id: a.target_region_id, block_id: a.block_id, ...bindingSettings(a) }),
     ),
     ...plan.candidates
       .filter(c => candidatePicks.value[c.source_region_id] !== null)
       .map(c => ({
         region_id: candidatePicks.value[c.source_region_id]!,
         block_id: c.block_id,
+        ...bindingSettings(c),
       })),
     ...plan.unmatched
       .filter(u => unmatchedPicks.value[u.source_region_id] !== null)
       .map(u => ({
         region_id: unmatchedPicks.value[u.source_region_id]!,
         block_id: u.block_id,
+        ...bindingSettings(u),
       })),
   ]
   emit('apply', bindings)
@@ -325,7 +331,7 @@ useModalEsc(() => emit('close'))
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--modal-backdrop);
 }
 
 .dialog-card {
@@ -333,9 +339,9 @@ useModalEsc(() => emit('close'))
   max-height: 86%;
   display: flex;
   flex-direction: column;
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 8px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 20px var(--shadow-modal);
   overflow: hidden;
 }
 
@@ -344,7 +350,7 @@ useModalEsc(() => emit('close'))
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  border-bottom: 1px solid #e2e3e5;
+  border-bottom: 1px solid var(--border);
 }
 
 .title {
@@ -356,7 +362,7 @@ useModalEsc(() => emit('close'))
   border: none;
   background: none;
   font-size: 18px;
-  color: #8f959e;
+  color: var(--text-3);
   cursor: pointer;
   line-height: 1;
 }
@@ -369,7 +375,7 @@ useModalEsc(() => emit('close'))
   margin: 0 0 4px;
   font-size: 13px;
   line-height: 1.7;
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 .plan-body {
@@ -380,13 +386,13 @@ useModalEsc(() => emit('close'))
 .plan-summary {
   margin: 0 0 8px;
   font-size: 12px;
-  color: #646a73;
+  color: var(--text-2);
 }
 
 h4 {
   margin: 10px 0 6px;
   font-size: 12px;
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 .rows {
@@ -404,19 +410,19 @@ h4 {
   gap: 8px;
   padding: 6px 8px;
   font-size: 12px;
-  border: 1px solid #e2e3e5;
+  border: 1px solid var(--border);
   border-radius: 4px;
-  background: #f7f8fa;
+  background: var(--bg-migration);
 }
 
 .row.auto {
-  background: rgba(52, 199, 36, 0.06);
+  background: var(--success-bg-hover);
 }
 
 .label {
   flex: 1;
   min-width: 0;
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 .block-name {
@@ -425,7 +431,7 @@ h4 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #3370ff;
+  color: var(--primary);
 }
 
 .pick {
@@ -433,21 +439,21 @@ h4 {
   max-width: 180px;
   padding: 2px 4px;
   font-size: 12px;
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 .empty {
   margin: 8px 0;
   font-size: 12px;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .error {
   margin: 8px 0 0;
   padding: 6px 8px;
   font-size: 12px;
-  color: #f54a45;
-  background: rgba(245, 74, 69, 0.08);
+  color: var(--danger);
+  background: var(--danger-bg-subtle);
   border-radius: 4px;
 }
 
@@ -466,15 +472,15 @@ h4 {
 .count {
   margin-right: auto;
   font-size: 12px;
-  color: #646a73;
+  color: var(--text-2);
 }
 
 .ghost {
   padding: 5px 14px;
   font-size: 13px;
-  color: #646a73;
+  color: var(--text-2);
   background: none;
-  border: 1px solid #d0d3d6;
+  border: 1px solid var(--border-control);
   border-radius: 4px;
   cursor: pointer;
 }
@@ -482,8 +488,8 @@ h4 {
 .primary {
   padding: 5px 14px;
   font-size: 13px;
-  color: #fff;
-  background: #3370ff;
+  color: var(--text-on-primary);
+  background: var(--primary);
   border: none;
   border-radius: 4px;
   cursor: pointer;

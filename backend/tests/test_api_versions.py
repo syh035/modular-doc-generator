@@ -4,6 +4,7 @@ from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pymupdf
 import pytest
 from docx import Document
@@ -42,7 +43,7 @@ def make_block(client: TestClient, name: str, content: str) -> int:
     return resp.json()["id"]
 
 
-def bind(client: TestClient, version_id: int, region_id: int, block_id: int):
+def bind(client: TestClient, version_id: int, region_id: int, block_id: int) -> httpx.Response:
     return client.post(
         f"/api/versions/{version_id}/bindings",
         json={"region_id": region_id, "block_id": block_id},
@@ -167,19 +168,19 @@ def test_version_preview_and_overlay(
 
     # 假 PDF 需含替换后文本（几何对齐源）：绑定行 + 保留的占位符行；
     # 模板本体转换（M7 溢出测量触发 ensure 补 bbox）用原文假 PDF
-    fake = fake_pdf_with(
-        tmp_path, "电话：13800138000，姓名：{{姓名}}"
-    )
+    fake = fake_pdf_with(tmp_path, "电话：13800138000，姓名：{{姓名}}")
     fake_tpl = fake_pdf_with(tmp_path, "电话：{{手机号}}，姓名：{{姓名}}")
-    _patch_fake_convert(
-        monkeypatch, {"电话：13800138000": fake, "电话：{{手机号}}": fake_tpl}
-    )
+    _patch_fake_convert(monkeypatch, {"电话：13800138000": fake, "电话：{{手机号}}": fake_tpl})
 
     resp = client.get(f"/api/versions/{vid}/preview")
     assert resp.status_code == 200
     assert resp.content.startswith(b"%PDF")
 
     overlay = client.get(f"/api/versions/{vid}/overlay").json()
+    import hashlib
+
+    assert overlay["pdf_sha256"] == hashlib.sha256(resp.content).hexdigest()
+    assert len(overlay["page_fingerprints"]) == 1
     items = {r["label"]: r for r in overlay["regions"]}
     phone = items["手机号"]
     assert phone["binding"]["block_id"] == b_phone
@@ -204,9 +205,7 @@ def test_version_render_unbound_keeps_placeholder(
 
 
 def test_version_404(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "app.services.libreoffice._manager", SimpleNamespace(convert=lambda p: p)
-    )
+    monkeypatch.setattr("app.services.libreoffice._manager", SimpleNamespace(convert=lambda p: p))
     for path in ("/api/versions/999/preview", "/api/versions/999/overlay"):
         resp = client.get(path)
         assert resp.status_code == 404
@@ -227,7 +226,7 @@ def test_version_render_real_lo(client: TestClient) -> None:
     p = doc.add_paragraph("电话：{{手机号}}")
     run = p.runs[0]
     run.font.name = "宋体"
-    run._element.rPr.rFonts.set(
+    run._element.get_or_add_rPr().get_or_add_rFonts().set(
         "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}eastAsia", "宋体"
     )
     buf = BytesIO()
@@ -303,9 +302,7 @@ def test_create_version_copy_from(client: TestClient) -> None:
     assert bind(client, vid, regions[1]["id"], b_gone).status_code == 200
     assert client.delete(f"/api/blocks/{b_gone}").status_code == 204  # → missing
 
-    resp = client.post(
-        f"/api/templates/{tid}/versions", json={"name": "复制品", "copy_from": vid}
-    )
+    resp = client.post(f"/api/templates/{tid}/versions", json={"name": "复制品", "copy_from": vid})
     assert resp.status_code == 201
     new_vid = resp.json()["id"]
     bindings = client.get(f"/api/versions/{new_vid}/bindings").json()["bindings"]

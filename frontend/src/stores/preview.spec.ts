@@ -51,6 +51,35 @@ beforeEach(() => {
   vi.unstubAllGlobals()
 })
 
+describe('删除模板', () => {
+  it('删除当前模板清除预览、版本、迁移和导出警示', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })))
+    const store = usePreviewStore()
+    store.currentTemplateId = 1
+    store.currentVersionId = 4
+    store.status = 'ready'
+    store.regions = [{ ...region(3, null), binding: null }]
+    store.pdfData = new Uint8Array([1, 2]).buffer
+    store.templates = [1, 2].map(id => ({ id, filename: '模板', regions_count: 1, storage_name: '', sha256: '', status: 'ready', created_at: '', updated_at: '' }))
+    expect(await store.removeTemplate(1)).toEqual({ ok: true, error: null })
+    expect(store.currentTemplateId).toBeNull()
+    expect(store.currentVersionId).toBeNull()
+    expect(store.pdfData).toBeNull()
+    expect(store.regions).toEqual([])
+    expect(store.status).toBe('idle')
+    expect(store.templates.map(t => t.id)).toEqual([2])
+  })
+  it('保护错误不改变当前工作台', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: { code: 'TEMPLATE_IN_USE', message: '模板仍有有效绑定' } }, { status: 409 })))
+    const store = usePreviewStore()
+    store.currentTemplateId = 1
+    store.status = 'ready'
+    expect((await store.removeTemplate(1)).ok).toBe(false)
+    expect(store.currentTemplateId).toBe(1)
+    expect(store.status).toBe('ready')
+  })
+})
+
 describe('loadTemplates', () => {
   it('成功写入列表', async () => {
     stubFetch({
@@ -1041,4 +1070,53 @@ describe('uploadTemplate（顶栏「导入模板」）', () => {
     expect(store.currentTemplateId).toBeNull()
     expect(store.status).toBe('idle')
   })
+})
+
+
+describe('版本文字编辑保存', () => {
+  it('校对模式阻止编辑，失败保留当前预览', async () => {
+    const store = usePreviewStore()
+    store.currentVersionId = 5
+    store.currentTemplateId = 1
+    store.status = 'ready'
+    const oldPdf = new ArrayBuffer(3)
+    store.pdfData = oldPdf
+    const fetch = vi.fn(async () => Response.json({ error: { code: 'REGION_TEXT_CONFLICT', message: '内容已发生变化' } }, { status: 409 }))
+    vi.stubGlobal('fetch', fetch)
+    store.proofreadMode = true
+    expect((await store.editRegionText(1, '新文字', false, '旧文字')).ok).toBe(false)
+    expect(fetch).not.toHaveBeenCalled()
+    store.proofreadMode = false
+    expect(await store.editRegionText(1, '新文字', false, '旧文字')).toEqual({ ok: false, error: '内容已发生变化' })
+    expect(store.pdfData).toBe(oldPdf)
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+  it('保存后刷新块库与预览，发送原文冲突检查字段', async () => {
+    const fetch = stubFetch({
+      '/api/versions/5/regions/1/text': () => ({ block_id: 8, status: 'active' }),
+      '/api/blocks': () => ({ blocks: [] }),
+      '/api/tags': () => ({ tags: [] }),
+      '/api/versions/5/preview': () => new ArrayBuffer(5),
+      '/api/versions/5/overlay': () => ({ regions: [{ ...region(1, null), current_text: '新文字', binding: { block_id: 8, block_name: '编辑块', status: 'active' } }] }),
+      '/api/templates/1/versions': () => ({ versions: [] }),
+    })
+    const store = usePreviewStore()
+    store.currentTemplateId = 1
+    store.currentVersionId = 5
+    store.status = 'ready'
+    expect((await store.editRegionText(1, '新文字', false, '旧文字')).ok).toBe(true)
+    expect(store.regions[0].current_text).toBe('新文字')
+    const init = (fetch.mock.calls[0] as unknown as [unknown, RequestInit])[1]
+    expect(JSON.parse(init.body as string)).toEqual({ content: '新文字', sync_block: false, expected_content: '旧文字' })
+  })
+})
+
+
+it('切换到空模板立即清除旧导出警示与错误', async () => {
+  const store = usePreviewStore()
+  store.exportWarnings = [{ region_id: 1, label: '旧区域', ratio: 2, clipped: false, fixed_row: false }]
+  store.exportError = '旧导出错误'
+  await store.selectTemplate(null)
+  expect(store.exportWarnings).toEqual([])
+  expect(store.exportError).toBeNull()
 })

@@ -1,5 +1,6 @@
 """blocks repository 测试：CRUD、软删除可见性、删块→绑定置 missing 的原子性。"""
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,7 @@ from app.models.db import get_conn, init_db
 from app.models.repositories import bindings, blocks, regions, templates, versions
 
 
-def _full_fixture(conn) -> tuple[int, int, int, int]:
+def _full_fixture(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
     """最小闭环数据：模板+区域+版本+两块+绑定。
 
     返回 (block_id, version_id, region_id, block2_id)。
@@ -24,7 +25,7 @@ def _full_fixture(conn) -> tuple[int, int, int, int]:
     return block.id, ver.id, region.id, block2.id
 
 
-def test_crud_roundtrip(conn) -> None:
+def test_crud_roundtrip(conn: sqlite3.Connection) -> None:
     """创建 → 读取 → 更新 → 列表，字段完整往返。"""
     block = blocks.create_block(conn, "自我介绍", "五年后端经验")
     assert block.id > 0
@@ -42,7 +43,7 @@ def test_crud_roundtrip(conn) -> None:
     assert updated.updated_at >= got.updated_at  # 定长时间戳，字典序即时间序
 
 
-def test_list_filters(conn) -> None:
+def test_list_filters(conn: sqlite3.Connection) -> None:
     """列表默认排除软删除行；平铺按更新时间倒序（最近编辑在前）。"""
     b1 = blocks.create_block(conn, "块1", "内容1")
     b2 = blocks.create_block(conn, "块2", "内容2")
@@ -56,25 +57,28 @@ def test_list_filters(conn) -> None:
     assert [b.id for b in blocks.list_blocks(conn, include_deleted=True)] == [b1.id, b2.id]
 
 
-def test_update_missing_or_deleted_returns_none(conn) -> None:
+def test_update_missing_or_deleted_returns_none(conn: sqlite3.Connection) -> None:
     block = blocks.create_block(conn, "块", "内容")
     assert blocks.update_block(conn, 9999, name="x") is None
     blocks.soft_delete_block(conn, block.id)
     assert blocks.update_block(conn, block.id, name="x") is None  # 已删块不可更新
 
 
-def test_soft_delete_marks_bindings_missing(conn) -> None:
+def test_soft_delete_marks_bindings_missing(conn: sqlite3.Connection) -> None:
     """D11：软删除块 → 其绑定降级为 missing，导出侧据此留空并提示。"""
     block_id, ver_id, region_id, _ = _full_fixture(conn)
-    assert bindings.get_binding(conn, ver_id, region_id).status == "active"
+    found_1 = bindings.get_binding(conn, ver_id, region_id)
+    assert found_1 is not None
+    assert found_1.status == "active"
 
     assert blocks.soft_delete_block(conn, block_id) is True
     binding = bindings.get_binding(conn, ver_id, region_id)
+    assert binding is not None
     assert binding.status == "missing"
     assert binding.block_id == block_id  # 记录保留，可追溯是哪个块缺失
 
 
-def test_soft_delete_idempotent(conn) -> None:
+def test_soft_delete_idempotent(conn: sqlite3.Connection) -> None:
     block_id, _, _, _ = _full_fixture(conn)
     assert blocks.soft_delete_block(conn, block_id) is True
     assert blocks.soft_delete_block(conn, block_id) is False  # 重复删返回 False
@@ -98,14 +102,18 @@ def test_soft_delete_atomic_rollback(tmp_path: Path) -> None:
     with get_conn(db) as conn:
         block = blocks.get_block(conn, block_id, include_deleted=True)
         assert block is not None and block.deleted_at is None
-        assert bindings.get_binding(conn, ver_id, region_id).status == "active"
+        found_3 = bindings.get_binding(conn, ver_id, region_id)
+        assert found_3 is not None
+        assert found_3.status == "active"
 
 
-def test_upsert_binding_resets_missing_to_active(conn) -> None:
+def test_upsert_binding_resets_missing_to_active(conn: sqlite3.Connection) -> None:
     """missing 后重新换绑 → 新绑定恢复 active（补位修复路径）。"""
     block_id, ver_id, region_id, block2_id = _full_fixture(conn)
     blocks.soft_delete_block(conn, block_id)
-    assert bindings.get_binding(conn, ver_id, region_id).status == "missing"
+    found_2 = bindings.get_binding(conn, ver_id, region_id)
+    assert found_2 is not None
+    assert found_2.status == "missing"
 
     rebound = bindings.upsert_binding(conn, ver_id, region_id, block2_id)
     assert rebound.status == "active"

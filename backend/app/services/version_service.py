@@ -52,7 +52,7 @@ def create_version(
     conn: sqlite3.Connection, template_id: int, name: str, copy_from: int | None = None
 ) -> Version:
     """新建版本；copy_from 指定源版本时复制其 active 绑定为底稿。"""
-    source_bindings: list[tuple[int, int]] = []
+    source_bindings: list[tuple[int, int, str, str]] = []
     if copy_from is not None:
         source = versions_repo.get_version(conn, copy_from)
         if source is None:
@@ -64,7 +64,7 @@ def create_version(
                 VERSION_INVALID, f"复制源版本（id={copy_from}）不属于该模板", status_code=400
             )
         source_bindings = [
-            (b.region_id, b.block_id)
+            (b.region_id, b.block_id, b.line_break_mode, b.position)
             for b in bindings_repo.list_bindings(conn, copy_from)
             if b.status == "active"
         ]
@@ -74,8 +74,16 @@ def create_version(
         raise AppError(
             VERSION_NAME_TAKEN, f"同模板下已存在同名版本「{name}」", status_code=409
         ) from exc
-    for region_id, block_id in source_bindings:
-        bindings_repo.upsert_binding(conn, ver.id, region_id, block_id)
+    for region_id, block_id, line_break_mode, position in source_bindings:
+        bindings_repo.upsert_binding(
+            conn, ver.id, region_id, block_id, line_break_mode=line_break_mode, position=position
+        )
+    if copy_from is not None:
+        conn.execute(
+            "INSERT INTO version_region_actions (version_id, region_id, action) "
+            "SELECT ?, region_id, action FROM version_region_actions WHERE version_id = ?",
+            (ver.id, copy_from),
+        )
     return ver
 
 

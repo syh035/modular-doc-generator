@@ -5,6 +5,8 @@
  * 非该结构按网络/未知错误处理。
  */
 
+import { mutationHooks } from './historyHooks'
+
 /** 后端统一错误结构 */
 export interface ApiError {
   code: string
@@ -21,6 +23,13 @@ export class ApiRequestError extends Error {
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const journal = mutationHooks(path, init)
+  journal?.before()
+  try { return await rawApiFetch<T>(path, init) }
+  finally { await journal?.after() }
+}
+
+async function rawApiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   let resp: Response
   try {
     resp = await fetch(path, init)

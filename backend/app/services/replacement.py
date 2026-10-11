@@ -88,16 +88,24 @@ def _resolve_paragraph(body: etree._Element, anchor: dict[str, object]) -> etree
 
 def _run_text(run: etree._Element) -> str:
     """run 的合并文本（与 docx_parser 同口径：仅直接子 w:t）。"""
-    return "".join(t.text or "" for t in run.findall(f"{_W}t"))
+    return "".join(
+        (child.text or "") if child.tag == f"{_W}t" else "\n"
+        for child in run
+        if child.tag in (f"{_W}t", f"{_W}br", f"{_W}cr")
+    )
 
 
 def _set_run_text(run: etree._Element, text: str) -> None:
     """重写 run 文本：删除全部直接子 w:t，写回单个 w:t（保留 rPr）。"""
-    for t in run.findall(f"{_W}t"):
-        run.remove(t)
-    t = etree.SubElement(run, f"{_W}t")
-    t.text = text
-    t.set(_XML_SPACE, "preserve")  # 新文本可能带首尾空白，防 Word 吞空格
+    for child in list(run):
+        if child.tag in (f"{_W}t", f"{_W}br", f"{_W}cr"):
+            run.remove(child)
+    for i, line in enumerate(text.split("\n")):
+        if i:
+            etree.SubElement(run, f"{_W}br")
+        t = etree.SubElement(run, f"{_W}t")
+        t.text = line
+        t.set(_XML_SPACE, "preserve")  # 新文本可能带首尾空白，防 Word 吞空格
 
 
 def _clone_line_paragraph(
@@ -111,7 +119,7 @@ def _clone_line_paragraph(
     """
     clone = copy.deepcopy(para)
     for child in list(clone):
-        if child.tag in (f"{_W}r", f"{_W}proofErr"):
+        if child.tag != f"{_W}pPr":
             clone.remove(child)
     ppr = clone.find(f"{_W}pPr")
     if ppr is not None:
@@ -128,6 +136,7 @@ def _replace_in_paragraph(
     para: etree._Element,
     entries: list[tuple[Region, int]],
     block_contents: dict[int, str],
+    modes: dict[int, str],
 ) -> dict[int, list[etree._Element]]:
     """按区域类型路由段落内替换（M6a 占位符 / M3b 整段）。
 
@@ -140,11 +149,11 @@ def _replace_in_paragraph(
     ph_entries = [(r, o) for r, o in entries if (r.placeholder or "").strip()]
     whole_entries = [(r, o) for r, o in entries if not (r.placeholder or "").strip()]
     if ph_entries:
-        return _replace_placeholder_spans(para, ph_entries, block_contents)
+        return _replace_placeholder_spans(para, ph_entries, block_contents, modes)
     if whole_entries:
         # 同段多个整段区域绑定不同块属语义冲突（一段只能有一份内容），
         # 防御性只处理文档序第一个
-        return _replace_whole_paragraph(para, whole_entries[0][0], block_contents)
+        return _replace_whole_paragraph(para, whole_entries[0][0], block_contents, modes)
     return {}
 
 
@@ -152,6 +161,7 @@ def _replace_placeholder_spans(
     para: etree._Element,
     entries: list[tuple[Region, int]],
     block_contents: dict[int, str],
+    modes: dict[int, str],
 ) -> dict[int, list[etree._Element]]:
     """替换段落内全部已绑定占位符；多行内容在段落后方追加克隆段落。
 
@@ -197,14 +207,14 @@ def _replace_placeholder_spans(
         if content is None or "\n" not in content:
             continue
         style_run = runs[_covering_run(s)]
-        for line in content.split("\n")[1:]:
+        for line in [] if modes.get(region.id) == "soft" else content.split("\n")[1:]:
             clone_lines.append((region.id, style_run, line))
 
     for region, s, e in reversed(spans):
         content = block_contents.get(region.id)
         if content is None:
             continue  # 未绑定 → 保留原文
-        lines = content.split("\n")
+        lines = [content] if modes.get(region.id) == "soft" else content.split("\n")
         first_idx = _covering_run(s)
         last_idx = _covering_run(e - 1)
         first_run, last_run = runs[first_idx], runs[last_idx]
@@ -221,7 +231,7 @@ def _replace_placeholder_spans(
             for mid in range(first_idx + 1, last_idx):
                 _set_run_text(runs[mid], "")
                 texts[mid] = ""
-            tail = texts[last_idx][e - starts[last_idx]:]
+            tail = texts[last_idx][e - starts[last_idx] :]
             _set_run_text(last_run, tail)
             texts[last_idx] = tail
 
@@ -237,7 +247,7 @@ def _replace_placeholder_spans(
 
 
 def _replace_whole_paragraph(
-    para: etree._Element, region: Region, block_contents: dict[int, str]
+    para: etree._Element, region: Region, block_contents: dict[int, str], modes: dict[int, str]
 ) -> dict[int, list[etree._Element]]:
     """无占位符区域（M3b 词表/成段候选）→ 整段替换。
 
@@ -253,7 +263,7 @@ def _replace_whole_paragraph(
     runs = para.findall(f"{_W}r")
     if not runs:
         return {}
-    lines = content.split("\n")
+    lines = [content] if modes.get(region.id) == "soft" else content.split("\n")
     _set_run_text(runs[0], lines[0])
     for run in runs[1:]:
         _set_run_text(run, "")
@@ -293,6 +303,11 @@ def apply_replacements(
     template_data: bytes,
     regions: list[Region],
     block_contents: dict[int, str],
+    *,
+    line_break_modes: dict[int, str] | None = None,
+    removed_region_ids: set[int] | None = None,
+    positions: dict[int, str] | None = None,
+    blank_region_ids: set[int] | None = None,
 ) -> ReplacementOutcome:
     """把绑定的块内容替换进模板，返回成品 DOCX 与区域新 path 映射。
 
@@ -319,16 +334,51 @@ def apply_replacements(
         region_paras.append((region, para))
 
     clone_els: dict[int, list[etree._Element]] = {}
+    positions = positions or {}
     for para_id, entries in para_groups.items():
+        para = id_to_para[para_id]
+        if any(r.id in (removed_region_ids or set()) for r, _ in entries):
+            parent = para.getparent()
+            assert parent is not None
+            parent.remove(para)
+            # Word table cells must retain at least one paragraph.
+            if parent.tag == f"{_W}tc" and not parent.findall(f"{_W}p"):
+                etree.SubElement(parent, f"{_W}p")
+            continue
+        # Insert from original paragraph style before inside replacement mutates runs.
+        after_anchor = para
+        for region, _ in sorted(entries, key=lambda item: item[1]):
+            position = positions.get(region.id, "inside")
+            if position == "inside" or region.id not in block_contents:
+                continue
+            style_run = next(iter(para.findall(f"{_W}r")), etree.Element(f"{_W}r"))
+            content = block_contents[region.id]
+            lines = (
+                [content]
+                if (line_break_modes or {}).get(region.id) == "soft"
+                else content.split("\n")
+            )
+            for line in lines:
+                clone = _clone_line_paragraph(para, style_run, line)
+                if position == "before":
+                    para.addprevious(clone)
+                else:
+                    after_anchor.addnext(clone)
+                    after_anchor = clone
+                clone_els.setdefault(region.id, []).append(clone)
+        entries = [(r, order) for r, order in entries if positions.get(r.id, "inside") == "inside"]
+        if any(r.id in (blank_region_ids or set()) for r, _ in entries):
+            for child in list(para):
+                if child.tag != f"{_W}pPr":
+                    para.remove(child)
+            continue
         for region_id, els in _replace_in_paragraph(
-            id_to_para[para_id], entries, block_contents
+            id_to_para[para_id], entries, block_contents, line_break_modes or {}
         ).items():
             clone_els.setdefault(region_id, []).extend(els)
 
     # 替换后重新枚举文档流：元素身份 → 新 path（多行插入已推挤索引）
-    path_by_element = {
-        id(el): anchor["path"] for anchor, el in iter_flow_paragraph_elements(body)
-    }
+    path_by_element = {id(el): anchor["path"] for anchor, el in iter_flow_paragraph_elements(body)}
     region_paths: dict[int, list[int]] = {}
     for region, para in region_paras:
         new_path = path_by_element.get(id(para))

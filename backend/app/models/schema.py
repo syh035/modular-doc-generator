@@ -11,6 +11,16 @@
 """
 
 DDL_STATEMENTS: tuple[str, ...] = (
+    """CREATE TABLE IF NOT EXISTS version_region_actions (
+        version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
+        region_id INTEGER NOT NULL REFERENCES regions(id) ON DELETE CASCADE,
+        action TEXT NOT NULL,
+        PRIMARY KEY (version_id, region_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS template_candidate_scans (
+        template_id INTEGER PRIMARY KEY REFERENCES templates(id) ON DELETE CASCADE,
+        revision INTEGER NOT NULL
+    )""",
     # ---- 字符块（内容资产）----
     """
     CREATE TABLE IF NOT EXISTS blocks (
@@ -19,6 +29,7 @@ DDL_STATEMENTS: tuple[str, ...] = (
         content TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'text',
         deleted_at TEXT                -- 软删除标记（D11），NULL = 存活
     )
     """,
@@ -50,6 +61,12 @@ DDL_STATEMENTS: tuple[str, ...] = (
         updated_at TEXT NOT NULL
     )
     """,
+    # Template libraries share block identities; deleting a template only removes membership.
+    """CREATE TABLE IF NOT EXISTS template_blocks (
+        template_id INTEGER NOT NULL REFERENCES templates(id) ON DELETE CASCADE,
+        block_id INTEGER NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+        PRIMARY KEY (template_id, block_id)
+    )""",
     # ---- 可替换区域 ----
     """
     CREATE TABLE IF NOT EXISTS regions (
@@ -89,6 +106,8 @@ DDL_STATEMENTS: tuple[str, ...] = (
         region_id INTEGER NOT NULL REFERENCES regions(id) ON DELETE CASCADE,
         block_id INTEGER NOT NULL REFERENCES blocks(id),  -- 无 CASCADE：块走软删除
         status TEXT NOT NULL DEFAULT 'active',
+        line_break_mode TEXT NOT NULL DEFAULT 'paragraph',
+        position TEXT NOT NULL DEFAULT 'inside',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE (version_id, region_id)  -- 一区域一版本只绑一块（假设①，M1 用户确认）

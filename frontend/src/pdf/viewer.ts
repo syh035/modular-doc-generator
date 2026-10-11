@@ -1,7 +1,7 @@
 /**
  * pdfjs-dist 封装：加载管线 PDF、逐页渲染到 canvas（单管线铁律，P2）。
  *
- * 只读预览（M5a）：fit-width 缩放由调用方计算后传入。
+ * 缩放由调用方计算后传入；整页、适合宽度和固定比例共用原 PDF 渲染。
  * 组件测试通过 vi.mock 本模块绕开真实 pdfjs（jsdom 无 canvas）。
  */
 
@@ -22,7 +22,8 @@ export interface OpenedPdf {
 
 /** 加载 PDF 文档（拷贝 data 后交给 pdfjs，所有权归其内部）。 */
 export async function openDocument(data: ArrayBuffer): Promise<OpenedPdf> {
-  const task = pdfjs.getDocument({ data: data.slice(0) })
+  const task = pdfjs.getDocument({ data: data.slice(0), cMapUrl: `${import.meta.env.BASE_URL}pdfjs/cmaps/`,
+    cMapPacked: true, standardFontDataUrl: `${import.meta.env.BASE_URL}pdfjs/standard_fonts/` })
   const document = await task.promise
   return { document, destroy: () => task.destroy() }
 }

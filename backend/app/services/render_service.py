@@ -17,6 +17,7 @@ import json
 import threading
 import uuid
 from pathlib import Path
+from typing import cast
 
 from app.core.config import settings
 from app.core.errors import (
@@ -52,6 +53,24 @@ def _bbox_dict(geo_bbox: tuple[float, float, float, float], page: int) -> dict[s
     }
 
 
+def _geometry_bbox(geo: RegionGeometry) -> dict[str, object]:
+    payload = _bbox_dict(geo.bbox, geo.page)
+    payload["geometry_version"] = 2
+    if geo.fragments:
+        payload["fragments"] = [_bbox_dict(part.bbox, part.page) for part in geo.fragments]
+    return payload
+
+
+def _auto_bbox_stale(region: Region, pdf_sha: str) -> bool:
+    if region.bbox_source == "manual":
+        return False
+    return (
+        region.bbox_json is None
+        or region.bbox_pdf_sha != pdf_sha
+        or json.loads(region.bbox_json).get("geometry_version") != 2
+    )
+
+
 def pdf_sha256(pdf_path: Path) -> str:
     """渲染产物 PDF 内容 sha256（P21 bbox 生命周期：bbox 记录测量来源）。"""
     return hashlib.sha256(pdf_path.read_bytes()).hexdigest()
@@ -71,9 +90,7 @@ def _persist_region_bboxes(
     updated = 0
     with get_conn() as conn:
         for r in regions:
-            stale = r.bbox_json is None or (
-                r.bbox_source != "manual" and r.bbox_pdf_sha != pdf_sha
-            )
+            stale = _auto_bbox_stale(r, pdf_sha)
             if not stale:
                 continue
             anchor = json.loads(r.anchor)
@@ -85,7 +102,7 @@ def _persist_region_bboxes(
             regions_repo.update_region(
                 conn,
                 r.id,
-                bbox=_bbox_dict(geo.bbox, geo.page),
+                bbox=_geometry_bbox(geo),
                 bbox_source="auto",
                 bbox_pdf_sha=pdf_sha,
             )
@@ -102,9 +119,7 @@ def ensure_template_preview(template_id: int) -> Path:
     with get_conn() as conn:
         tpl = templates_repo.get_template(conn, template_id)
         if tpl is None:
-            raise AppError(
-                TEMPLATE_NOT_FOUND, f"模板不存在（id={template_id}）", status_code=404
-            )
+            raise AppError(TEMPLATE_NOT_FOUND, f"模板不存在（id={template_id}）", status_code=404)
         regions = regions_repo.list_regions(conn, tpl.id)
     docx_path = settings.templates_dir / tpl.storage_name
     if not docx_path.is_file():
@@ -117,10 +132,7 @@ def ensure_template_preview(template_id: int) -> Path:
         pdf_path = libreoffice.get_manager().convert(docx_path)
         pdf_sha = pdf_sha256(pdf_path)
         # P21：auto bbox 随渲染产物变化失效重算（manual 校对产物保护不覆盖）
-        if any(
-            r.bbox_json is None or (r.bbox_source != "manual" and r.bbox_pdf_sha != pdf_sha)
-            for r in regions
-        ):
+        if any(_auto_bbox_stale(r, pdf_sha) for r in regions):
             _persist_region_bboxes(tpl, regions, pdf_path, pdf_sha)
     return pdf_path
 
@@ -132,9 +144,7 @@ class VersionRender:
     M9 导出直接落盘该产物，保证预览与导出零差异。
     """
 
-    def __init__(
-        self, data: bytes, pdf_path: Path, items: list[dict[str, object]]
-    ) -> None:
+    def __init__(self, data: bytes, pdf_path: Path, items: list[dict[str, object]]) -> None:
         self.data = data
         self.pdf_path = pdf_path
         self.items = items
@@ -145,19 +155,18 @@ def _region_extent(
 ) -> tuple[float, float, float, float] | None:
     """区域多段落（首行 + 多行克隆段）的渲染范围 bbox，任一段未匹配 → None。
 
-    同页取并集；跨页（已知局限，见 RegionGeometry）按片段高度求和构造
+    同页取并集；跨页按各页片段高度求和构造
     虚拟 bbox（x 恒 0）——溢出测量只消费 y 向高度，保证长内容单调可测。
     """
-    matched = [
-        g for g in (geometry.get(tuple(p)) for p in paths) if g is not None
-    ]
+    matched = [g for g in (geometry.get(tuple(p)) for p in paths) if g is not None]
     if not matched:
         return None
+    matched = [part for geo in matched for part in (geo.fragments or (geo,))]
     if len({g.page for g in matched}) == 1:
         return (
             min(g.bbox[0] for g in matched),
             min(g.bbox[1] for g in matched),
-            max(g.bbox[0] for g in matched),
+            max(g.bbox[2] for g in matched),
             max(g.bbox[3] for g in matched),
         )
     total = sum(g.bbox[3] - g.bbox[1] for g in matched)
@@ -174,9 +183,7 @@ def render_version(version_id: int) -> VersionRender:
     with get_conn() as conn:
         version = versions_repo.get_version(conn, version_id)
         if version is None:
-            raise AppError(
-                VERSION_NOT_FOUND, f"内容版本不存在（id={version_id}）", status_code=404
-            )
+            raise AppError(VERSION_NOT_FOUND, f"内容版本不存在（id={version_id}）", status_code=404)
         tpl = templates_repo.get_template(conn, version.template_id)
         if tpl is None:
             raise AppError(
@@ -197,6 +204,12 @@ def render_version(version_id: int) -> VersionRender:
             if b.status == "active":
                 block_contents[b.region_id] = block.content
         binding_by_region = {b.region_id: b for b in bindings}
+        removed_ids = {
+            int(row[0])
+            for row in conn.execute(
+                "SELECT region_id FROM version_region_actions WHERE version_id = ?", (version.id,)
+            )
+        }
 
     docx_path = settings.templates_dir / tpl.storage_name
     if not docx_path.is_file():
@@ -209,13 +222,32 @@ def render_version(version_id: int) -> VersionRender:
     # M7：溢出测量需要模板原 bbox（regions.bbox，ensure 时落库）——有绑定时
     # 缺失即触发模板渲染补齐（幂等，LO 内容缓存吸收重复开销），再重读区域
     if block_contents and any(
-        r.id in block_contents and r.bbox_json is None for r in regions
+        r.id in block_contents
+        and (
+            r.bbox_json is None
+            or (r.bbox_source != "manual" and json.loads(r.bbox_json).get("geometry_version") != 2)
+        )
+        for r in regions
     ):
         ensure_template_preview(tpl.id)
         with get_conn() as conn:
             regions = regions_repo.list_regions(conn, tpl.id)
 
-    outcome = apply_replacements(docx_path.read_bytes(), regions, block_contents)
+    outcome = apply_replacements(
+        docx_path.read_bytes(),
+        regions,
+        block_contents,
+        line_break_modes={b.region_id: b.line_break_mode for b in bindings},
+        removed_region_ids=removed_ids,
+        positions={b.region_id: b.position for b in bindings if b.status == "active"},
+        blank_region_ids={
+            b.region_id
+            for b in bindings
+            if b.status == "active"
+            and b.block_id in block_by_id
+            and block_by_id[b.block_id].kind == "blank"
+        },
+    )
 
     # 成品 DOCX 走 LO 缓存：临时文件（uuid 防并发碰撞）→ convert → 即删
     tmp_dir = settings.render_cache_dir / "tmp"
@@ -230,12 +262,11 @@ def render_version(version_id: int) -> VersionRender:
     # 几何对齐：成品文档流 ↔ 成品 PDF；region_paths 给出首行段落新 path
     pdf_lines = extract_pdf_lines(pdf_path)
     flow = list(iter_flow_paragraphs(outcome.data))
+    text_by_path = {tuple(cast(list[int], anchor["path"])): text for anchor, text in flow}
     geometry = align_flow_to_lines(flow, pdf_lines)
     # M7 溢出：固定行高检测（P6，裁剪判定仅对有效绑定区域）+ 高度对比分级（D4）
     fixed_rows = (
-        overflow.detect_fixed_rows(outcome.data, outcome.region_paths)
-        if block_contents
-        else set()
+        overflow.detect_fixed_rows(outcome.data, outcome.region_paths) if block_contents else set()
     )
     clipped = overflow.detect_clipped(pdf_lines, block_contents, fixed_rows)
     items: list[dict[str, object]] = []
@@ -269,7 +300,29 @@ def render_version(version_id: int) -> VersionRender:
                 "placeholder": region.placeholder,
                 "anchor": anchor,
                 "order_index": region.order_index,
-                "bbox": _bbox_dict(geo.bbox, geo.page) if geo else None,
+                "removed": new_path is None
+                and any(
+                    r.id in removed_ids and json.loads(r.anchor)["path"] == path for r in regions
+                ),
+                "current_text": (
+                    block.content
+                    if binding and binding.status == "active" and block
+                    else region.placeholder
+                    if region.placeholder is not None
+                    else text_by_path.get(tuple(new_path), "")
+                    if new_path
+                    else ""
+                ),
+                "bbox": (
+                    json.loads(region.bbox_json)
+                    if new_path is not None
+                    and region.bbox_source == "manual"
+                    and region.bbox_json
+                    and not (binding and binding.status == "active")
+                    else _geometry_bbox(geo)
+                    if geo
+                    else None
+                ),
                 "confidence": region.confidence,
                 "review_status": region.review_status,
                 "overflow": ov.to_dict() if ov else None,
@@ -278,6 +331,8 @@ def render_version(version_id: int) -> VersionRender:
                         "block_id": binding.block_id,
                         "block_name": block.name if block else None,
                         "status": binding.status,
+                        "line_break_mode": binding.line_break_mode,
+                        "position": binding.position,
                     }
                     if binding
                     else None

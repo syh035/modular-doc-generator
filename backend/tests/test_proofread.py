@@ -5,6 +5,7 @@ from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pymupdf
 import pytest
 from docx import Document
@@ -36,7 +37,7 @@ def make_docx_eastAsia(*paragraphs: str) -> bytes:
         p = doc.add_paragraph(text)
         for run in p.runs:
             run.font.name = "宋体"
-            run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+            run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), "宋体")
     buf = BytesIO()
     doc.save(buf)
     return buf.getvalue()
@@ -51,9 +52,7 @@ def upload(client: TestClient, data: bytes) -> dict:
     return resp.json()
 
 
-def patch_fake_convert(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, texts: list[str]
-) -> None:
+def patch_fake_convert(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, texts: list[str]) -> None:
     """假 LO：按段落文本逐行排版出 PDF（与文档流对齐）。"""
 
     def convert(path: Path) -> Path:
@@ -82,7 +81,9 @@ def frame(page: float, x0: float, y0: float, x1: float, y1: float) -> dict:
     return {"page": page, "x0": x0, "y0": y0, "x1": x1, "y1": y1}
 
 
-def post_region(client: TestClient, tpl_id: int, label: str, type_: str, bbox: dict):
+def post_region(
+    client: TestClient, tpl_id: int, label: str, type_: str, bbox: dict
+) -> httpx.Response:
     return client.post(
         f"/api/templates/{tpl_id}/regions",
         json={"label": label, "type": type_, "bbox": bbox},
@@ -109,7 +110,7 @@ def geo(page: int, bbox: tuple[float, float, float, float]) -> RegionGeometry:
     return RegionGeometry(page=page, bbox=bbox, line_count=1)
 
 
-GEOMETRY = {
+GEOMETRY: dict[tuple[int, ...], RegionGeometry] = {
     (0,): geo(0, (72.0, 90.0, 300.0, 105.0)),
     (1,): geo(0, (72.0, 130.0, 300.0, 145.0)),
     (2,): geo(1, (72.0, 90.0, 300.0, 105.0)),  # 第 2 页
@@ -130,13 +131,13 @@ def test_frame_hits_single_and_sliver() -> None:
 # ---- 框选新建（假 LO 反解）----
 
 
-def test_create_manual_region_resolves_anchor(client, tmp_path, monkeypatch) -> None:
+def test_create_manual_region_resolves_anchor(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     body = upload(client, make_docx(PARA_A))
     patch_fake_convert(monkeypatch, tmp_path, [PARA_A])
 
-    resp = post_region(
-        client, body["id"], "手选段落", "work", frame(0, 70, 85, 320, 108)
-    )
+    resp = post_region(client, body["id"], "手选段落", "work", frame(0, 70, 85, 320, 108))
     assert resp.status_code == 201
     region = resp.json()
     assert region["label"] == "手选段落"
@@ -144,17 +145,21 @@ def test_create_manual_region_resolves_anchor(client, tmp_path, monkeypatch) -> 
     assert region["review_status"] == "confirmed"  # PRD：完成录入即已确认
     assert region["anchor"] == {"kind": "p", "path": [0]}  # 反解回文档流段落
     assert region["bbox"] == {"page": 0, "x0": 70.0, "y0": 85.0, "x1": 320.0, "y1": 108.0}
-    assert region["confidence"] is None
+    assert region["id"] == body["regions"][0]["id"]
+    assert region["confidence"] == body["regions"][0]["confidence"]
+    assert len(client.get(f"/api/templates/{body['id']}/regions").json()["regions"]) == 1
     # 落库事实：manual 来源 + bbox_pdf_sha = 产物 PDF sha
     with get_conn() as conn:
         row = regions_repo.get_region(conn, region["id"])
     assert row is not None and row.bbox_source == "manual"
     assert row is not None and row.bbox_pdf_sha is not None
-    # order_index 接在文档流序尾部
-    assert region["order_index"] == body["regions"][0]["order_index"] + 1
+    # 已有段落补选复用区域，顺序与绑定身份保持不变
+    assert region["order_index"] == body["regions"][0]["order_index"]
 
 
-def test_create_manual_region_empty_frame_rejected(client, tmp_path, monkeypatch) -> None:
+def test_create_manual_region_empty_frame_rejected(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     body = upload(client, make_docx(PARA_A))
     patch_fake_convert(monkeypatch, tmp_path, [PARA_A])
 
@@ -163,7 +168,9 @@ def test_create_manual_region_empty_frame_rejected(client, tmp_path, monkeypatch
     assert resp.json()["error"]["code"] == "REGION_FRAME_EMPTY"
 
 
-def test_create_manual_region_multi_paragraph_rejected(client, tmp_path, monkeypatch) -> None:
+def test_create_manual_region_multi_paragraph_rejected(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     body = upload(client, make_docx_eastAsia(PARA_A, PARA_B))
     patch_fake_convert(monkeypatch, tmp_path, [PARA_A, PARA_B])
 
@@ -173,7 +180,9 @@ def test_create_manual_region_multi_paragraph_rejected(client, tmp_path, monkeyp
     assert "2" in resp.json()["error"]["message"]
 
 
-def test_create_manual_region_invalid_payload(client, tmp_path, monkeypatch) -> None:
+def test_create_manual_region_invalid_payload(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     body = upload(client, make_docx(PARA_A))
     patch_fake_convert(monkeypatch, tmp_path, [PARA_A])
 
@@ -184,7 +193,7 @@ def test_create_manual_region_invalid_payload(client, tmp_path, monkeypatch) -> 
     assert r2.status_code == 400 and r2.json()["error"]["code"] == "REGION_INVALID"
 
 
-def test_create_region_template_404(client, monkeypatch) -> None:
+def test_create_region_template_404(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.services.libreoffice._manager", SimpleNamespace(convert=lambda p: p))
     resp = post_region(client, 999, "x", "work", frame(0, 1, 1, 10, 10))
     assert resp.status_code == 404
@@ -194,7 +203,7 @@ def test_create_region_template_404(client, monkeypatch) -> None:
 # ---- 状态机 + 自动 ready ----
 
 
-def test_review_status_transitions(client) -> None:
+def test_review_status_transitions(client: TestClient) -> None:
     body = upload(client, make_docx("电话：{{手机号}}，姓名：{{姓名}}"))
     rid = body["regions"][0]["id"]
     tpl_id = body["id"]
@@ -216,7 +225,7 @@ def test_review_status_transitions(client) -> None:
     assert detail["regions"][0]["review_status"] == "excluded"
 
 
-def test_auto_ready_when_all_reviewed(client) -> None:
+def test_auto_ready_when_all_reviewed(client: TestClient) -> None:
     body = upload(client, make_docx("电话：{{手机号}}，姓名：{{姓名}}"))
     tpl_id = body["id"]
     r1, r2 = (r["id"] for r in body["regions"])
@@ -228,7 +237,7 @@ def test_auto_ready_when_all_reviewed(client) -> None:
     assert client.get(f"/api/templates/{tpl_id}").json()["status"] == "ready"  # 全部处理完毕
 
 
-def test_auto_ready_after_deleting_last_pending(client) -> None:
+def test_auto_ready_after_deleting_last_pending(client: TestClient) -> None:
     body = upload(client, make_docx("电话：{{手机号}}，姓名：{{姓名}}"))
     tpl_id = body["id"]
     r1, r2 = (r["id"] for r in body["regions"])
@@ -241,7 +250,7 @@ def test_auto_ready_after_deleting_last_pending(client) -> None:
     assert [r["id"] for r in remaining] == [r1]  # 仅被删的 r2 消失
 
 
-def test_excluded_region_binding_rejected(client) -> None:
+def test_excluded_region_binding_rejected(client: TestClient) -> None:
     body = upload(client, make_docx("{{姓名}}"))
     rid = body["regions"][0]["id"]
     vid = body["default_version_id"]
@@ -255,14 +264,12 @@ def test_excluded_region_binding_rejected(client) -> None:
     assert resp.json()["error"]["code"] == "REGION_EXCLUDED"
 
 
-def test_delete_region_cascades_binding(client) -> None:
+def test_delete_region_cascades_binding(client: TestClient) -> None:
     body = upload(client, make_docx("{{姓名}}"))
     rid = body["regions"][0]["id"]
     vid = body["default_version_id"]
     block = client.post("/api/blocks", json={"name": "姓名块", "content": "张三"}).json()["id"]
-    bound = client.post(
-        f"/api/versions/{vid}/bindings", json={"region_id": rid, "block_id": block}
-    )
+    bound = client.post(f"/api/versions/{vid}/bindings", json={"region_id": rid, "block_id": block})
     assert bound.status_code == 200
     client.delete(f"/api/regions/{rid}")
     bindings = client.get(f"/api/versions/{vid}/bindings").json()["bindings"]
@@ -272,7 +279,9 @@ def test_delete_region_cascades_binding(client) -> None:
 # ---- P21 bbox 生命周期：auto 随 PDF 失效重算，manual 保护 ----
 
 
-def test_bbox_lifecycle_auto_recompute_manual_protected(client, tmp_path, monkeypatch) -> None:
+def test_bbox_lifecycle_auto_recompute_manual_protected(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """P21：auto bbox 随渲染产物变化失效重算（sha 跟随）；manual 校对产物保护不覆盖。"""
     body = upload(client, make_docx(PARA_A))
     tpl_id = body["id"]
@@ -308,7 +317,11 @@ def test_bbox_lifecycle_auto_recompute_manual_protected(client, tmp_path, monkey
     assert row3 is not None
     assert row3.bbox_source == "manual"
     assert json.loads(row3.bbox_json or "{}") == {
-        "page": 0, "x0": 10.0, "y0": 10.0, "x1": 60.0, "y1": 30.0,
+        "page": 0,
+        "x0": 10.0,
+        "y0": 10.0,
+        "x1": 60.0,
+        "y1": 30.0,
     }
     assert row3.bbox_pdf_sha == row2.bbox_pdf_sha
 
@@ -317,7 +330,7 @@ def test_bbox_lifecycle_auto_recompute_manual_protected(client, tmp_path, monkey
 
 
 @pytest.mark.skipif(find_soffice() is None, reason="LibreOffice 未安装")
-def test_manual_region_real_lo(client) -> None:
+def test_manual_region_real_lo(client: TestClient) -> None:
     """框选矩形 = 既有区域 bbox → 反解回同一段落；状态机走通至 ready。"""
     data = make_docx_eastAsia("工作经历：负责核心系统研发", "项目经历：主导数据平台建设")
     body = upload(client, data)
@@ -335,10 +348,117 @@ def test_manual_region_real_lo(client) -> None:
     assert resp.status_code == 201
     created = resp.json()
     assert created["anchor"]["path"] == target["anchor"]["path"]  # 反解回同一段落
-    assert created["bbox"] == target["bbox"]
+    assert created["id"] == target["id"]
+    assert created["bbox"] == {k: target["bbox"][k] for k in ("page", "x0", "y0", "x1", "y1")}
 
     # 逐个确认 → 自动 ready
     client.patch(f"/api/regions/{created['id']}", json={"review_status": "confirmed"})
     for r in regions:
         client.patch(f"/api/regions/{r['id']}", json={"review_status": "confirmed"})
     assert client.get(f"/api/templates/{tpl_id}").json()["status"] == "ready"
+
+
+def test_frame_hits_second_page_of_same_paragraph() -> None:
+    first = RegionGeometry(0, (50, 780, 300, 800), 1)
+    second = RegionGeometry(1, (50, 40, 180, 60), 1)
+    whole = RegionGeometry(0, first.bbox, 2, (first, second))
+    assert _frame_hits({(3,): whole}, 1, (50, 40, 180, 60)) == [((3,), whole)]
+
+
+def test_reframe_missing_region_preserves_anchor_and_binding(client: TestClient) -> None:
+    body = upload(client, make_docx(PARA_A))
+    region = body["regions"][0]
+    block = client.post("/api/blocks", json={"name": "工作块", "content": "新正文"}).json()
+    vid = body["default_version_id"]
+    assert (
+        client.post(
+            f"/api/versions/{vid}/bindings",
+            json={"region_id": region["id"], "block_id": block["id"]},
+        ).status_code
+        == 200
+    )
+    # 无 bbox 时仍可直接重新定位，无需自动反解已知 anchor。
+    payload = frame(0, 70, 85, 320, 108)
+    updated = client.patch(f"/api/regions/{region['id']}", json={"bbox": payload})
+    assert updated.status_code == 200
+    assert updated.json()["anchor"] == region["anchor"]
+    with get_conn() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM bindings WHERE region_id = ?", (region["id"],)
+            ).fetchone()[0]
+            == 1
+        )
+        found_1 = regions_repo.get_region(conn, region["id"])
+        assert found_1 is not None
+        assert found_1.bbox_source == "manual"
+
+
+def test_add_short_unrecognized_paragraph(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = "遗漏的短文本"
+    body = upload(client, make_docx(text))
+    assert len(body["regions"]) == 1
+    patch_fake_convert(monkeypatch, tmp_path, [text])
+    response = post_region(client, body["id"], "补选短句", "custom", frame(0, 70, 85, 180, 108))
+    assert response.status_code == 201
+    created = response.json()
+    assert created["id"] == body["regions"][0]["id"]
+    assert created["anchor"]["path"] == [0]
+    assert created["review_status"] == "confirmed"
+
+
+def test_adjust_second_page_preserves_first_page_and_binding(client: TestClient) -> None:
+    body = upload(client, make_docx(PARA_A))
+    rid = body["regions"][0]["id"]
+    first = frame(0, 50, 780, 300, 800)
+    second = frame(1, 50, 40, 180, 60)
+    with get_conn() as conn:
+        regions_repo.update_region(conn, rid, bbox={**first, "fragments": [first, second]})
+    adjusted = frame(1, 50, 40, 200, 65)
+    response = client.patch(f"/api/regions/{rid}", json={"bbox": adjusted})
+    assert response.status_code == 200
+    assert response.json()["bbox"]["fragments"] == [first, adjusted]
+    assert response.json()["bbox"]["page"] == 0
+
+
+def test_repeated_manual_selection_keeps_other_page_frame(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = upload(client, make_docx(PARA_A))
+    rid = body["regions"][0]["id"]
+    first = frame(0, 70, 85, 320, 108)
+    second = frame(1, 50, 40, 180, 60)
+    with get_conn() as conn:
+        regions_repo.update_region(
+            conn, rid, bbox={**first, "fragments": [first, second]}, bbox_source="manual"
+        )
+    patch_fake_convert(monkeypatch, tmp_path, [PARA_A])
+    response = post_region(client, body["id"], "重新选中", "work", first)
+    assert response.status_code == 201
+    assert response.json()["id"] == rid
+    assert response.json()["bbox"]["fragments"] == [first, second]
+
+
+def test_version_render_upgrades_old_auto_geometry_for_overflow(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = upload(client, make_docx(PARA_A))
+    rid = body["regions"][0]["id"]
+    patch_fake_convert(monkeypatch, tmp_path, [PARA_A])
+    with get_conn() as conn:
+        regions_repo.update_region(conn, rid, bbox=frame(0, 1, 1, 10, 10), bbox_source="auto")
+    block = client.post("/api/blocks", json={"name": "迁移验证", "content": PARA_A}).json()
+    vid = body["default_version_id"]
+    assert (
+        client.post(
+            f"/api/versions/{vid}/bindings", json={"region_id": rid, "block_id": block["id"]}
+        ).status_code
+        == 200
+    )
+    assert client.get(f"/api/versions/{vid}/overlay").status_code == 200
+    with get_conn() as conn:
+        row = regions_repo.get_region(conn, rid)
+        assert row is not None and row.bbox_json is not None
+        assert json.loads(row.bbox_json)["geometry_version"] == 2

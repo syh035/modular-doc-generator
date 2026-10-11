@@ -31,16 +31,16 @@ def get_version(conn: sqlite3.Connection, version_id: int) -> Version | None:
 
 def list_versions(conn: sqlite3.Connection, template_id: int) -> list[Version]:
     """模板的版本列表（创建正序）。"""
-    rows = conn.execute(
-        f"{_SELECT} WHERE template_id = ? ORDER BY id", (template_id,)
-    ).fetchall()
+    rows = conn.execute(f"{_SELECT} WHERE template_id = ? ORDER BY id", (template_id,)).fetchall()
     return [Version.from_row(r) for r in rows]
 
 
 def rename_version(conn: sqlite3.Connection, version_id: int, new_name: str) -> Version | None:
     """重命名；撞同模板内已有名抛 sqlite3.IntegrityError。"""
-    cur = conn.execute("UPDATE versions SET name = ?, updated_at = ? WHERE id = ?",
-                       (new_name, utcnow(), version_id))
+    cur = conn.execute(
+        "UPDATE versions SET name = ?, updated_at = ? WHERE id = ?",
+        (new_name, utcnow(), version_id),
+    )
     if cur.rowcount == 0:
         return None
     ver = get_version(conn, version_id)

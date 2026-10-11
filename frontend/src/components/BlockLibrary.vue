@@ -2,18 +2,25 @@
 /**
  * 左栏：字符块库（M2 完整实现）。
  *
- * - 平铺列表（更新时间倒序）+ 标签筛选（单行横滚，可整体收起）+ 新建/编辑/删除（二次确认，软删 D11）
- * - 标签管理：重命名（撞名即合并，全库生效）/ 删除
+ * - 平铺列表（更新时间倒序）+ 统一搜索（名称／正文／标签）+ 新建/编辑/删除（二次确认，软删 D11）
  * - 抽屉本体：宽度拖拽可调 + 展开/收起（libraryOpen，头部折叠按钮）
  * - 正向绑定流：点选块高亮 → 右栏点目标区域即绑定（PRD 4.4）
  */
 
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import type { Block } from '../api/blocks'
 import { useBlocksStore } from '../stores/blocks'
 import { usePreviewStore } from '../stores/preview'
+import { matchesBlock } from '../utils/blockSearch'
+import BlockEditor from './BlockEditor.vue'
+import SharedBlockDialog from './SharedBlockDialog.vue'
 
+const emit = defineEmits<{ select: [] }>()
 const store = useBlocksStore()
+const query = ref('')
+const sharedOpen = ref(false)
+const sharing = ref(false)
+const sharedError = ref<string | null>(null)
 const previewStore = usePreviewStore()
 
 // ---- 新建/编辑表单（一表两用）----
@@ -21,6 +28,7 @@ const showForm = ref(false)
 const editingId = ref<number | null>(null)
 const name = ref('')
 const content = ref('')
+const kind = ref<'text' | 'blank'>('text')
 const tagsInput = ref('')
 const formError = ref<string | null>(null)
 const submitLabel = computed(() =>
@@ -42,31 +50,38 @@ function parseTags(raw: string): string[] {
 function resetForm(): void {
   name.value = ''
   content.value = ''
+  kind.value = 'text'
   tagsInput.value = ''
   editingId.value = null
   showForm.value = false
 }
 
 function onNewClick(): void {
-  if (editingId.value !== null) {
-    resetForm()
-    showForm.value = true
-    return
-  }
-  showForm.value = !showForm.value
+  if (deleting.value) return
+  resetForm()
+  formError.value = null
+  showForm.value = true
 }
 
 function startEdit(block: Block): void {
+  if (deleting.value) return
   editingId.value = block.id
-  showForm.value = false // 就地编辑时收起顶部新建表单
+  showForm.value = true
   name.value = block.name
   content.value = block.content
+  kind.value = block.kind ?? 'text'
   tagsInput.value = block.tags.map(t => t.name).join('，')
   formError.value = null
 }
 
-function cancelEdit(): void {
-  resetForm()
+function chooseBlock(id: number): void {
+  if (deleting.value) return
+  if (batchMode.value) {
+    checkedIds.value = checkedIds.value.includes(id) ? checkedIds.value.filter(n => n !== id) : [...checkedIds.value, id]
+    return
+  }
+  store.selectBlock(id)
+  emit('select')
 }
 
 async function submit(): Promise<void> {
@@ -75,17 +90,20 @@ async function submit(): Promise<void> {
   if (editingId.value !== null) {
     const ok = await store.updateExistingBlock(editingId.value, {
       name: name.value.trim(),
-      content: content.value,
+      content: kind.value === 'blank' ? '' : content.value,
+      kind: kind.value,
       tags: tagNames, // 表单即整组替换语义
     })
     if (ok) {
       resetForm()
+      void previewStore.refreshVersionRender()
     } else {
       formError.value = store.updateError
     }
     return
   }
-  const ok = await store.createNewBlock(name.value.trim(), content.value, tagNames)
+  if (previewStore.currentTemplateId === null) return
+  const ok = await store.createNewBlock(name.value.trim(), kind.value === 'blank' ? '' : content.value, tagNames, kind.value, previewStore.currentTemplateId)
   if (ok) {
     resetForm()
   } else {
@@ -95,67 +113,77 @@ async function submit(): Promise<void> {
 
 // ---- 删除（二次确认，内联）----
 const deletingId = ref<number | null>(null)
-
+const deleting = ref(false)
+const batchMode = ref(false)
+const checkedIds = ref<number[]>([])
+const batchConfirm = ref(false)
+const batchResult = ref('')
 async function confirmDelete(id: number): Promise<void> {
+  if (deleting.value) return
+  deleting.value = true
   const ok = await store.removeBlock(id)
+  deleting.value = false
   deletingId.value = null
   if (ok) {
+    checkedIds.value = checkedIds.value.filter(n => n !== id)
+    batchConfirm.value = false
     // 被引用删除 → 绑定已置 missing：刷新版本预览让覆盖层回落黄框（D11）
     void previewStore.refreshVersionRender()
   }
 }
 
-// ---- 标签管理 ----
-const manageOpen = ref(false)
-const manageError = ref<string | null>(null)
-const tagEdits = reactive<Record<number, string>>({})
-/** 标签筛选栏整体收起/展开（收起后为：[标签管理][搜索框][展开按钮]）。 */
-const tagsBarOpen = ref(true)
-
-/** 标签搜索（折叠态）：关键字匹配标签名 → 过滤出挂有匹配标签的块。 */
-const tagSearch = ref('')
-const matchedTagIds = computed<Set<number> | null>(() => {
-  const kw = tagSearch.value.trim()
-  if (!kw) {
-    return null
-  }
-  return new Set(store.tags.filter(t => t.name.includes(kw)).map(t => t.id))
-})
-
-/** 列表最终可见块 = 标签筛选 ∩ 标签搜索过滤。 */
-const visibleBlocks = computed(() => {
-  const ids = matchedTagIds.value
-  return ids === null
-    ? store.filteredBlocks
-    : store.filteredBlocks.filter(b => b.tags.some(t => ids.has(t.id)))
-})
-
-function toggleManage(): void {
-  manageOpen.value = !manageOpen.value
-  manageError.value = null
-  if (manageOpen.value) {
-    for (const tag of store.tags) {
-      tagEdits[tag.id] = tag.name
+// ---- 统一搜索：保留已有标签匹配，不叠加隐藏的历史标签筛选 ----
+const visibleBlocks = computed(() => store.libraryBlocks.filter(b => matchesBlock(b, query.value)))
+const allChecked = computed(() => visibleBlocks.value.length > 0 && visibleBlocks.value.every(b => checkedIds.value.includes(b.id)))
+watch(query, () => { checkedIds.value = []; batchConfirm.value = false })
+function toggleBatch(): void {
+  batchMode.value = !batchMode.value
+  checkedIds.value = []
+  batchConfirm.value = false
+  batchResult.value = ''
+}
+function selectAll(): void {
+  checkedIds.value = allChecked.value ? [] : visibleBlocks.value.map(b => b.id)
+  batchConfirm.value = false
+}
+async function removeChecked(): Promise<void> {
+  if (deleting.value || checkedIds.value.length === 0) return
+  deleting.value = true
+  const targets = store.blocks.filter(b => checkedIds.value.includes(b.id))
+  const failures: string[] = []
+  const failedIds: number[] = []
+  for (const block of targets) {
+    if (!await store.removeBlock(block.id)) {
+      failedIds.push(block.id)
+      failures.push(`${block.name}：${store.mutationError ?? '删除失败'}`)
     }
   }
+  checkedIds.value = failedIds
+  batchConfirm.value = false
+  batchResult.value = `已删除 ${targets.length - failedIds.length} 个字符块${failures.length ? `；未删除：${failures.join('；')}` : ''}`
+  deleting.value = false
+  if (targets.length > failedIds.length) void previewStore.refreshVersionRender()
 }
 
-async function saveTag(id: number): Promise<void> {
-  manageError.value = null
-  const result = await store.renameExistingTag(id, tagEdits[id] ?? '')
-  if (result === null) {
-    tagEdits[id] = store.tags.find(t => t.id === id)?.name ?? '' // 刷新为落库名
-  } else {
-    manageError.value = result
-  }
-}
+watch(() => previewStore.currentTemplateId, () => {
+  resetForm()
+  sharedOpen.value = false; sharedError.value = null
+  query.value = ''; store.activeTagId = null
+  store.selectedBlockId = null
+  checkedIds.value = []; batchMode.value = false; batchConfirm.value = false
+  deletingId.value = null
+})
+watch([() => previewStore.currentTemplateId, () => previewStore.regions, () => previewStore.versions],
+  () => { void store.loadTemplateBlocks(previewStore.currentTemplateId) }, { immediate: true })
 
-async function removeTagById(id: number): Promise<void> {
-  manageError.value = null
-  const ok = await store.removeTag(id)
-  if (!ok) {
-    manageError.value = store.mutationError
-  }
+async function share(id: number): Promise<void> {
+  const templateId = previewStore.currentTemplateId
+  if (templateId === null || sharing.value) return
+  sharing.value = true
+  const ok = await store.shareBlock(id, templateId)
+  sharing.value = false
+  if (previewStore.currentTemplateId !== templateId) return
+  sharedError.value = ok ? null : store.mutationError
 }
 
 onMounted(() => {
@@ -174,391 +202,278 @@ onMounted(() => {
       <div class="header-ops">
         <button
           class="primary"
+          :disabled="deleting || previewStore.currentTemplateId === null"
           @click="onNewClick"
         >
-          {{ showForm ? '收起' : '+ 新建字符块' }}
-        </button>
-        <!-- UI 调整②批：矩形内置竖线折叠按钮（收起后在预览工具条左端展开） -->
-        <button
-          class="icon-collapse"
-          title="收起块库"
-          @click="store.toggleLibrary()"
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 14 14"
-            aria-hidden="true"
-          >
-            <rect
-              x="0.75"
-              y="0.75"
-              width="12.5"
-              height="12.5"
-              rx="2"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1"
-            />
-            <line
-              x1="4.5"
-              y1="3.5"
-              x2="4.5"
-              y2="10.5"
-              stroke="currentColor"
-              stroke-width="1.5"
-            />
-            <line
-              x1="8"
-              y1="3.5"
-              x2="8"
-              y2="10.5"
-              stroke="currentColor"
-              stroke-width="1.5"
-            />
-          </svg>
+          + 新建字符块
         </button>
       </div>
     </div>
 
-    <!-- 标签筛选（单行横向滚动，可整体收起）+ 行尾固定入口 -->
-    <div class="tag-bar">
-      <template v-if="tagsBarOpen">
+    <div
+      v-if="previewStore.currentTemplateId === null"
+      class="empty"
+    >
+      请先选择模板，再查看模板字符块库
+    </div>
+    <template v-else>
+      <p class="scope-hint">
+        当前模板的字符块
+        <button
+          class="ui-btn"
+          :disabled="deleting"
+          @click="sharedError = null; sharedOpen = true; store.loadBlocks()"
+        >
+          共享块
+        </button>
+      </p>
+      <p
+        v-if="store.selectedBlock && !store.libraryBlocks.some(b => b.id === store.selectedBlockId)"
+        class="scope-hint"
+        role="status"
+      >
+        已选「{{ store.selectedBlock.name }}」，可点击预览区域完成绑定
+      </p>
+      <label class="block-search"><span>搜索内容块</span><input
+        v-model="query"
+        type="search"
+        :disabled="deleting"
+        placeholder="名称、正文或标签"
+      ></label>
+      <div class="result-count">
+        {{ visibleBlocks.length }} 个内容块
+        <button
+          class="ui-btn"
+          :disabled="deleting"
+          @click="toggleBatch"
+        >
+          {{ batchMode ? '退出批量' : '批量管理' }}
+        </button>
+      </div>
+      <div
+        v-if="batchMode"
+        class="batch-bar"
+      >
+        <label><input
+          type="checkbox"
+          aria-label="全选当前字符块列表"
+          :checked="allChecked"
+          :indeterminate="checkedIds.length > 0 && !allChecked"
+          :disabled="deleting || visibleBlocks.length === 0"
+          @change="selectAll"
+        >全选当前列表</label>
+        <span>已选 {{ checkedIds.length }} 项</span>
+        <button
+          class="ui-btn ui-danger"
+          :disabled="deleting || checkedIds.length === 0"
+          @click="batchConfirm = true"
+        >
+          批量删除
+        </button>
         <div
-          v-if="store.tags.length > 0"
-          class="tag-scroll"
+          v-if="batchConfirm"
+          class="batch-confirm"
         >
+          <span>删除所选 {{ checkedIds.length }} 个字符块？相关绑定将标记为缺失。</span>
           <button
-            class="tag-chip"
-            :class="{ active: store.activeTagId === null }"
-            @click="store.toggleTagFilter(null)"
+            class="ui-btn"
+            :disabled="deleting"
+            @click="batchConfirm = false"
           >
-            全部
+            取消
           </button>
           <button
-            v-for="tag in store.tags"
-            :key="tag.id"
-            class="tag-chip"
-            :class="{ active: store.activeTagId === tag.id }"
-            :title="`${tag.block_count} 个块`"
-            @click="store.toggleTagFilter(tag.id)"
+            class="ui-btn ui-danger"
+            :disabled="deleting"
+            @click="removeChecked"
           >
-            {{ tag.name }}（{{ tag.block_count }}）
-          </button>
-        </div>
-        <span
-          v-else
-          class="tag-empty"
-        >暂无标签</span>
-      </template>
-      <button
-        class="manage-toggle"
-        :class="{ open: manageOpen }"
-        :title="manageOpen ? '收起标签管理' : '标签管理'"
-        @click="toggleManage"
-      >
-        {{ manageOpen ? '收起管理' : '标签管理' }}
-      </button>
-      <!-- 折叠态：标签管理右侧放关键字搜索框（搜标签名，过滤块列表）；展开按钮固定最右 -->
-      <input
-        v-if="!tagsBarOpen"
-        v-model="tagSearch"
-        class="tag-search"
-        placeholder="搜索标签…"
-      >
-      <button
-        class="tagbar-toggle"
-        :title="tagsBarOpen ? '收起标签栏' : '展开标签栏'"
-        @click="tagsBarOpen = !tagsBarOpen"
-      >
-        <svg
-          width="10"
-          height="10"
-          viewBox="0 0 10 10"
-          aria-hidden="true"
-          :style="{ transform: tagsBarOpen ? 'none' : 'rotate(-90deg)' }"
-        >
-          <path
-            d="M2 3.5 L5 6.5 L8 3.5"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.4"
-            stroke-linecap="round"
-          />
-        </svg>
-      </button>
-    </div>
-
-    <!-- 标签管理：每行 = 标签名标题（含块数）在上 → 编辑框/操作在下（窄宽度不重叠） -->
-    <div
-      v-if="manageOpen"
-      class="tag-manage"
-    >
-      <p class="manage-title">
-        标签管理（重命名为已有标签名即合并，全库生效）
-      </p>
-      <div
-        v-for="tag in store.tags"
-        :key="tag.id"
-        class="tag-row"
-      >
-        <div class="tag-row-head">
-          <span class="tag-row-title">{{ tag.name }}</span>
-          <span class="tag-row-count">{{ tag.block_count }} 个块</span>
-        </div>
-        <div class="tag-row-body">
-          <input
-            v-model="tagEdits[tag.id]"
-            class="input"
-            maxlength="20"
-            aria-label="标签重命名"
-            placeholder="重命名"
-          >
-          <button
-            class="ghost"
-            @click="saveTag(tag.id)"
-          >
-            保存
-          </button>
-          <button
-            class="danger-btn"
-            @click="removeTagById(tag.id)"
-          >
-            删除
+            {{ deleting ? '删除中…' : '确认批量删除' }}
           </button>
         </div>
       </div>
       <p
-        v-if="store.tags.length === 0"
-        class="hint"
+        v-if="batchResult"
+        class="batch-result"
+        role="status"
       >
-        暂无标签
+        {{ batchResult }}
+      </p>
+      <BlockEditor
+        v-if="showForm"
+        v-model:name="name"
+        v-model:content="content"
+        v-model:kind="kind"
+        v-model:tags="tagsInput"
+        :editing="editingId !== null"
+        :busy="store.creating || store.updating"
+        :error="formError"
+        :submit-label="submitLabel"
+        @submit="submit"
+        @close="resetForm"
+      />
+
+      <!-- 选中块提示（正向绑定流指引） -->
+      <div
+        v-if="store.selectedBlock"
+        class="selected-tip"
+      >
+        已选中「{{ store.selectedBlock.name }}」，点击右侧预览区域绑定
+      </div>
+
+      <p
+        v-if="store.error"
+        class="list-error"
+      >
+        {{ store.error }}
       </p>
       <p
-        v-if="manageError"
-        class="form-error"
+        v-if="store.mutationError"
+        class="list-error"
       >
-        {{ manageError }}
+        {{ store.mutationError }}
       </p>
-    </div>
 
-    <!-- 新建表单（编辑走块卡片内就地表单）；每个字段带标题 -->
-    <form
-      v-if="showForm"
-      class="create-form"
-      @submit.prevent="submit"
-    >
-      <label class="field">
-        <span class="field-label">名称</span>
-        <input
-          v-model="name"
-          class="input"
-          placeholder="2–30 字"
-          maxlength="30"
+      <div class="block-list">
+        <div
+          v-if="store.libraryLoading"
+          class="empty"
         >
-      </label>
-      <label class="field">
-        <span class="field-label">内容</span>
-        <textarea
-          v-model="content"
-          class="input"
-          rows="4"
-          placeholder="≤5000 字，换行将渲染为换段"
-        />
-      </label>
-      <label class="field">
-        <span class="field-label">标签</span>
-        <input
-          v-model="tagsInput"
-          class="input"
-          placeholder="逗号分隔，最多 10 个"
-        >
-      </label>
-      <p
-        v-if="formError"
-        class="form-error"
-      >
-        {{ formError }}
-      </p>
-      <div class="form-actions">
-        <button
-          type="submit"
-          class="primary"
-          :disabled="store.creating"
-        >
-          {{ submitLabel }}
-        </button>
-      </div>
-    </form>
-
-    <!-- 选中块提示（正向绑定流指引） -->
-    <div
-      v-if="store.selectedBlock"
-      class="selected-tip"
-    >
-      已选中「{{ store.selectedBlock.name }}」，点击右侧预览区域绑定
-    </div>
-
-    <p
-      v-if="store.error"
-      class="list-error"
-    >
-      {{ store.error }}
-    </p>
-    <p
-      v-if="store.mutationError"
-      class="list-error"
-    >
-      {{ store.mutationError }}
-    </p>
-
-    <div class="block-list">
-      <div
-        v-if="store.blocks.length === 0 && !store.error"
-        class="empty"
-      >
-        暂无字符块，点击上方按钮新建
-      </div>
-      <div
-        v-else-if="visibleBlocks.length === 0"
-        class="empty"
-      >
-        {{ tagSearch.trim() ? '无匹配标签的字符块' : '该标签下暂无字符块' }}
-      </div>
-      <div
-        v-for="block in visibleBlocks"
-        :key="block.id"
-        class="block-item"
-        :class="{ selected: store.selectedBlockId === block.id }"
-        @click="store.selectBlock(block.id)"
-      >
-        <div class="item-head">
-          <span class="name">{{ block.name }}</span>
-          <span
-            class="ops"
-            @click.stop
-          >
-            <template v-if="deletingId === block.id">
-              <button
-                class="op danger"
-                @click="confirmDelete(block.id)"
-              >
-                确认删除
-              </button>
-              <button
-                class="op"
-                @click="deletingId = null"
-              >
-                取消
-              </button>
-            </template>
-            <template v-else>
-              <button
-                class="op"
-                @click="startEdit(block)"
-              >
-                编辑
-              </button>
-              <button
-                class="op danger"
-                @click="deletingId = block.id"
-              >
-                删除
-              </button>
-            </template>
-          </span>
+          正在加载当前模板字符块…
         </div>
-        <span class="content">{{ block.content }}</span>
-        <span
-          v-if="block.tags.length > 0"
-          class="item-tags"
+        <div
+          v-else-if="store.libraryError"
+          class="empty"
+          role="alert"
         >
-          <span
-            v-for="t in block.tags"
-            :key="t.id"
-            class="mini-tag"
-          >
-            {{ t.name }}
-          </span>
-        </span>
-        <!-- 就地编辑：编辑框在块卡片下方，字段带标题 -->
-        <form
-          v-if="editingId === block.id"
-          class="edit-form"
-          @click.stop
-          @submit.prevent="submit"
+          {{ store.libraryError }}
+        </div>
+        <div
+          v-else-if="store.libraryBlocks.length === 0"
+          class="empty"
         >
-          <label class="field">
-            <span class="field-label">名称</span>
+          当前模板暂无字符块。可新建，或从“共享块”加入已有内容
+        </div>
+        <div
+          v-else-if="visibleBlocks.length === 0"
+          class="empty"
+        >
+          没有匹配的内容块，试试其他关键词
+        </div>
+        <div
+          v-for="block in visibleBlocks"
+          :key="block.id"
+          class="block-item"
+          :class="{ selected: store.selectedBlockId === block.id }"
+          tabindex="0"
+          @keydown.enter.self="chooseBlock(block.id)"
+          @keydown.space.self.prevent="chooseBlock(block.id)"
+          @click="chooseBlock(block.id)"
+        >
+          <div class="item-head">
             <input
-              v-model="name"
-              class="input"
-              placeholder="2–30 字"
-              maxlength="30"
+              v-if="batchMode"
+              type="checkbox"
+              :aria-label="`选择字符块：${block.name}`"
+              :checked="checkedIds.includes(block.id)"
+              :disabled="deleting"
+              @click.stop="chooseBlock(block.id)"
             >
-          </label>
-          <label class="field">
-            <span class="field-label">内容</span>
-            <textarea
-              v-model="content"
-              class="input"
-              rows="4"
-              placeholder="≤5000 字，换行将渲染为换段"
-            />
-          </label>
-          <label class="field">
-            <span class="field-label">标签</span>
-            <input
-              v-model="tagsInput"
-              class="input"
-              placeholder="逗号分隔，最多 10 个"
+            <span class="name">{{ block.name }}</span>
+            <span
+              class="ops"
+              @click.stop
             >
-          </label>
-          <p
-            v-if="formError"
-            class="form-error"
-          >
-            {{ formError }}
-          </p>
-          <div class="form-actions">
-            <button
-              type="submit"
-              class="primary"
-              :disabled="store.updating"
-            >
-              {{ submitLabel }}
-            </button>
-            <button
-              type="button"
-              class="ghost"
-              @click="cancelEdit"
-            >
-              取消
-            </button>
+              <template v-if="deletingId === block.id">
+                <button
+                  class="op danger"
+                  :disabled="deleting"
+                  @click="confirmDelete(block.id)"
+                >
+                  确认删除
+                </button>
+                <button
+                  class="op"
+                  @click="deletingId = null"
+                >
+                  取消
+                </button>
+              </template>
+              <template v-else>
+                <button
+                  class="op danger"
+                  :disabled="deleting"
+                  @click="deletingId = block.id"
+                >删除</button>
+                <details
+                  class="block-menu"
+                  name="block-actions"
+                >
+                  <summary :aria-label="`管理内容块：${block.name}`">•••</summary>
+                  <div class="block-menu-actions">
+                    <button
+                      class="op"
+                      @click="startEdit(block)"
+                    >编辑</button>
+                  </div>
+                </details>
+              </template>
+            </span>
           </div>
-        </form>
+          <span class="content">{{ block.content }}</span>
+          <span
+            v-if="block.tags.length > 0"
+            class="item-tags"
+          >
+            <span
+              v-for="t in block.tags"
+              :key="t.id"
+              class="mini-tag"
+            >
+              {{ t.name }}
+            </span>
+          </span>
+        </div>
       </div>
-    </div>
+    </template>
+    <SharedBlockDialog
+      v-if="sharedOpen && previewStore.currentTemplateId !== null"
+      :blocks="store.blocks"
+      :member-ids="store.libraryBlocks.map(b => b.id)"
+      :busy="sharing"
+      :error="sharedError"
+      @add="share"
+      @close="sharedOpen = false"
+    />
   </aside>
 </template>
 
 <style scoped>
+.scope-hint { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; padding: 8px 12px; font-size: 12px; color: var(--text-3); border-bottom: 1px solid var(--border); }
+.result-count { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.batch-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.batch-bar label { display: flex; align-items: center; gap: 4px; }
+.batch-confirm { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; color: var(--danger); }
+.batch-confirm span { flex-basis: 100%; }
+.batch-result { padding: 8px 12px; margin: 0; font-size: 12px; overflow-wrap: anywhere; }
 .block-library {
   /* 宽度由 store.libraryWidth 驱动（拖拽可调，见 App.vue resizer） */
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: #fff;
-  border-right: 1px solid #e2e3e5;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
 }
 
 .header {
+  height: 42px;
+  box-sizing: border-box;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
   padding: 8px 12px;
-  border-bottom: 1px solid #e2e3e5;
+  border-bottom: 1px solid var(--border);
   font-weight: 600;
   white-space: nowrap; /* 宽度下限=头部行不换行（LIBRARY_MIN_WIDTH），不允许多行 */
 }
@@ -576,30 +491,30 @@ onMounted(() => {
   width: 24px;
   height: 24px;
   padding: 0;
-  color: #646a73;
+  color: var(--text-2);
   background: none;
-  border: 1px solid #d0d3d6;
+  border: 1px solid var(--border-control);
   border-radius: 4px;
   cursor: pointer;
 }
 
 .icon-collapse:hover {
-  color: #3370ff;
-  border-color: #3370ff;
+  color: var(--primary);
+  border-color: var(--primary);
 }
 
 .primary {
   padding: 4px 10px;
   font-size: 12px;
-  color: #3370ff;
+  color: var(--primary);
   background: none;
-  border: 1px solid #3370ff;
+  border: 1px solid var(--primary);
   border-radius: 4px;
   cursor: pointer;
 }
 
 .primary:hover {
-  background: rgba(51, 112, 255, 0.06);
+  background: var(--primary-bg-hover);
 }
 
 .primary:disabled {
@@ -607,225 +522,19 @@ onMounted(() => {
   cursor: default;
 }
 
-.ghost {
-  padding: 4px 10px;
-  font-size: 12px;
-  color: #646a73;
-  background: none;
-  border: 1px solid #d0d3d6;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.ghost:hover {
-  color: #3370ff;
-  border-color: #3370ff;
-}
-
-.danger-btn {
-  padding: 4px 10px;
-  font-size: 12px;
-  color: #f54a45;
-  background: none;
-  border: 1px solid rgba(245, 74, 69, 0.4);
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.danger-btn:hover {
-  background: rgba(245, 74, 69, 0.06);
-}
-
-.tag-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border-bottom: 1px solid #e2e3e5;
-}
-
-/* 单行横向滚动：标签多时不换行挤压行尾固定入口 */
-.tag-scroll {
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
-  gap: 6px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
-}
-
-.tag-scroll::-webkit-scrollbar {
-  height: 6px;
-}
-
-.tag-scroll::-webkit-scrollbar-thumb {
-  background: #d0d3d6;
-  border-radius: 3px;
-}
-
-.tag-empty {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 12px;
-  color: #a8abb0;
-}
-
-/* 行尾固定入口：不参与滚动、不收缩，保证完整呈现 */
-.manage-toggle {
-  flex: 0 0 auto;
-  padding: 2px 8px;
-  font-size: 12px;
-  color: #646a73;
-  background: none;
-  border: 1px dashed #d0d3d6;
-  border-radius: 10px;
-  cursor: pointer;
-}
-
-.manage-toggle:hover,
-.manage-toggle.open {
-  color: #3370ff;
-  border-color: #3370ff;
-}
-
-.tagbar-toggle {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  color: #646a73;
-  background: none;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-/* 折叠态搜索框：占据标签管理与固定展开按钮之间的全部剩余空间 */
-.tag-search {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 24px;
-  padding: 0 8px;
-  font-size: 12px;
-  border: 1px solid #d0d3d6;
-  border-radius: 12px;
-}
-
-.tag-search:focus {
-  border-color: #3370ff;
-  outline: none;
-}
-
-.tagbar-toggle:hover {
-  color: #3370ff;
-  background: #f2f3f5;
-}
-
-.tagbar-toggle svg {
-  transition: transform 0.15s ease;
-}
-
-.tag-chip {
-  flex: 0 0 auto; /* 单行横滚：chip 不收缩，溢出靠滚动条 */
-  white-space: nowrap;
-  padding: 2px 8px;
-  font-size: 12px;
-  color: #646a73;
-  background: #f2f3f5;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  cursor: pointer;
-}
-
-.tag-chip:hover {
-  color: #3370ff;
-}
-
-.tag-chip.active {
-  color: #3370ff;
-  background: rgba(51, 112, 255, 0.1);
-  border-color: #3370ff;
-}
-
-.tag-manage {
-  padding: 8px 12px;
-  border-bottom: 1px solid #e2e3e5;
-  background: #fafbfc;
-}
-
-.manage-title {
-  margin: 0 0 8px;
-  font-size: 12px;
-  color: #8f959e;
-}
-
-.tag-row {
-  margin-bottom: 8px;
-}
-
-/* 行头：标签名标题 + 块数（编辑框的标题，位于编辑框上方） */
-.tag-row-head {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  margin-bottom: 2px;
-}
-
-.tag-row-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #40464e;
-}
-
-.tag-row-count {
-  font-size: 11px;
-  color: #a8abb0;
-}
-
-/* 行体：编辑框压缩占余宽（min-width:0 防溢出重叠），按钮不收缩 */
-.tag-row-body {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.tag-row-body .input {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 24px;
-  font-size: 12px;
-  padding: 0 6px;
-}
-
-.tag-row-body button {
-  flex: 0 0 auto;
-  font-size: 12px;
-  padding: 2px 8px;
-}
-
-.hint {
-  margin: 4px 0 0;
-  font-size: 12px;
-  color: #8f959e;
-}
-
 .create-form {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  border-bottom: 1px solid #e2e3e5;
-  background: #fafbfc;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
 }
 
 .input {
   padding: 6px 8px;
   font-size: 13px;
-  border: 1px solid #d0d3d6;
+  border: 1px solid var(--border-control);
   border-radius: 4px;
   resize: vertical;
   font-family: inherit;
@@ -833,7 +542,7 @@ onMounted(() => {
 
 .input:focus {
   outline: none;
-  border-color: #3370ff;
+  border-color: var(--primary);
 }
 
 .form-actions {
@@ -845,22 +554,22 @@ onMounted(() => {
 .form-error {
   margin: 0;
   font-size: 12px;
-  color: #f54a45;
+  color: var(--danger);
 }
 
 .selected-tip {
   padding: 6px 12px;
   font-size: 12px;
-  color: #34c724;
-  background: rgba(52, 199, 36, 0.08);
-  border-bottom: 1px solid #e2e3e5;
+  color: var(--success);
+  background: var(--success-bg-subtle);
+  border-bottom: 1px solid var(--border);
 }
 
 .list-error {
   margin: 0;
   padding: 6px 12px;
   font-size: 12px;
-  color: #f54a45;
+  color: var(--danger);
 }
 
 .block-list {
@@ -872,7 +581,7 @@ onMounted(() => {
 .empty {
   padding: 24px;
   text-align: center;
-  color: #8f959e;
+  color: var(--text-3);
   font-size: 13px;
 }
 
@@ -886,7 +595,7 @@ onMounted(() => {
 
 .field-label {
   font-size: 12px;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 /* 就地编辑表单：嵌在块卡片内底部，虚线分隔 */
@@ -894,7 +603,7 @@ onMounted(() => {
   width: 100%;
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px dashed #e2e3e5;
+  border-top: 1px dashed var(--border);
 }
 
 .block-item {
@@ -902,20 +611,20 @@ onMounted(() => {
   width: 100%;
   margin-bottom: 6px;
   padding: 8px 10px;
-  border: 1px solid #e2e3e5;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: #fff;
+  background: var(--bg-surface);
   text-align: left;
   cursor: pointer;
 }
 
 .block-item:hover {
-  border-color: #3370ff;
+  border-color: var(--primary);
 }
 
 .block-item.selected {
-  border-color: #3370ff;
-  background: rgba(51, 112, 255, 0.06);
+  border-color: var(--primary);
+  background: var(--primary-bg-hover);
 }
 
 .item-head {
@@ -928,7 +637,7 @@ onMounted(() => {
 .name {
   font-size: 13px;
   font-weight: 600;
-  color: #1f2329;
+  color: var(--text-1);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -944,24 +653,24 @@ onMounted(() => {
 .op {
   padding: 1px 6px;
   font-size: 11px;
-  color: #646a73;
+  color: var(--text-2);
   background: none;
-  border: 1px solid #e2e3e5;
+  border: 1px solid var(--border);
   border-radius: 3px;
   cursor: pointer;
 }
 
 .op:hover {
-  color: #3370ff;
-  border-color: #3370ff;
+  color: var(--primary);
+  border-color: var(--primary);
 }
 
 .op.danger {
-  color: #f54a45;
+  color: var(--danger);
 }
 
 .op.danger:hover {
-  border-color: #f54a45;
+  border-color: var(--danger);
 }
 
 .content {
@@ -971,7 +680,7 @@ onMounted(() => {
   -webkit-line-clamp: 2;
   overflow: hidden;
   font-size: 12px;
-  color: #8f959e;
+  color: var(--text-3);
   word-break: break-word;
   white-space: pre-wrap;
 }
@@ -986,8 +695,17 @@ onMounted(() => {
 .mini-tag {
   padding: 0 6px;
   font-size: 11px;
-  color: #646a73;
-  background: #f2f3f5;
+  color: var(--text-2);
+  background: var(--bg-hover);
   border-radius: 8px;
 }
+.block-search { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px 6px; font-size: 12px; color: var(--text-2); }
+.block-search input { width: 100%; }
+.result-count { padding: 4px 14px 10px; font-size: 12px; color: var(--text-3); }
+.block-menu { position: relative; }
+.block-menu summary { cursor: pointer; list-style: none; padding: 0 6px; font-size: 16px; }
+.block-menu-actions { position: absolute; right: 0; top: 100%; z-index: 8; display: flex; gap: 8px; padding: 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 16px var(--shadow-modal); }
+.block-menu-actions .op { min-height: 30px; }
+.block-item:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.block-library .content { -webkit-line-clamp: 2; }
 </style>

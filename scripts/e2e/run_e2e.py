@@ -49,6 +49,7 @@ _spawned: list[subprocess.Popen] = []
 
 # ---- 环境准备 ----
 
+
 def _port_up(url: str) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=3):
@@ -67,7 +68,16 @@ def ensure_services() -> None:
     if not _port_up("http://127.0.0.1:8740/api/health"):
         print("· 启动后端 http://127.0.0.1:8740 …")
         proc = subprocess.Popen(
-            [str(VENV_PY), "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8740"],
+            [
+                str(VENV_PY),
+                "-m",
+                "uvicorn",
+                "app.main:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8740",
+            ],
             cwd=BACKEND,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -122,6 +132,7 @@ def cleanup() -> None:
 
 
 # ---- venv 侧播种 / 校验 ----
+
 
 def _run_venv(script: Path, *args: str) -> str:
     result = subprocess.run(
@@ -210,7 +221,7 @@ def select_template(page, template_id: int) -> None:
     template_select.wait_for(state="visible")
     template_select.select_option(value=str(template_id))
     page.locator(".pdf-page canvas").first.wait_for(state="visible", timeout=CANVAS_TIMEOUT)
-    expect(page.locator(".legend")).to_be_visible()
+    expect(page.locator(".legend-wide")).to_be_visible()
 
 
 def confirm_all_candidates(page, expected: int) -> None:
@@ -218,14 +229,15 @@ def confirm_all_candidates(page, expected: int) -> None:
     from playwright.sync_api import expect
 
     page.locator('[data-testid="proofread-toggle"]').check()
-    candidates = page.locator(".pdf-page .overlay.cand-high")
+    candidates = page.locator(".pdf-page .overlay.cand-high, .pdf-page .overlay.cand-low")
     candidates.first.wait_for(state="visible")
+    expected = candidates.count()  # 全文识别包含正文、标题和 fixture 时间戳
     for _ in range(expected):
         candidates.first.click()
         page.locator('[data-testid="proofread-popover"]').wait_for(state="visible")
         page.locator('[data-testid="proofread-confirm"]').click()
         page.locator('[data-testid="proofread-popover"]').wait_for(state="hidden")
-    expect(page.locator('[data-testid="proofread-progress"]')).to_have_text(
+    expect(page.locator('.legend-wide [data-testid="proofread-progress"]')).to_have_text(
         f"已处理 {expected}/{expected}"
     )
     page.locator('[data-testid="proofread-toggle"]').uncheck()
@@ -234,8 +246,8 @@ def confirm_all_candidates(page, expected: int) -> None:
 
 def create_block(page, name: str, content: str) -> None:
     """块库新建字符块（创建成功自动选中，出现正向绑定指引）。"""
-    page.locator(".block-library .header button.primary").click()
-    form = page.locator(".create-form")
+    page.get_by_role("button", name="+ 新建字符块", exact=True).click()
+    form = page.get_by_role("dialog", name="字符块编辑", exact=True)
     form.wait_for(state="visible")
     form.locator("input").first.fill(name)
     form.locator("textarea").fill(content)
@@ -255,15 +267,16 @@ def bind_selected_block(page, region_title_prefix: str, bound_count: int) -> Non
 
     page.locator(f'.pdf-page .overlay[title^="{region_title_prefix}"]').click()
     page.locator(
-        '.pdf-page .overlay.bound, .pdf-page .overlay.overflow-small, '
-        '.pdf-page .overlay.overflow-large'
+        ".pdf-page .overlay.bound, .pdf-page .overlay.overflow-small, "
+        ".pdf-page .overlay.overflow-large"
     ).first.wait_for(state="visible", timeout=RENDER_TIMEOUT)
-    expect(page.locator(".legend")).to_contain_text(
+    expect(page.locator(".legend-wide")).to_contain_text(
         f"已绑定 {bound_count}", timeout=RENDER_TIMEOUT
     )
 
 
 # ---- 三大场景 ----
+
 
 def scenario_1(browser) -> list[str]:
     """日常沉淀：上传→校对→建块→绑定→预览替换生效。"""
@@ -286,7 +299,7 @@ def scenario_1(browser) -> list[str]:
         result = verify_preview(template_id, expect=["张三", work_content], absent=["{{"])
         assert result["ok"], f"预览 PDF 校验失败: {result}"
     except Exception:
-        page.screenshot(path=f"/tmp/e2e_fail_s1.png")
+        page.screenshot(path="/tmp/e2e_fail_s1.png")
         raise
     finally:
         context.close()
@@ -304,9 +317,7 @@ def scenario_2(browser) -> list[str]:
         select_template(page, template_id)
         confirm_all_candidates(page, expected=1)
 
-        long_content = "\n".join(
-            f"第{i}行：负责核心模块的设计与开发工作" for i in range(1, 13)
-        )
+        long_content = "\n".join(f"第{i}行：负责核心模块的设计与开发工作" for i in range(1, 13))
         create_block(page, "长内容块", long_content)
         bind_selected_block(page, "概述", bound_count=1)
 
@@ -322,20 +333,26 @@ def scenario_2(browser) -> list[str]:
         # 新建版本（复制当前绑定底稿）→ 自动切换
         stamp = time.strftime("%H%M%S")
         version_name = f"投递版{stamp}"
-        page.locator('[data-testid="version-create"]').click()
+        page.locator('[data-testid="template-manage"]').click()
+        page.get_by_role("dialog", name="模板与版本管理").get_by_role(
+            "button", name="复制", exact=True
+        ).first.click()
         dialog = page.locator('[data-testid="version-dialog"]')
         dialog.wait_for(state="visible")
         dialog.locator('[data-testid="version-name-input"]').fill(version_name)
-        dialog.locator('[data-testid="version-copy-checkbox"]').check()
+        # Manager copy opens an explicit copy-mode version dialog.
         dialog.locator('button[type="submit"]').click()
         dialog.wait_for(state="hidden")
+        page.get_by_role("dialog", name="模板与版本管理").locator("article").filter(
+            has_text=version_name
+        ).get_by_role("button", name="使用", exact=True).click()
+        page.get_by_role("dialog", name="模板与版本管理").wait_for(state="hidden")
         version_select = page.locator('[data-testid="version-select"]')
         expect(version_select.locator("option:checked")).to_have_text(
             re.compile(f"{re.escape(version_name)}（1 项绑定）")
         )
 
-        # 版本来回切换（M8 整体刷新）。注意：纯绑定不刷新版本下拉的 binding_count
-        # （M8 既有行为，迁移/版本操作才刷新），故按选项文本子串取 value 再切。
+        # 版本来回切换（绑定数随绑定刷新）。
         def _version_value(substring: str) -> str:
             option = version_select.locator("option", has_text=substring).first
             value = option.get_attribute("value")
@@ -407,14 +424,12 @@ def scenario_3(browser) -> list[str]:
         auto_list = migration.locator('[data-testid="migration-auto-list"]')
         auto_list.wait_for(state="visible")
         assert auto_list.locator("li.row").count() == 2, "自动匹配清单应含 2 行"
-        expect(page.locator('[data-testid="migration-count"]')).to_have_text(
-            "将迁移 2 个绑定"
-        )
+        expect(page.locator('[data-testid="migration-count"]')).to_have_text("将迁移 2 个绑定")
         migration.locator('[data-testid="migration-apply"]').click()
         migration.wait_for(state="hidden")
 
         # 绑定零重录：目标默认版本 2 项绑定 + 预览替换生效（迁移后首次替换渲染，放宽超时）
-        expect(page.locator(".legend")).to_contain_text("已绑定 2", timeout=RENDER_TIMEOUT)
+        expect(page.locator(".legend-wide")).to_contain_text("已绑定 2", timeout=RENDER_TIMEOUT)
         version_select = page.locator('[data-testid="version-select"]')
         expect(version_select.locator("option:checked")).to_have_text(
             re.compile("默认版本（2 项绑定）"), timeout=RENDER_TIMEOUT
