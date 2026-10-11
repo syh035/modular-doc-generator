@@ -32,6 +32,6 @@ M12—M26 本期路线已实施；LibreOffice 转换阻塞已修复，各模块�
 
 ## M29 分发口径（2026-10-10 用户最新确认）
 
-macOS 14+ arm64／x86_64 两种包，应用代码和前端生产资源随 App；固定 Application Support 数据目录与复制旧库迁移；检测 Python 3.12 和 LibreOffice、官方安装指引、离线 Python 依赖初始化，使用者无需 Node。用户明确选择测试下载包，正式签名公证留待后续；组合 App 采用 AGPL-3.0、源码保留 MIT并提供对应源码。GitHub 发布前须完成两个原生架构真实预览／导出和门禁。
+macOS 14+ arm64／x86_64 两种包，应用代码和前端生产资源随 App；固定 Application Support 数据目录与复制旧库迁移；检测 Python 3.12 和 LibreOffice、官方安装指引、离线 Python 依赖初始化，使用者无需 Node。用户明确选择测试下载包，正式签名公证留待后续；组合 App 采用 AGPL-3.0、源码保留 MIT并提供对应源码。两种原生架构真实预览／导出和完整门禁已通过，[v1.3.0-test.3](https://github.com/syh035/modular-doc-generator/releases/tag/v1.3.0-test.3) 已提供公开下载、校验附件及对应源码。
 
 后续正式发布：Developer ID 签名与公证、干净 macOS 14 机器验收；Windows 外壳另行规划。不再按旧计划捆绑完整 Python／LibreOffice 运行时。

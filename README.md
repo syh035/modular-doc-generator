@@ -10,6 +10,19 @@
 
 单机单人、无账号体系、数据全本地、零联网——服务只绑 `127.0.0.1`，日志不打印简历内容。
 
+## 下载 macOS 测试版
+
+[v1.3.0-test.3 测试下载页](https://github.com/syh035/modular-doc-generator/releases/tag/v1.3.0-test.3)（macOS 14+）：
+
+| 电脑 | 下载 |
+|------|------|
+| Apple Silicon（M 系列） | [arm64 ZIP](https://github.com/syh035/modular-doc-generator/releases/download/v1.3.0-test.3/ModularDocGenerator-1.3.0-macOS-arm64.zip) |
+| Intel | [x86_64 ZIP](https://github.com/syh035/modular-doc-generator/releases/download/v1.3.0-test.3/ModularDocGenerator-1.3.0-macOS-x86_64.zip) |
+
+解压后将 App 放到 Applications。首次需要安装 Python 3.12 和 LibreOffice；App 显示真实检测结果，缺失时提供安装引导，应用依赖从包内离线初始化，无需 Node 或源码目录。环境齐备直接进工作台，应用菜单「服务管理…」（⌘,）可随时打开检测页。数据保存在固定的 Application Support 目录。
+
+此版未获 Developer ID 签名与 Apple 公证，互联网下载后可能被 macOS 拦截；正式签名版留待后续。[发布页](https://github.com/syh035/modular-doc-generator/releases/tag/v1.3.0-test.3)提供 SHA-256 校验文件及对应源码；组合 App 按 AGPL-3.0 分发，原创源码保留 MIT。详见 [桌面应用说明](desktop/README.md)。
+
 ## 功能总览
 
 **内容资产库**
@@ -36,7 +49,7 @@
 - 溢出检测：超出原高度 50% 分级警示（橙 = 小超出 / 红 = 大超出或固定行高裁剪），大超出导出前弹警示清单确认
 - 导出：与预览同源 DOCX，文件名「简历-{版本名}-{日期}.docx」，未绑定区域保留模板原文
 
-## 环境要求
+## 源码开发环境
 
 | 依赖 | 要求 | 说明 |
 |------|------|------|
@@ -81,7 +94,7 @@ cd frontend && npm run dev
 
 ## 数据目录
 
-运行时数据全部在 `data/`（已 gitignore），**备份 = 拷贝整个目录**：
+源码开发模式的数据位于 `data/`（已 gitignore）；下载 App 的数据位于 `~/Library/Application Support/ModularDocGenerator/Data`。**备份 = 退出应用后拷贝整个数据目录**，下表为源码模式的相对路径：
 
 | 路径 | 内容 |
 |------|------|

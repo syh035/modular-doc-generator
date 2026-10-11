@@ -2,6 +2,8 @@
 
 本应用使用 Swift AppKit 普通应用窗口、Dock、WKWebView 与可选状态栏入口，CFBundleExecutable 是 Mach-O；服务直接通过 Foundation Process 启动。后端代码、前端生产资源和锁定 Python wheels 随 App 提供，用户数据与运行环境独立到 Application Support，使用者无需源码目录或 Node。
 
+已发布 [v1.3.0-test.3 开源测试版](https://github.com/syh035/modular-doc-generator/releases/tag/v1.3.0-test.3)，包含 arm64／x86_64 ZIP、SHA-256 校验文件及对应源码。
+
 ## 构建与运行
 
 使用者需要 macOS 14+、匹配架构的 Python 3.12 和 LibreOffice。环境就绪时启动直接进入工作台；缺少组件时自动打开「环境与服务」。平时从应用菜单「服务管理…」（⌘,）或菜单栏「文档」打开。页面逐项显示 Python、应用依赖、LibreOffice 的安装与验证结果，只为缺失项显示安装／初始化操作；重新检测保留结果页。提供 [Python 官方安装包](https://www.python.org/downloads/release/python-31210/) 与 [LibreOffice 官方下载](https://www.libreoffice.org/download/download-libreoffice/) 入口；安装后重新检测，再点击「初始化应用依赖」。Python 包从 App 内离线安装到应用专用 venv，不改系统 Python；启动还会验证真实 DOCX→PDF 转换。
@@ -39,6 +41,8 @@ python3 scripts/package_desktop.py --app /tmp/modudoc-arm64/模块化文档生�
 ## 验证
 
 Swift 编译警告按错误处理，swift-format lint；Python 构建脚本通过 ruff 和 mypy。生命周期用合成服务验证启动、复用、所有权、不同项目保护、正常停止、外部端口保护与部分启动回滚；导出文件测试覆盖新建、替换、失败保留与并发保护。真实窗口验收另外验证启动／停止／重启及 LibreOffice 预览导出。
+
+交付验证：两种架构在各自 macOS 15 runner 上通过后端 351 测试、前端 224 测试、类型／lint／构建和原生生命周期检查；移动 App 后使用全新离线 venv 完成真实 LibreOffice 预览／导出。公开下载的两份 ZIP 已核对 SHA-256、Mach-O 架构与严格签名，对应项目源码与发布标签一致。最低 macOS 14 的干净机器体验仍待正式发布前验证。
 
 实现依据：[AppKit NSStatusBar](https://developer.apple.com/documentation/appkit/nsstatusbar)、[Foundation Process](https://developer.apple.com/documentation/foundation/process)、[UserNotifications](https://developer.apple.com/documentation/usernotifications)。
 
