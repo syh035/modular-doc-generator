@@ -122,7 +122,7 @@ cd frontend && npm run dev
 
 ### 仓库结构
 
-当前能力见上方功能总览，下一阶段安排见 [下期规划](../product/NEXT_PLAN.md)，具体任务状态和依赖见 [任务池](../../TODO.md)。
+当前能力见 [应用主页](../../README.md)，下一阶段安排见 [下期规划](../product/NEXT_PLAN.md)，具体任务状态和依赖见 [任务池](../../TODO.md)。
 
 ```text
 modular-doc-generator/
@@ -134,7 +134,7 @@ modular-doc-generator/
 │   └── development/   # 开发规范、技术经验和历史
 ├── backend/           # FastAPI、SQLite、业务服务与测试
 ├── frontend/          # Vue 工作台与 PDF 预览
-├── desktop/           # 原生 macOS 状态栏应用、服务生命周期测试
+├── desktop/           # 原生 macOS 独立窗口应用、环境与服务
 ├── scripts/           # 启动、桌面构建、一致性检查、场景 E2E
 └── .github/           # CI、Bug/功能 Issue 模板
 ```
