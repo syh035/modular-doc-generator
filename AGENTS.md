@@ -27,8 +27,8 @@
 
 ## 文档维护
 
-- 仓库记录实际实现、验证结果、已完成进展及必要规则，不按每轮讨论新增草案或过程记录。
-- 未实施工作统一放入 [下期规划](docs/product/NEXT_PLAN.md)及 [任务池](TODO.md)，明确未完成状态；长期开发历史继续保留。
+- 仓库记录实际实现、必要规则和可复用经验，不按每轮讨论新增草案或过程记录。
+- 未实施工作统一放入 [下期规划](docs/product/NEXT_PLAN.md)及 [任务池](TODO.md)；已发布能力进入 CHANGELOG。删除已失效且无维护价值的过程记录，保留现行约束和可复用故障经验。
 
 ## 技术栈与架构铁律
 
@@ -68,7 +68,7 @@ modular-doc-generator/
 │   ├── README.md               # 文档分类与权威来源
 │   ├── product/                # 原始需求、下期规划
 │   ├── architecture/           # 当前架构与后续设计
-│   └── development/            # 协作、验证、经验和历史
+│   └── development/            # 协作、验证和技术经验
 ├── backend/app/{api,services,models,core}/
 ├── backend/tests/
 ├── frontend/src/{api,components,stores,pdf,constants}/
@@ -102,7 +102,7 @@ modular-doc-generator/
 
 ## 已知陷阱入口
 
-[P1—P27 技术陷阱与历史经验](docs/development/KNOWN_ISSUES.md)已独立保存，编号保持不变。修改相关功能前阅读对应记录；发现可复用经验时更新该文档。
+[已知技术陷阱](docs/development/KNOWN_ISSUES.md)已独立保存，编号保持不变。修改相关功能前阅读对应记录；发现可复用经验时更新该文档。
 
 管理面板焦点归还、模板删除事务／原件回滚及批量删除后的标签刷新经验见同文档 P31—P33；批量操作失败项必须保留并展示原因，全选限定当前可见列表。
 
@@ -130,7 +130,7 @@ E2E 同秒 fixture 去重、全文候选及本地 CMap 资源见 P44。
 
 模板库成员与版本绑定区分、共享块身份及历史恢复依赖见 P47；新建未绑定块也归属当前模板，解绑不移出模板库。
 
-独立窗口、关窗重开、WebKit 同名下载与原生编辑菜单快捷键见 P48；下一版本运行时打包不纳入 M28。
+独立窗口、关窗重开、WebKit 同名下载与原生编辑菜单快捷键见 P48。
 
 标签界面精简后的隐藏筛选与数据保留见 P49。
 
