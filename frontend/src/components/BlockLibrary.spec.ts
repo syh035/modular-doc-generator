@@ -19,7 +19,7 @@ function mountLibrary() {
 
 describe('字符块批量删除', () => {
   async function library() {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => Response.json(String(input) === '/api/tags' ? { tags: [] } : { blocks: [1, 2].map(id => ({ id, name: id === 1 ? '工作' : '项目', content: '正文', tags: [], created_at: '', updated_at: '' })) })))
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => Response.json(String(input).endsWith('/usage') ? { versions: [], templates: [] } : String(input) === '/api/tags' ? { tags: [] } : { blocks: [1, 2].map(id => ({ id, name: id === 1 ? '工作' : '项目', content: '正文', tags: [], created_at: '', updated_at: '' })) })))
     const wrapper = mountLibrary()
     await flushPromises()
     return wrapper
@@ -47,6 +47,7 @@ describe('字符块批量删除', () => {
     await button(wrapper, '批量管理').trigger('click')
     await wrapper.get('[aria-label="全选当前字符块列表"]').setValue(true)
     await button(wrapper, '批量删除').trigger('click')
+    await flushPromises()
     expect(spy).not.toHaveBeenCalled()
     await button(wrapper, '确认批量删除').trigger('click')
     await flushPromises()

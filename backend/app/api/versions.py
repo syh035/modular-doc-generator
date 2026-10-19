@@ -6,10 +6,12 @@
 - 块软删除 → 绑定原子置 missing（blocks repo 同事务完成），本层不重复
 """
 
+from time import perf_counter
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.core.errors import (
@@ -31,7 +33,13 @@ from app.models.repositories import blocks as blocks_repo
 from app.models.repositories import regions as regions_repo
 from app.models.repositories import templates as templates_repo
 from app.models.repositories import versions as versions_repo
-from app.services import export_service, render_service, text_edit_service, version_service
+from app.services import (
+    export_service,
+    render_service,
+    render_sessions,
+    text_edit_service,
+    version_service,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -195,26 +203,38 @@ def delete_binding(version_id: int, region_id: int) -> Response:
 
 
 @router.get("/versions/{version_id}/preview")
-def get_version_preview(version_id: int) -> FileResponse:
+def get_version_preview(version_id: int) -> Response:
     """版本预览 PDF（模板 + 绑定替换后的成品，单管线铁律）。
 
     Cache-Control: no-store——URL 不随绑定内容变化，若交给浏览器启发式缓存，
     绑定后会复用旧 PDF 导致「替换了但预览没反应」（2026-09-18 实锤，P25）；
     转换成本由后端内容寻址缓存兜底，浏览器禁止缓存。
     """
+    started = perf_counter()
     rendered = render_service.render_version(version_id)
-    return FileResponse(
-        rendered.pdf_path, media_type="application/pdf", headers={"Cache-Control": "no-store"}
+    token = render_sessions.publish(version_id, rendered)
+    return Response(
+        rendered.pdf_data,
+        media_type="application/pdf",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Render-Token": token,
+            "Server-Timing": f"render;dur={(perf_counter() - started) * 1000:.2f}",
+        },
     )
 
 
 @router.get("/versions/{version_id}/overlay")
-def get_version_overlay(version_id: int) -> dict[str, object]:
+def get_version_overlay(version_id: int, render_token: str | None = None) -> dict[str, object]:
     """版本覆盖层与对应 PDF 的页级指纹；现算 bbox，不落库。"""
     from app.services.page_cache import page_fingerprints
 
-    rendered = render_service.render_version(version_id)
-    pdf_sha, hashes = page_fingerprints(rendered.pdf_path)
+    rendered = (
+        render_sessions.get(version_id, render_token)
+        if render_token
+        else render_service.render_version(version_id)
+    )
+    pdf_sha, hashes = page_fingerprints(rendered.pdf_data)
     return {
         "version_id": version_id,
         "regions": rendered.items,
@@ -258,12 +278,14 @@ def export_version(version_id: int, payload: ExportRequest) -> Response:
             },
         )
     file_name = export_service.export_file_name(version_name)
-    path = export_service.write_export(rendered.data, file_name)
-    return FileResponse(
-        path,
+    export_service.write_export(rendered.data, file_name)
+    return Response(
+        rendered.data,
         media_type=_DOCX_MEDIA_TYPE,
-        filename=file_name,
-        headers={"Cache-Control": "no-store"},
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f"attachment; filename*=utf-8''{quote(file_name)}",
+        },
     )
 
 

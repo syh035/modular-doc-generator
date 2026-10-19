@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { useModalEsc } from '../composables/useModalEsc'
+import { ref } from 'vue'
+import BlockImpact, { type BlockUsage } from './BlockImpact.vue'
 
-const props = defineProps<{ editing: boolean; busy: boolean; error: string | null; submitLabel: string }>()
+const props = defineProps<{ editing: boolean; busy: boolean; error: string | null; submitLabel: string; blockId?: number; versionId?: number | null }>()
 const name = defineModel<string>('name', { required: true })
 const content = defineModel<string>('content', { required: true })
 const kind = defineModel<'text' | 'blank'>('kind', { default: 'text' })
 const tags = defineModel<string>('tags', { required: true })
-const emit = defineEmits<{ submit: []; close: [] }>()
+const emit = defineEmits<{ submit: [scope: 'shared' | 'version']; close: [] }>()
+const usage = ref<BlockUsage | null>(null)
+const scope = ref<'shared' | 'version'>('shared')
 useModalEsc(() => { if (!props.busy) emit('close') })
 </script>
 
@@ -19,7 +23,7 @@ useModalEsc(() => { if (!props.busy) emit('close') })
   >
     <form
       class="editor-card"
-      @submit.prevent="emit('submit')"
+      @submit.prevent="!busy && (!blockId || usage) && emit('submit', scope)"
     >
       <header>
         <h2>{{ editing ? '编辑字符块' : '新建字符块' }}</h2><button
@@ -33,8 +37,26 @@ useModalEsc(() => { if (!props.busy) emit('close') })
         </button>
       </header>
       <div class="editor-fields">
+        <template v-if="editing && blockId">
+          <BlockImpact
+            :block-id="blockId"
+            @loaded="usage = $event"
+          />
+          <label>修改范围<select
+            v-model="scope"
+            :disabled="busy"
+            aria-label="修改范围"
+          >
+            <option value="shared">同步修改原字符块及所有引用版本</option>
+            <option
+              v-if="usage?.versions.some(v => v.id === versionId)"
+              value="version"
+            >仅修改当前版本（另存为独立块）</option>
+          </select></label>
+        </template>
         <label>名称<input
           v-model="name"
+          :disabled="busy"
           data-modal-autofocus
           maxlength="30"
           placeholder="1–30 字"
@@ -42,10 +64,12 @@ useModalEsc(() => { if (!props.busy) emit('close') })
         ></label>
         <label>类型<select
           v-model="kind"
+          :disabled="busy"
           aria-label="字符块类型"
         ><option value="text">文字块</option><option value="blank">空行块（保留段落留白）</option></select></label>
         <label v-if="kind === 'text'">内容<textarea
           v-model="content"
+          :disabled="busy"
           maxlength="5000"
           rows="12"
           placeholder="输入可复用的内容，保留换行"
@@ -54,6 +78,7 @@ useModalEsc(() => { if (!props.busy) emit('close') })
         <span class="hint">{{ content.length }} / 5000 字 · 换行按段落保留</span>
         <label>标签<input
           v-model="tags"
+          :disabled="busy"
           placeholder="逗号分隔，最多 10 个"
         ></label>
         <p
@@ -75,7 +100,7 @@ useModalEsc(() => { if (!props.busy) emit('close') })
         </button><button
           type="submit"
           class="ui-btn ui-primary"
-          :disabled="busy || !name.trim() || (kind === 'text' && !content.trim())"
+          :disabled="busy || (!!blockId && !usage) || !name.trim() || (kind === 'text' && !content.trim())"
         >
           {{ submitLabel }}
         </button>

@@ -51,6 +51,46 @@ beforeEach(() => {
   vi.unstubAllGlobals()
 })
 
+it('覆盖层使用下载 PDF 的批次，过期批次自动重新获取', async () => {
+  let previewCalls = 0
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.endsWith('/preview')) {
+      previewCalls++
+      return new Response(new Uint8Array([previewCalls]).buffer, {
+        headers: { 'X-Render-Token': `batch-${previewCalls}` },
+      })
+    }
+    if (url.endsWith('render_token=batch-1')) {
+      return Response.json({ error: { code: 'RENDER_BATCH_EXPIRED', message: '批次过期' } }, { status: 409 })
+    }
+    if (url.endsWith('render_token=batch-2')) return Response.json({ regions: [{ ...region(4, null), binding: null }] })
+    throw new Error(`Unexpected request ${url}`)
+  })
+  vi.stubGlobal('fetch', fetcher)
+  const store = usePreviewStore()
+  store.currentVersionId = 8; store.status = 'ready'
+  await store.refreshVersionRender()
+  expect(previewCalls).toBe(2)
+  expect(store.regions[0].id).toBe(4)
+  expect(new Uint8Array(store.pdfData!)[0]).toBe(2)
+  expect(store.error).toBeNull()
+})
+
+it('校对模式重新生成预览时保留模板原文，不切换为替换后的工作稿', async () => {
+  const fetcher = stubFetch({
+    '/api/templates/1/preview': () => new ArrayBuffer(8),
+    '/api/templates/1': () => ({ regions: [region(1, null)] }),
+  })
+  const store = usePreviewStore()
+  store.currentTemplateId = 1; store.currentVersionId = 8
+  store.status = 'ready'; store.proofreadMode = true
+  await store.refreshVersionRender()
+  expect(fetcher.mock.calls.map(call => String(call[0]))).toEqual(['/api/templates/1/preview', '/api/templates/1'])
+  expect(store.proofreadMode).toBe(true)
+  expect(store.regions[0].binding).toBeNull()
+})
+
 describe('删除模板', () => {
   it('删除当前模板清除预览、版本、迁移和导出警示', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })))

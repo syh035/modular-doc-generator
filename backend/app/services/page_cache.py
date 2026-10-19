@@ -17,8 +17,8 @@ _cache: OrderedDict[str, tuple[str, ...]] = OrderedDict()
 _LIMIT = 32
 
 
-def page_fingerprints(pdf_path: Path) -> tuple[str, list[str]]:
-    raw = pdf_path.read_bytes()
+def page_fingerprints(pdf_path: Path | bytes) -> tuple[str, list[str]]:
+    raw = pdf_path if isinstance(pdf_path, bytes) else pdf_path.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     with _lock:
         cached = _cache.get(digest)

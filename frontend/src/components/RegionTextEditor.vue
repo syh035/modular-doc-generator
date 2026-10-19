@@ -2,12 +2,14 @@
 import { computed, ref } from 'vue'
 import { useModalEsc } from '../composables/useModalEsc'
 import type { DisplayRegion } from '../stores/preview'
+import BlockImpact from './BlockImpact.vue'
 const props = defineProps<{ region: DisplayRegion; submitting: boolean; error: string | null }>()
 const emit = defineEmits<{ save: [content: string, syncBlock: boolean]; remove: []; close: [] }>()
 const content = ref(props.region.current_text ?? '')
 const syncBlock = ref(false)
+const impactReady = ref(false)
 const valid = computed(() => content.value.trim().length > 0 && content.value.length <= 5000
-  && content.value !== props.region.current_text)
+  && content.value !== props.region.current_text && (!syncBlock.value || impactReady.value))
 function close(): void { if (!props.submitting) emit('close') }
 useModalEsc(close)
 </script>
@@ -65,6 +67,11 @@ useModalEsc(close)
       <p class="hint">
         {{ syncBlock ? '所有引用该字符块的版本都会使用新内容。' : '保存为字符块并用于当前版本，其他版本保留原内容。' }}
       </p>
+      <BlockImpact
+        v-if="syncBlock && region.binding"
+        :block-id="region.binding.block_id"
+        @loaded="impactReady = $event !== null"
+      />
       <p
         v-if="error"
         role="alert"

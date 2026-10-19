@@ -12,12 +12,19 @@
 - 单用户场景：全局渲染锁串行化，避免并发重复转换与重复落库
 """
 
+from __future__ import annotations
+
+import copy
 import hashlib
 import json
 import threading
 import uuid
+from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import asdict
+from functools import wraps
 from pathlib import Path
-from typing import cast
+from typing import ParamSpec, TypeVar, cast
 
 from app.core.config import settings
 from app.core.errors import (
@@ -39,6 +46,29 @@ from app.services.pdf_geometry import RegionGeometry, align_flow_to_lines, extra
 from app.services.replacement import apply_replacements
 
 _render_lock = threading.Lock()
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+_recent_renders: OrderedDict[str, VersionRender] = OrderedDict()
+
+
+def clear_render_results() -> None:
+    with libreoffice.cache_access():
+        _recent_renders.clear()
+
+
+def _copy_render(rendered: VersionRender) -> VersionRender:
+    result = copy.copy(rendered)
+    result.items = copy.deepcopy(rendered.items)
+    return result
+
+
+def protected_render(function: Callable[_P, _T]) -> Callable[_P, _T]:
+    @wraps(function)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        with libreoffice.cache_access():
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 def _bbox_dict(geo_bbox: tuple[float, float, float, float], page: int) -> dict[str, object]:
@@ -147,6 +177,7 @@ class VersionRender:
     def __init__(self, data: bytes, pdf_path: Path, items: list[dict[str, object]]) -> None:
         self.data = data
         self.pdf_path = pdf_path
+        self.pdf_data = pdf_path.read_bytes()
         self.items = items
 
 
@@ -173,6 +204,7 @@ def _region_extent(
     return (0.0, 0.0, 0.0, total)
 
 
+@protected_render
 def render_version(version_id: int) -> VersionRender:
     """渲染内容版本：替换 → LO 转 PDF（sha 缓存）→ 几何对齐。
 
@@ -219,6 +251,30 @@ def render_version(version_id: int) -> VersionRender:
             status_code=500,
         )
 
+    source_data = docx_path.read_bytes()
+    manager = libreoffice.get_manager()
+    environment = getattr(manager, "environment_fingerprint", lambda: str(id(manager)))()
+    key = hashlib.sha256(
+        json.dumps(
+            {
+                "database": str(settings.db_path),
+                "version": version_id,
+                "source": hashlib.sha256(source_data).hexdigest(),
+                "environment": environment,
+                "regions": [asdict(r) for r in regions],
+                "bindings": [asdict(b) for b in bindings],
+                "blocks": [asdict(b) for b in block_by_id.values()],
+                "removed": sorted(removed_ids),
+                "threshold": settings.overflow_threshold,
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    cached = _recent_renders.get(key)
+    if cached is not None and cached.pdf_path.is_file():
+        _recent_renders.move_to_end(key)
+        return _copy_render(cached)
+
     # M7：溢出测量需要模板原 bbox（regions.bbox，ensure 时落库）——有绑定时
     # 缺失即触发模板渲染补齐（幂等，LO 内容缓存吸收重复开销），再重读区域
     if block_contents and any(
@@ -234,7 +290,7 @@ def render_version(version_id: int) -> VersionRender:
             regions = regions_repo.list_regions(conn, tpl.id)
 
     outcome = apply_replacements(
-        docx_path.read_bytes(),
+        source_data,
         regions,
         block_contents,
         line_break_modes={b.region_id: b.line_break_mode for b in bindings},
@@ -339,4 +395,12 @@ def render_version(version_id: int) -> VersionRender:
                 ),
             }
         )
-    return VersionRender(outcome.data, pdf_path, items)
+    rendered = VersionRender(outcome.data, pdf_path, items)
+    _recent_renders[key] = rendered
+    while len(_recent_renders) > 1 and (
+        len(_recent_renders) > 8
+        or sum(len(value.data) + len(value.pdf_data) for value in _recent_renders.values())
+        > 64 * 1024 * 1024
+    ):
+        _recent_renders.popitem(last=False)
+    return _copy_render(rendered)

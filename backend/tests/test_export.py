@@ -41,6 +41,24 @@ def test_export_file_name() -> None:
     assert name == "简历-后端侧重版-20260921.docx"
 
 
+def test_failed_replacement_preserves_previous_export(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.errors import AppError
+    from app.services.export_service import write_export
+
+    old = write_export(b"previous", "same.docx")
+
+    def fail(*args: object) -> None:
+        raise OSError("disk failure")
+
+    monkeypatch.setattr("app.services.export_service.os.replace", fail)
+    with pytest.raises(AppError):
+        write_export(b"new", "same.docx")
+    assert old.read_bytes() == b"previous"
+    assert not list(old.parent.glob(".export-*"))
+
+
 def test_extract_warnings_only_large() -> None:
     def ov(level: str, ratio: float) -> dict[str, object]:
         return {"level": level, "ratio": ratio, "clipped": False, "fixed_row": False}

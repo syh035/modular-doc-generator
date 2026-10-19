@@ -15,7 +15,7 @@ import type { PdfPageMetadata } from '../api/versions'
 import { clearHistoryBoundary } from '../api/historyHooks'
 import { useBlocksStore } from './blocks'
 import { computed, ref } from 'vue'
-import { CancelledError, RequestSequencer, fetchBlob } from '../api/client'
+import { ApiRequestError, CancelledError, RequestSequencer, fetchBlob } from '../api/client'
 import {
   deleteTemplate as deleteTemplateApi,
   fetchTemplate,
@@ -227,19 +227,31 @@ export const usePreviewStore = defineStore('preview', () => {
 
   /** 拉取版本渲染产物（PDF + overlay），两段共用序号。 */
   async function _fetchVersionRender(seq: number, versionId: number): Promise<void> {
-    const blob = await fetchBlob(versionPreviewUrl(versionId))
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+    let token: string | undefined
+    const blob = await fetchBlob(versionPreviewUrl(versionId), response => {
+      token = response.headers.get('X-Render-Token') ?? undefined
+    })
     if (!sequencer.isCurrent(seq)) {
       throw new CancelledError()
     }
     const data = await blob.arrayBuffer()
     let metadata: PdfPageMetadata = {}
-    const overlay = await fetchVersionOverlay(versionId, value => { metadata = value })
+    const overlay = await fetchVersionOverlay(versionId, value => { metadata = value }, token)
     const hashes = await verifiedPageFingerprints(data, metadata)
     if (!sequencer.isCurrent(seq)) throw new CancelledError()
     // Publish one coherent PDF + geometry + fingerprint batch (P7/P21).
     pageFingerprints.value = hashes
     regions.value = overlay
     pdfData.value = data
+    return
+      } catch (err) {
+        if (!sequencer.isCurrent(seq)) throw new CancelledError()
+        if (attempt === 0 && err instanceof ApiRequestError && err.code === 'RENDER_BATCH_EXPIRED') continue
+        throw err
+      }
+    }
   }
 
   /** 无版本历史模板：模板预览 PDF + 详情区域（bbox 落库版，binding 恒 null）。 */
@@ -567,13 +579,18 @@ export const usePreviewStore = defineStore('preview', () => {
   /** 绑定/解绑后的局部刷新：重拉版本渲染（P7 序号；refreshing 供 UI 指示）。 */
   async function refreshVersionRender(): Promise<void> {
     const versionId = currentVersionId.value
-    if (versionId === null || status.value !== 'ready') {
+    const templateId = currentTemplateId.value
+    if ((versionId === null && templateId === null) || status.value !== 'ready') {
       return
     }
     const seq = sequencer.next()
     refreshing.value = true
     try {
-      await _fetchVersionRender(seq, versionId)
+      if ((proofreadMode.value || versionId === null) && templateId !== null) {
+        await _fetchTemplateRender(seq, templateId)
+      } else if (versionId !== null) {
+        await _fetchVersionRender(seq, versionId)
+      }
       error.value = null // 刷新成功清除绑定期错误
     } catch (err) {
       if (err instanceof CancelledError) {

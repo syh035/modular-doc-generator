@@ -68,9 +68,9 @@ export function versionPreviewUrl(versionId: number): string {
 /** 版本 overlay：区域 × 替换后 bbox × 绑定态（随渲染现算）。 */
 export interface PdfPageMetadata { pdf_sha256?: string; page_fingerprints?: string[] }
 export async function fetchVersionOverlay(versionId: number,
-  metadata?: (value: PdfPageMetadata) => void): Promise<OverlayRegion[]> {
+  metadata?: (value: PdfPageMetadata) => void, renderToken?: string): Promise<OverlayRegion[]> {
   const body = await apiFetch<PdfPageMetadata & { regions: OverlayRegion[] }>(
-    `/api/versions/${versionId}/overlay`,
+    `/api/versions/${versionId}/overlay${renderToken ? `?render_token=${encodeURIComponent(renderToken)}` : ''}`,
   )
   metadata?.(body)
   return body.regions

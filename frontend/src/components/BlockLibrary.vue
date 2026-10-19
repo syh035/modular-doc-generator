@@ -14,6 +14,8 @@ import { usePreviewStore } from '../stores/preview'
 import { matchesBlock } from '../utils/blockSearch'
 import BlockEditor from './BlockEditor.vue'
 import SharedBlockDialog from './SharedBlockDialog.vue'
+import BlockImpact from './BlockImpact.vue'
+import { apiFetch } from '../api/client'
 
 const emit = defineEmits<{ select: [] }>()
 const store = useBlocksStore()
@@ -31,8 +33,9 @@ const content = ref('')
 const kind = ref<'text' | 'blank'>('text')
 const tagsInput = ref('')
 const formError = ref<string | null>(null)
+const copying = ref(false)
 const submitLabel = computed(() =>
-  editingId.value !== null ? (store.updating ? '保存中…' : '保存') : store.creating ? '创建中…' : '创建',
+  editingId.value !== null ? (store.updating || copying.value ? '保存中…' : '保存') : store.creating ? '创建中…' : '创建',
 )
 
 /** 解析标签输入：逗号/顿号分隔，去空白去重保序。 */
@@ -84,10 +87,25 @@ function chooseBlock(id: number): void {
   emit('select')
 }
 
-async function submit(): Promise<void> {
+async function submit(scope: 'shared' | 'version' = 'shared'): Promise<void> {
+  if (copying.value) return
   formError.value = null
   const tagNames = parseTags(tagsInput.value)
   if (editingId.value !== null) {
+    if (scope === 'version' && previewStore.currentVersionId !== null) {
+      copying.value = true
+      try {
+        await apiFetch(`/api/blocks/${editingId.value}/versions/${previewStore.currentVersionId}/copy`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name.value.trim(), content: kind.value === 'blank' ? '' : content.value,
+            kind: kind.value, tags: tagNames }),
+        })
+        await Promise.all([store.loadBlocks(), store.loadTags()])
+        await store.loadTemplateBlocks(previewStore.currentTemplateId)
+        resetForm(); await previewStore.refreshVersionRender()
+      } catch (err) { formError.value = String(err) } finally { copying.value = false }
+      return
+    }
     const ok = await store.updateExistingBlock(editingId.value, {
       name: name.value.trim(),
       content: kind.value === 'blank' ? '' : content.value,
@@ -118,6 +136,8 @@ const batchMode = ref(false)
 const checkedIds = ref<number[]>([])
 const batchConfirm = ref(false)
 const batchResult = ref('')
+const impactReady = ref(false)
+const batchImpactReady = ref<number[]>([])
 async function confirmDelete(id: number): Promise<void> {
   if (deleting.value) return
   deleting.value = true
@@ -266,7 +286,7 @@ onMounted(() => {
         <button
           class="ui-btn ui-danger"
           :disabled="deleting || checkedIds.length === 0"
-          @click="batchConfirm = true"
+          @click="batchImpactReady = []; batchConfirm = true"
         >
           批量删除
         </button>
@@ -275,6 +295,12 @@ onMounted(() => {
           class="batch-confirm"
         >
           <span>删除所选 {{ checkedIds.length }} 个字符块？相关绑定将标记为缺失。</span>
+          <BlockImpact
+            v-for="id in checkedIds"
+            :key="id"
+            :block-id="id"
+            @loaded="batchImpactReady = $event ? [...new Set([...batchImpactReady, id])] : batchImpactReady.filter(n => n !== id)"
+          />
           <button
             class="ui-btn"
             :disabled="deleting"
@@ -284,7 +310,7 @@ onMounted(() => {
           </button>
           <button
             class="ui-btn ui-danger"
-            :disabled="deleting"
+            :disabled="deleting || batchImpactReady.length !== checkedIds.length"
             @click="removeChecked"
           >
             {{ deleting ? '删除中…' : '确认批量删除' }}
@@ -305,7 +331,9 @@ onMounted(() => {
         v-model:kind="kind"
         v-model:tags="tagsInput"
         :editing="editingId !== null"
-        :busy="store.creating || store.updating"
+        :block-id="editingId ?? undefined"
+        :version-id="previewStore.currentVersionId"
+        :busy="store.creating || store.updating || copying"
         :error="formError"
         :submit-label="submitLabel"
         @submit="submit"
@@ -386,7 +414,7 @@ onMounted(() => {
               <template v-if="deletingId === block.id">
                 <button
                   class="op danger"
-                  :disabled="deleting"
+                  :disabled="deleting || !impactReady"
                   @click="confirmDelete(block.id)"
                 >
                   确认删除
@@ -402,7 +430,7 @@ onMounted(() => {
                 <button
                   class="op danger"
                   :disabled="deleting"
-                  @click="deletingId = block.id"
+                  @click="impactReady = false; deletingId = block.id"
                 >删除</button>
                 <details
                   class="block-menu"
@@ -419,6 +447,11 @@ onMounted(() => {
               </template>
             </span>
           </div>
+          <BlockImpact
+            v-if="deletingId === block.id"
+            :block-id="block.id"
+            @loaded="impactReady = $event !== null"
+          />
           <span class="content">{{ block.content }}</span>
           <span
             v-if="block.tags.length > 0"

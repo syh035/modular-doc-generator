@@ -102,7 +102,7 @@ cd frontend && npm run dev
 
 ### 运行数据
 
-源码开发模式的数据位于 `data/`（已 gitignore）；下载 App 的数据位于 `~/Library/Application Support/ModularDocGenerator/Data`。**备份 = 退出应用后拷贝整个数据目录**，下表为源码模式的相对路径：
+源码开发模式的数据位于 `data/`（已 gitignore）；下载 App 的数据位于 `~/Library/Application Support/ModularDocGenerator/Data`。应用内“归档与备份”可导出一致性 ZIP 并校验恢复；手工备份仍需退出应用后拷贝整个数据目录。下表为源码模式的相对路径：
 
 | 路径 | 内容 |
 |------|------|

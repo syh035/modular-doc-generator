@@ -77,6 +77,9 @@ async function restoreParagraph(id: number): Promise<void> {
 watch(() => store.currentVersionId, () => { textEditorTarget.value = null })
 /** 校对浮层目标（null = 关闭，校对模式；page 供微调启动取 viewport）。 */
 const popoverTarget = ref<{ region: DisplayRegion; page: RenderedPage } | null>(null)
+const proofreadBusy = ref(false)
+const proofreadError = ref<string | null>(null)
+watch(popoverTarget, () => { proofreadError.value = null })
 /** 命名弹层：框选完成待命名（null = 关闭）。 */
 const nameDialog = ref<{ frame: RegionFramePayload } | null>(null)
 const nameError = ref<string | null>(null)
@@ -564,29 +567,24 @@ async function onNameSubmit(label: string, type: string): Promise<void> {
   cancelFrame()
 }
 
-function onPopoverConfirm(): void {
-  const t = popoverTarget.value
-  popoverTarget.value = null
-  if (t) {
-    void store.confirmRegion(t.region.id)
-  }
+async function saveProofread(action: 'confirm' | 'exclude' | 'reopen' | 'remove'): Promise<void> {
+  const target = popoverTarget.value
+  if (!target || proofreadBusy.value) return
+  proofreadBusy.value = true; proofreadError.value = null
+  try {
+    const result = await (action === 'confirm' ? store.confirmRegion(target.region.id)
+      : action === 'exclude' ? store.excludeRegion(target.region.id)
+      : action === 'reopen' ? store.reopenRegion(target.region.id)
+      : store.removeRegion(target.region.id))
+    if (popoverTarget.value !== target) return
+    if (result.ok) popoverTarget.value = null
+    else proofreadError.value = result.error
+  } finally { proofreadBusy.value = false }
 }
 
-function onPopoverExclude(): void {
-  const t = popoverTarget.value
-  popoverTarget.value = null
-  if (t) {
-    void store.excludeRegion(t.region.id)
-  }
-}
-
-function onPopoverReopen(): void {
-  const t = popoverTarget.value
-  popoverTarget.value = null
-  if (t) {
-    void store.reopenRegion(t.region.id)
-  }
-}
+function onPopoverConfirm(): void { void saveProofread('confirm') }
+function onPopoverExclude(): void { void saveProofread('exclude') }
+function onPopoverReopen(): void { void saveProofread('reopen') }
 
 function onPopoverAdjust(): void {
   const t = popoverTarget.value
@@ -606,14 +604,13 @@ function onPopoverAdjust(): void {
 
 async function onPopoverRemove(): Promise<void> {
   const t = popoverTarget.value
-  popoverTarget.value = null
   if (!t) {
     return
   }
   if (!window.confirm(`删除区域「${t.region.label}」？其绑定关系将一并删除。`)) {
     return
   }
-  await store.removeRegion(t.region.id)
+  await saveProofread('remove')
 }
 
 /** 重建渲染：pdfData 变化重开文档；容器宽度变化仅按新 scale 重排。 */
@@ -1020,7 +1017,7 @@ defineExpose({ jumpToRegion })
         class="state loading"
       >
         <span class="spinner" />
-        正在生成预览…（首次渲染需调用 LibreOffice 转换，约需十几秒）
+        正在生成预览…首次转换或较大文档可能需要更久。
       </div>
       <div
         v-else-if="store.status === 'error'"
@@ -1158,12 +1155,14 @@ defineExpose({ jumpToRegion })
         <ProofreadPopover
           v-if="popoverTarget"
           :region="popoverTarget.region"
+          :busy="proofreadBusy"
+          :error="proofreadError"
           @confirm="onPopoverConfirm"
           @exclude="onPopoverExclude"
           @reopen="onPopoverReopen"
           @adjust="onPopoverAdjust"
           @remove="onPopoverRemove"
-          @close="popoverTarget = null"
+          @close="!proofreadBusy && (popoverTarget = null)"
         />
         <!-- 框选命名弹层（校对模式） -->
         <RegionNameDialog

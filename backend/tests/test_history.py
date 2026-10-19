@@ -18,6 +18,18 @@ def make_scene(client: TestClient) -> dict:
     return tpl
 
 
+def test_version_rename_is_tracked_by_actual_patch_route(client: TestClient) -> None:
+    template = make_scene(client)
+    version = template["default_version_id"]
+    before = client.get(f"/api/templates/{template['id']}/versions").json()["versions"][0]["name"]
+    assert client.patch(f"/api/versions/{version}", json={"name": "新名称"}).status_code == 200
+    assert client.post("/api/history/undo").status_code == 200
+    assert (
+        client.get(f"/api/templates/{template['id']}/versions").json()["versions"][0]["name"]
+        == before
+    )
+
+
 def test_undo_redo_block_binding_layout_and_soft_delete(client: TestClient) -> None:
     tpl = make_scene(client)
     vid, rid = tpl["default_version_id"], tpl["regions"][0]["id"]

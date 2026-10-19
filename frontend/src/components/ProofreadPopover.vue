@@ -11,6 +11,8 @@ import type { DisplayRegion } from '../stores/preview'
 
 const props = defineProps<{
   region: DisplayRegion
+  busy?: boolean
+  error?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -23,7 +25,7 @@ const emit = defineEmits<{
 }>()
 
 const status = computed(() => props.region.review_status)
-useModalEsc(() => emit('close'))
+useModalEsc(() => { if (!props.busy) emit('close') })
 </script>
 
 <template>
@@ -35,7 +37,7 @@ useModalEsc(() => emit('close'))
     aria-modal="true"
     tabindex="-1"
     data-testid="proofread-popover"
-    @click.self="emit('close')"
+    @click.self="!busy && emit('close')"
   >
     <div class="dialog-card">
       <div class="dialog-head">
@@ -43,6 +45,7 @@ useModalEsc(() => emit('close'))
         <button
           class="icon-btn"
           aria-label="关闭"
+          :disabled="busy"
           @click="emit('close')"
         >
           ×
@@ -55,10 +58,25 @@ useModalEsc(() => emit('close'))
           class="placeholder"
         >占位符 {{ region.placeholder }}</span>
       </p>
+      <p
+        v-if="error"
+        role="alert"
+        class="meta"
+      >
+        {{ error }}
+      </p>
+      <p
+        v-if="busy"
+        role="status"
+        class="meta"
+      >
+        正在保存校对结果…
+      </p>
       <div class="actions">
         <template v-if="status === 'pending'">
           <button
             class="primary"
+            :disabled="busy"
             data-testid="proofread-confirm"
             @click="emit('confirm')"
           >
@@ -66,6 +84,7 @@ useModalEsc(() => emit('close'))
           </button>
           <button
             class="ghost"
+            :disabled="busy"
             data-testid="proofread-exclude"
             @click="emit('exclude')"
           >
@@ -75,6 +94,7 @@ useModalEsc(() => emit('close'))
         <button
           v-else
           class="ghost"
+          :disabled="busy"
           data-testid="proofread-reopen"
           @click="emit('reopen')"
         >
@@ -83,6 +103,7 @@ useModalEsc(() => emit('close'))
         <button
           v-if="status !== 'excluded'"
           class="ghost"
+          :disabled="busy"
           data-testid="proofread-adjust"
           @click="emit('adjust')"
         >
@@ -90,6 +111,7 @@ useModalEsc(() => emit('close'))
         </button>
         <button
           class="danger"
+          :disabled="busy"
           data-testid="proofread-remove"
           @click="emit('remove')"
         >

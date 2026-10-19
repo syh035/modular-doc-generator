@@ -115,6 +115,38 @@ def test_different_content_no_cache_hit(fake_soffice: Path, tmp_path: Path) -> N
     assert len(list((tmp_path / "cache").glob("*.pdf"))) == 2
 
 
+def test_environment_changes_invalidate_cache(
+    fake_soffice: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = make_manager(fake_soffice, tmp_path)
+    fonts = tmp_path / "fonts"
+    fonts.mkdir()
+    monkeypatch.setattr(manager, "_font_directories", lambda: [fonts])
+    source = make_docx_file(tmp_path)
+    original = manager.convert(source)
+    (fonts / "new.ttf").write_bytes(b"font")
+    installed = manager.convert(source)
+    assert installed != original
+    assert manager.convert(source) == installed
+    fake_soffice.write_text(_FAKE_SOFFICE + "\n# converter updated\n")
+    assert manager.convert(source) != installed
+    assert manager.conversions == 3
+
+
+def test_cache_prunes_old_results_and_clear_rebuilds(fake_soffice: Path, tmp_path: Path) -> None:
+    manager = make_manager(fake_soffice, tmp_path)
+    manager.max_cache_bytes = 15
+    source = make_docx_file(tmp_path)
+    old = manager.convert(source)
+    source.write_bytes(source.read_bytes() + b"new")
+    current = manager.convert(source)
+    assert current.is_file() and not old.exists()
+    assert manager.cache_status()["files"] == 1
+    assert manager.clear_cache()["files"] == 0
+    assert manager.convert(source).is_file()
+    assert manager.conversions == 3
+
+
 # ---- 真实 LibreOffice 集成（未安装则跳过）----
 
 

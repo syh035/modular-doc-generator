@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAppStore } from '../stores/app'
 import { useHistoryStore } from '../stores/history'
 import { useBlocksStore } from '../stores/blocks'
 import { usePreviewStore } from '../stores/preview'
+const LibraryDialog = defineAsyncComponent(() => import('./LibraryDialog.vue'))
 
 const appStore = useAppStore()
 const previewStore = usePreviewStore()
 const history = useHistoryStore()
 const blocks = useBlocksStore()
+const libraryOpen = ref(false)
 async function moveHistory(redo: boolean): Promise<void> {
   await history.move(redo, async () => {
     await Promise.all([blocks.loadBlocks(), blocks.loadTags()])
@@ -18,13 +20,16 @@ async function moveHistory(redo: boolean): Promise<void> {
 const fileInput = ref<HTMLInputElement | null>(null)
 const uploading = computed(() => previewStore.uploadPhase !== 'idle')
 const now = ref(Date.now())
+const renderStartedAt = ref<number | null>(null)
+const rendering = computed(() => previewStore.refreshing || previewStore.status === 'loading')
 let ticker: ReturnType<typeof setInterval> | null = null
-const elapsed = computed(() => Math.floor((now.value - (previewStore.uploadStartedAt ?? now.value)) / 1000))
-watch(() => previewStore.uploadStartedAt, started => {
+const elapsed = computed(() => Math.floor((now.value - (previewStore.uploadStartedAt ?? renderStartedAt.value ?? now.value)) / 1000))
+watch([() => previewStore.uploadStartedAt, rendering], ([started, active]) => {
   if (ticker) clearInterval(ticker)
   ticker = null
   now.value = Date.now()
-  if (started !== null) ticker = setInterval(() => { now.value = Date.now() }, 1000)
+  renderStartedAt.value = active ? Date.now() : null
+  if (started !== null || active) ticker = setInterval(() => { now.value = Date.now() }, 1000)
 })
 onBeforeUnmount(() => { if (ticker) clearInterval(ticker) })
 
@@ -75,6 +80,12 @@ defineExpose({ pickFile })
     </nav>
     <div class="actions">
       <button
+        :disabled="uploading || previewStore.refreshing"
+        @click="libraryOpen = true"
+      >
+        归档与备份
+      </button>
+      <button
         v-if="history.enabled"
         :disabled="!history.canUndo || previewStore.refreshing || uploading || previewStore.exportBusy"
         :title="`撤销 ${history.undoLabel}（⌘Z）`"
@@ -100,6 +111,7 @@ defineExpose({ pickFile })
       >
       <button
         :disabled="uploading"
+        data-testid="import-template"
         @click="pickFile"
       >
         {{ uploading ? '导入中…' : '导入模板' }}
@@ -122,7 +134,18 @@ defineExpose({ pickFile })
       {{ previewStore.uploadPhase === 'request' ? '正在上传并解析模板…' : '解析完成，正在生成预览…' }}
       <span v-if="elapsed >= 5">已等待 {{ elapsed }} 秒；首次转换或较大模板可能需要更久。</span>
     </p>
+    <p
+      v-else-if="rendering && elapsed >= 5"
+      class="upload-progress"
+      role="status"
+    >
+      正在更新预览，已等待 {{ elapsed }} 秒。较大文档或首次转换需要更久，请稍候。
+    </p>
   </header>
+  <LibraryDialog
+    v-if="libraryOpen"
+    @close="libraryOpen = false"
+  />
 </template>
 
 <style scoped>

@@ -1,5 +1,6 @@
 """本地简历编辑器后端入口。启动：uvicorn app.main:app（仅绑 127.0.0.1，P10）。"""
 
+import asyncio
 import re
 
 from fastapi import FastAPI, Request
@@ -8,10 +9,12 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
+from app.api.archives import router as archives_router
 from app.api.blocks import router as blocks_router
 from app.api.guide import router as guide_router
 from app.api.health import router as health_router
 from app.api.history import router as history_router
+from app.api.maintenance import router as maintenance_router
 from app.api.migrations import router as migrations_router
 from app.api.regions import router as regions_router
 from app.api.tags import router as tags_router
@@ -39,7 +42,10 @@ def create_app() -> FastAPI:
         mutating = request.method in {"POST", "PUT", "PATCH", "DELETE"}
         tracked = mutating and (
             path.startswith(("/api/blocks", "/api/tags", "/api/regions"))
-            or (request.method == "PUT" and re.fullmatch(r"/api/versions/\d+", path) is not None)
+            or (
+                request.method in {"PUT", "PATCH"}
+                and re.fullmatch(r"/api/versions/\d+", path) is not None
+            )
             or "/bindings" in path
             or path.endswith(("/text", "/layout", "/migrate/apply"))
             or ("/templates/" in path and path.endswith("/regions"))
@@ -49,6 +55,8 @@ def create_app() -> FastAPI:
             and not tracked
             and (
                 path.startswith("/api/templates")
+                or "/archives" in path
+                or path == "/api/maintenance/restore"
                 or path.endswith("/export")
                 or (
                     request.method == "DELETE"
@@ -88,7 +96,20 @@ def create_app() -> FastAPI:
                     history.record(label, before, after)
             return response
 
+    library_gate = asyncio.Lock()
+
+    @app.middleware("http")
+    async def library_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        # A single-user library must not mutate/render while a backup or restore copies it.
+        # Health remains responsive while document conversion runs.
+        if request.url.path.startswith("/api/") and request.url.path != "/api/health":
+            async with library_gate:
+                return await call_next(request)
+        return await call_next(request)
+
     app.include_router(history_router)
+    app.include_router(archives_router)
+    app.include_router(maintenance_router)
     app.include_router(health_router)
     app.include_router(templates_router)
     app.include_router(regions_router)

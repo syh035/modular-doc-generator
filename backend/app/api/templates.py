@@ -5,7 +5,7 @@ import sqlite3
 from typing import Annotated
 
 from fastapi import APIRouter, File, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import JSONResponse, Response
 
 from app.core.errors import TEMPLATE_NOT_FOUND, AppError
 from app.models.db import get_conn
@@ -14,6 +14,7 @@ from app.models.repositories import regions as regions_repo
 from app.models.repositories import templates as templates_repo
 from app.models.repositories import versions as versions_repo
 from app.services import render_service, template_service
+from app.services.libreoffice import cache_access
 
 router = APIRouter(prefix="/api")
 
@@ -123,14 +124,15 @@ def list_regions(template_id: int) -> dict[str, object]:
 
 
 @router.get("/templates/{template_id}/preview")
-def get_preview(template_id: int) -> FileResponse:
+def get_preview(template_id: int) -> Response:
     """模板预览 PDF（单管线铁律：预览即管线产物，P2）。
 
     首次调用触发 LibreOffice 转换并计算区域 bbox（同步完成，10 页内
     模板远低于 D12 解析基线的量级）；后续调用命中转换缓存。
     """
-    pdf_path = render_service.ensure_template_preview(template_id)
+    with cache_access():
+        pdf_data = render_service.ensure_template_preview(template_id).read_bytes()
     # no-store：同 P25（URL 不随内容变化，禁止浏览器启发式缓存复用旧 PDF）
-    return FileResponse(
-        pdf_path, media_type="application/pdf", headers={"Cache-Control": "no-store"}
+    return Response(
+        pdf_data, media_type="application/pdf", headers={"Cache-Control": "no-store"}
     )

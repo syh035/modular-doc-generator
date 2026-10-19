@@ -63,7 +63,7 @@ describe('TopBar tab 导航（UI 调整①）', () => {
   it('导入模板按钮可用，导出占位按钮已删（导出在预览工具条，M9 验收开放项）', () => {
     stubHealth(true)
     const wrapper = mountTopBar()
-    const buttons = wrapper.findAll('.actions button')
+    const buttons = wrapper.findAll('[data-testid="import-template"]')
     expect(buttons).toHaveLength(1)
     expect(buttons[0].text()).toBe('导入模板')
     expect(buttons[0].attributes('disabled')).toBeUndefined()
@@ -84,7 +84,7 @@ describe('导入模板上传（占位按钮转正）', () => {
     expect(input.exists()).toBe(true)
     expect(input.attributes('accept')).toBe('.docx')
     const clickSpy = vi.spyOn(input.element as HTMLInputElement, 'click').mockImplementation(() => {})
-    await wrapper.find('.actions button').trigger('click')
+    await wrapper.get('[data-testid="import-template"]').trigger('click')
     expect(clickSpy).toHaveBeenCalledOnce()
   })
 
@@ -175,7 +175,7 @@ describe('导入模板上传（占位按钮转正）', () => {
     expect(store.templates.map(t => t.id)).toEqual([7])
     expect(store.currentTemplateId).toBe(7)
     expect(store.status).toBe('ready')
-    expect(wrapper.find('.actions button').text()).toBe('导入模板') // uploading 复位
+    expect(wrapper.get('[data-testid="import-template"]').text()).toBe('导入模板') // uploading 复位
   })
 
   it('上传失败 → alert 可读错误，不改当前选择', async () => {

@@ -92,6 +92,28 @@ async function readyWith(regions: DisplayRegion[]) {
   return { wrapper, store }
 }
 
+it('校对保存期间保留浮层并锁定，失败内联展示，成功后才关闭', async () => {
+  const { wrapper, store } = await readyWith([
+    region(1, { page: 0, x0: 100, y0: 200, x1: 300, y1: 250 }),
+  ])
+  store.proofreadMode = true
+  await flushPromises()
+  let complete!: (result: { ok: boolean; error: string | null }) => void
+  const save = vi.spyOn(store, 'confirmRegion').mockImplementation(() => new Promise(resolve => { complete = resolve }))
+  await wrapper.get('.overlay').trigger('click')
+  await wrapper.get('[data-testid=proofread-confirm]').trigger('click')
+  expect(wrapper.find('[data-testid=proofread-popover]').exists()).toBe(true)
+  expect(wrapper.get('[data-testid=proofread-confirm]').attributes('disabled')).toBeDefined()
+  complete({ ok: false, error: '保存失败，请重试' })
+  await flushPromises()
+  expect(wrapper.get('[data-testid=proofread-popover] [role=alert]').text()).toContain('保存失败')
+  save.mockResolvedValue({ ok: true, error: null })
+  await wrapper.get('[data-testid=proofread-confirm]').trigger('click')
+  await flushPromises()
+  expect(wrapper.find('[data-testid=proofread-popover]').exists()).toBe(false)
+  wrapper.unmount()
+})
+
 describe('TemplatePreview（M5a 只读预览）', () => {
   it('idle 态：提示选择模板', () => {
     const wrapper = mountPreview()

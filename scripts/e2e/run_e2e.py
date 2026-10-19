@@ -22,11 +22,14 @@
 from __future__ import annotations
 
 import atexit
+import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -93,7 +96,14 @@ def ensure_services() -> None:
         else:
             raise SystemExit("后端 60s 未就绪")
     else:
-        print("· 后端已在运行，直接复用")
+        with urllib.request.urlopen("http://127.0.0.1:8740/api/health", timeout=5) as response:
+            health = json.load(response)
+        expected = hashlib.sha256(
+            str(Path(os.environ["MODUDOC_DATA_DIR"]).resolve()).encode()
+        ).hexdigest()
+        if health.get("data_fingerprint") != expected:
+            raise SystemExit("8740 已有其他资料库服务；E2E 拒绝使用该库。请先正常退出该实例。")
+        print("· 复用本轮隔离测试服务")
 
     if not _frontend_up():
         npm = shutil.which("npm")
@@ -117,7 +127,7 @@ def ensure_services() -> None:
         else:
             raise SystemExit("前端 60s 未就绪")
     else:
-        print("· 前端已在运行，直接复用")
+        raise SystemExit("5173 已有前端服务；E2E 不复用未知实例，请先正常退出该实例。")
 
 
 def cleanup() -> None:
@@ -453,8 +463,11 @@ def main() -> None:
     if not wanted or any(n not in SCENARIOS for n in wanted):
         raise SystemExit("用法: run_e2e.py [1|2|3|all]")
 
-    ensure_services()
+    data = tempfile.TemporaryDirectory(prefix="modudoc-e2e-")
+    os.environ["MODUDOC_DATA_DIR"] = data.name
+    atexit.register(data.cleanup)
     atexit.register(cleanup)
+    ensure_services()
 
     from playwright.sync_api import sync_playwright
 
@@ -486,7 +499,7 @@ def main() -> None:
             print(f"    · {msg}")
         if status == "FAIL":
             failed = True
-    print("\n说明：模板/块为累加式测试数据（未清理）；下载产物在 /tmp/e2e_downloads/")
+    print("\n说明：临时测试资料库将在服务退出后删除；下载产物在 /tmp/e2e_downloads/")
     raise SystemExit(1 if failed else 0)
 
 

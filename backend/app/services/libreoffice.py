@@ -7,6 +7,7 @@ M4 转换策略：子进程 `soffice --convert-to`（独立 profile 避开单实
 """
 
 import hashlib
+import json
 import os
 import shutil
 import signal
@@ -14,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -36,6 +39,14 @@ _MACOS_SOFFICE_CANDIDATES = [
 _MACOS_INSTALL_HINT = (
     "未检测到 LibreOffice，渲染功能不可用。安装方式：brew install --cask libreoffice"
 )
+
+_cache_lock = threading.RLock()
+
+
+@contextmanager
+def cache_access() -> Iterator[None]:
+    with _cache_lock:
+        yield
 
 
 def find_soffice() -> str | None:
@@ -98,6 +109,7 @@ class LibreOfficeManager:
         cache_dir: Path,
         timeout_seconds: float,
         fontconfig_file: Path | None = None,
+        max_cache_bytes: int = 512 * 1024 * 1024,
     ) -> None:
         self.soffice_path = soffice_path
         self.profile_dir = profile_dir
@@ -107,7 +119,8 @@ class LibreOfficeManager:
         # → 中文回退无字形内置字体渲染空白。设 FONTCONFIG_FILE 指向自产配置修复。
         self.fontconfig_file = fontconfig_file
         self._fontconfig_ready = False
-        self._lock = threading.Lock()
+        self._lock = _cache_lock
+        self.max_cache_bytes = max_cache_bytes
         self.conversions = 0  # 实际执行 soffice 的次数（测试观测缓存命中用）
 
     def _ensure_fontconfig(self) -> None:
@@ -152,14 +165,67 @@ class LibreOfficeManager:
                 h.update(chunk)
         return h.hexdigest()
 
+    def _font_directories(self) -> list[Path]:
+        if sys.platform == "darwin":
+            return [Path("/System/Library/Fonts"), Path("/Library/Fonts"),
+                    Path.home() / "Library/Fonts"]
+        return [Path("/usr/share/fonts"), Path("/usr/local/share/fonts"),
+                Path.home() / ".local/share/fonts", Path.home() / ".fonts",
+                Path("/etc/fonts")]
+
+    def environment_fingerprint(self) -> str:
+        """File metadata detects font installation/removal and converter updates, also live."""
+        paths = [Path(self.soffice_path).resolve()]
+        for directory in self._font_directories():
+            if directory.exists():
+                paths.extend(p for p in directory.rglob("*") if p.is_file())
+        entries = []
+        for path in sorted(set(paths)):
+            try:
+                info = path.stat()
+                entries.append((str(path), info.st_size, info.st_mtime_ns))
+            except OSError:
+                continue  # A font may be removed while enumerating the directory.
+        return hashlib.sha256(json.dumps(["render-v2", sys.platform, entries]).encode()).hexdigest()
+
+    @contextmanager
+    def cache_access(self) -> Iterator[None]:
+        """Keep readers alive until PDF bytes/geometry have been copied out of disk cache."""
+        with self._lock:
+            yield
+
+    def cache_status(self) -> dict[str, int]:
+        with self._lock:
+            files = list(self.cache_dir.glob("*.pdf"))
+            return {"files": len(files), "bytes": sum(p.stat().st_size for p in files),
+                    "limit_bytes": self.max_cache_bytes}
+
+    def clear_cache(self) -> dict[str, int]:
+        with self._lock:
+            for path in self.cache_dir.glob("*.pdf"):
+                path.unlink(missing_ok=True)
+            return self.cache_status()
+
+    def _prune_cache(self, current: Path) -> None:
+        files = sorted(self.cache_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime_ns)
+        total = sum(p.stat().st_size for p in files)
+        for path in files:
+            if total <= self.max_cache_bytes:
+                break
+            if path == current:
+                continue  # One document larger than the limit must remain usable.
+            total -= path.stat().st_size
+            path.unlink(missing_ok=True)
+
     def convert(self, input_path: Path) -> Path:
         """DOCX → PDF，返回缓存 PDF 路径（同内容重复转换零开销）。"""
-        sha = self._sha256(input_path)
+        sha = hashlib.sha256(
+            (self._sha256(input_path) + self.environment_fingerprint()).encode()
+        ).hexdigest()
         cached = self.cache_dir / f"{sha}.pdf"
-        if cached.is_file():
-            return cached
         with self._lock:
             if cached.is_file():  # 双检：等锁期间别人可能已转完
+                cached.touch()
                 return cached
             self.profile_dir.mkdir(parents=True, exist_ok=True)
             (self.cache_dir / "tmp").mkdir(parents=True, exist_ok=True)
@@ -169,6 +235,7 @@ class LibreOfficeManager:
                 cached.parent.mkdir(parents=True, exist_ok=True)
                 pdf_path.replace(cached)  # 同缓存目录内原子移动
                 self.conversions += 1
+                self._prune_cache(cached)
                 return cached
             finally:
                 shutil.rmtree(workdir, ignore_errors=True)
