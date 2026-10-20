@@ -42,8 +42,7 @@ const largeOverflowCount = computed(
 </script>
 
 <template>
-  <!-- 底部状态条：左下角服务状态（绿点+文字，2026-09-18 自 TopBar 右上角迁入）；
-       校对模式开关（M5b，选中模板才可用）/ 溢出提示（M7 实现） -->
+  <!-- 底部状态条：服务状态与溢出提示；区域检查从文档工具进入。 -->
   <footer class="status-bar">
     <button
       type="button"
@@ -90,19 +89,6 @@ const largeOverflowCount = computed(
         </template>
       </button>
     </div>
-    <label
-      v-if="appStore.activeTab === 'workbench' && previewStore.currentTemplateId !== null"
-      class="proofread-switch"
-      title="开启后预览模板本体并标注候选区域，可确认/排除/框选新建区域"
-    >
-      <input
-        type="checkbox"
-        data-testid="proofread-toggle"
-        :checked="previewStore.proofreadMode"
-        @change="previewStore.toggleProofreadMode(($event.target as HTMLInputElement).checked)"
-      >
-      校对模式
-    </label>
   </footer>
   <DataMaintenance
     v-if="maintenanceOpen"
@@ -159,19 +145,6 @@ const largeOverflowCount = computed(
   color: var(--warning-notice);
 }
 
-.proofread-switch {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-  cursor: pointer;
-  user-select: none;
-}
-
-.proofread-switch input {
-  accent-color: var(--primary);
-}
 /* ---- 溢出状态条（M7）：固定预览区底部 ---- */
 
 .overflow-list {

@@ -235,10 +235,13 @@ def select_template(page, template_id: int) -> None:
 
 
 def confirm_all_candidates(page, expected: int) -> None:
-    """校对模式：逐个确认候选区域 → 进度 N/N → 退回正常模式（版本渲染黄框）。"""
+    """检查模板区域：逐个保留候选 → 进度 N/N → 返回当前文档。"""
     from playwright.sync_api import expect
 
-    page.locator('[data-testid="proofread-toggle"]').check()
+    page.locator('[data-testid="review-regions"]').click()
+    expect(page.get_by_role("button", name="下一处待检查", exact=True)).to_be_enabled(
+        timeout=RENDER_TIMEOUT
+    )
     candidates = page.locator(".pdf-page .overlay.cand-high, .pdf-page .overlay.cand-low")
     candidates.first.wait_for(state="visible")
     expected = candidates.count()  # 全文识别包含正文、标题和 fixture 时间戳
@@ -247,10 +250,13 @@ def confirm_all_candidates(page, expected: int) -> None:
         page.locator('[data-testid="proofread-popover"]').wait_for(state="visible")
         page.locator('[data-testid="proofread-confirm"]').click()
         page.locator('[data-testid="proofread-popover"]').wait_for(state="hidden")
-    expect(page.locator('.legend-wide [data-testid="proofread-progress"]')).to_have_text(
+    expect(page.locator('[data-testid="proofread-progress"]')).to_have_text(
         f"已处理 {expected}/{expected}"
     )
-    page.locator('[data-testid="proofread-toggle"]').uncheck()
+    page.locator('[data-testid="finish-region-review"]').click()
+    expect(page.locator('[data-testid="review-regions"]')).to_be_enabled(
+        timeout=RENDER_TIMEOUT
+    )
     page.locator(".pdf-page .overlay.pending").first.wait_for(state="visible")
 
 

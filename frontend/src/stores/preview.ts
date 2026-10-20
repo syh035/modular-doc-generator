@@ -196,6 +196,18 @@ export const usePreviewStore = defineStore('preview', () => {
   }
 
   const sequencer = new RequestSequencer()
+  let viewRevision = 0
+  let versionListRequest = 0
+  let proofreadSwitch: { templateId: number; on: boolean; revision: number; promise: Promise<void> } | null = null
+
+  function regionContext(): () => boolean {
+    const templateId = currentTemplateId.value
+    const versionId = currentVersionId.value
+    const reviewing = proofreadMode.value
+    const revision = viewRevision
+    return () => revision === viewRevision && currentTemplateId.value === templateId
+      && currentVersionId.value === versionId && proofreadMode.value === reviewing
+  }
 
   async function loadTemplates(): Promise<void> {
     try {
@@ -260,8 +272,7 @@ export const usePreviewStore = defineStore('preview', () => {
     if (!sequencer.isCurrent(seq)) {
       throw new CancelledError()
     }
-    pageFingerprints.value = []
-    pdfData.value = await blob.arrayBuffer()
+    const data = await blob.arrayBuffer()
     if (!sequencer.isCurrent(seq)) {
       throw new CancelledError()
     }
@@ -269,7 +280,9 @@ export const usePreviewStore = defineStore('preview', () => {
     if (!sequencer.isCurrent(seq)) {
       throw new CancelledError()
     }
+    pageFingerprints.value = []
     regions.value = detail.regions.map(r => ({ ...r, binding: null }))
+    pdfData.value = data
   }
 
   async function removeTemplate(id: number): Promise<ProofreadResult> {
@@ -300,6 +313,9 @@ export const usePreviewStore = defineStore('preview', () => {
         ? regions.value.filter(r => r.binding?.status === 'active').length
         : 0
     const seq = sequencer.next()
+    viewRevision++
+    versionListRequest++
+    refreshing.value = false
     currentTemplateId.value = id
     currentVersionId.value = null
     versions.value = []
@@ -336,7 +352,7 @@ export const usePreviewStore = defineStore('preview', () => {
         prevBindingCount,
       )
     } catch (err) {
-      if (err instanceof CancelledError) {
+      if (err instanceof CancelledError || !sequencer.isCurrent(seq)) {
         return // 过期响应静默丢弃（P7）
       }
       status.value = 'error'
@@ -445,45 +461,62 @@ export const usePreviewStore = defineStore('preview', () => {
    */
   async function toggleProofreadMode(on: boolean): Promise<void> {
     if (proofreadMode.value === on) {
+      const pending = proofreadSwitch
+      if (pending?.templateId === currentTemplateId.value && pending.on === on
+        && pending.revision === viewRevision) await pending.promise
       return
     }
+    // 加载分支已按当前模式取数，完成前不能仅翻旗标让产物与视图含义不一致。
+    if (status.value !== 'ready' && status.value !== 'idle') return
+    const previousMode = proofreadMode.value
+    const revision = ++viewRevision
     proofreadMode.value = on
     error.value = null
     const templateId = currentTemplateId.value
     if (templateId === null || status.value !== 'ready') {
-      return // idle/加载中：仅翻旗标，selectTemplate 按模式取数
+      return // 尚未开始加载：selectTemplate 随后按模式取数
     }
     const seq = sequencer.next()
     refreshing.value = true
+    const switching = (async () => {
+      try {
+        if (on || currentVersionId.value === null) {
+          await _fetchTemplateRender(seq, templateId)
+        } else {
+          await _fetchVersionRender(seq, currentVersionId.value)
+        }
+      } catch (err) {
+        if (err instanceof CancelledError || !sequencer.isCurrent(seq) || revision !== viewRevision
+          || currentTemplateId.value !== templateId) return
+        // 失败时仍展示上一批产物，模式也需恢复；修订号继续前进，旧写入不能复活。
+        viewRevision++
+        proofreadMode.value = previousMode
+        error.value = err instanceof Error ? err.message : String(err)
+      } finally {
+        if (sequencer.isCurrent(seq)) refreshing.value = false
+      }
+    })()
+    proofreadSwitch = { templateId, on, revision, promise: switching }
     try {
-      if (on || currentVersionId.value === null) {
-        await _fetchTemplateRender(seq, templateId)
-      } else {
-        await _fetchVersionRender(seq, currentVersionId.value)
-      }
-    } catch (err) {
-      if (err instanceof CancelledError) {
-        return
-      }
-      error.value = err instanceof Error ? err.message : String(err)
+      await switching
     } finally {
-      if (sequencer.isCurrent(seq)) {
-        refreshing.value = false
-      }
+      if (proofreadSwitch?.promise === switching) proofreadSwitch = null
     }
   }
 
   /** 版本下拉数据源（当前模板）。失败静默置空，不阻断预览。 */
   async function loadVersionList(): Promise<void> {
+    const request = ++versionListRequest
     const templateId = currentTemplateId.value
     if (templateId === null) {
       versions.value = []
       return
     }
     try {
-      versions.value = await listVersions(templateId)
+      const result = await listVersions(templateId)
+      if (request === versionListRequest && currentTemplateId.value === templateId) versions.value = result
     } catch {
-      versions.value = []
+      if (request === versionListRequest && currentTemplateId.value === templateId) versions.value = []
     }
   }
 
@@ -494,6 +527,8 @@ export const usePreviewStore = defineStore('preview', () => {
     }
     await clearHistoryBoundary()
     const seq = sequencer.next()
+    viewRevision++
+    refreshing.value = false
     currentVersionId.value = id
     regions.value = []
     pdfData.value = null
@@ -503,7 +538,7 @@ export const usePreviewStore = defineStore('preview', () => {
       await _fetchVersionRender(seq, id)
       status.value = 'ready'
     } catch (err) {
-      if (err instanceof CancelledError) {
+      if (err instanceof CancelledError || !sequencer.isCurrent(seq)) {
         return
       }
       status.value = 'error'
@@ -642,10 +677,11 @@ export const usePreviewStore = defineStore('preview', () => {
 
   /** 校对 PATCH 通用路径：成功同步本地 regions + 模板 ready 态（自动 ready 可能触发）。 */
   async function _patchRegion(regionId: number, patch: RegionPatchPayload): Promise<ProofreadResult> {
+    const isCurrent = regionContext()
     try {
       const updated = await updateRegionApi(regionId, patch)
       const idx = regions.value.findIndex(r => r.id === regionId)
-      if (idx >= 0) {
+      if (isCurrent() && idx >= 0) {
         regions.value[idx] = { ...regions.value[idx], ...updated }
       }
       void loadTemplates()
@@ -677,9 +713,10 @@ export const usePreviewStore = defineStore('preview', () => {
 
   /** 删除区域（后端级联删绑定）→ 本地移除。 */
   async function removeRegion(regionId: number): Promise<ProofreadResult> {
+    const isCurrent = regionContext()
     try {
       await deleteRegionApi(regionId)
-      regions.value = regions.value.filter(r => r.id !== regionId)
+      if (isCurrent()) regions.value = regions.value.filter(r => r.id !== regionId)
       void loadTemplates()
       return { ok: true, error: null }
     } catch (err) {
@@ -697,13 +734,16 @@ export const usePreviewStore = defineStore('preview', () => {
     if (templateId === null) {
       return { ok: false, error: '未选择模板，无法新建区域' }
     }
+    const isCurrent = regionContext()
     try {
       const region = await createRegionApi(templateId, { label, type, bbox: frame })
-      const previous = regions.value.find(r => r.id === region.id)
-      const updated = { ...region, binding: previous?.binding ?? null }
-      regions.value = previous
-        ? regions.value.map(r => r.id === region.id ? updated : r)
-        : [...regions.value, updated]
+      if (isCurrent()) {
+        const previous = regions.value.find(r => r.id === region.id)
+        const updated = { ...region, binding: previous?.binding ?? null }
+        regions.value = previous
+          ? regions.value.map(r => r.id === region.id ? updated : r)
+          : [...regions.value, updated]
+      }
       void loadTemplates()
       return { ok: true, error: null }
     } catch (err) {

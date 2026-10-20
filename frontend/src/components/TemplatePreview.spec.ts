@@ -25,6 +25,7 @@ vi.mock('../pdf/viewer', () => {
   const fakeViewport = (scale: number) => ({
     viewBox: [0, 0, 612, 792],
     convertToViewportPoint: (x: number, y: number): number[] => [x * scale, (792 - y) * scale],
+    convertToPdfPoint: (x: number, y: number): number[] => [x / scale, 792 - y / scale],
   })
   return {
     openDocument: vi.fn(async () => ({
@@ -611,19 +612,356 @@ describe('TemplatePreview 溢出分级（M7）', () => {
 
 
 it('添加遗漏区域提供显式框选指引，Esc 取消', async () => {
-  const store = usePreviewStore()
-  store.status = 'ready'
-  store.pdfData = new ArrayBuffer(8)
+  const { wrapper, store } = await readyWith([])
   store.proofreadMode = true
-  const wrapper = mount(TemplatePreview)
   await flushPromises()
   await wrapper.get('[data-testid="add-region"]').trigger('click')
   await flushPromises()
-  expect(wrapper.find('.frame-guide').text()).toContain('添加遗漏区域：')
+  expect(wrapper.find('.frame-guide').text()).toContain('添加可编辑区域：')
   window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
   await flushPromises()
-  expect(wrapper.find('.frame-guide').text()).not.toContain('添加遗漏区域：')
+  expect(wrapper.find('.frame-guide').text()).not.toContain('添加可编辑区域：')
+  await wrapper.get('.pdf-page').trigger('mousedown', { clientX: 5, clientY: 5, button: 0 })
+  window.dispatchEvent(new MouseEvent('mousemove', { clientX: 20, clientY: 20 }))
+  window.dispatchEvent(new MouseEvent('mouseup'))
+  await flushPromises()
+  expect(wrapper.find('[data-testid=region-name-dialog]').exists()).toBe(false)
   wrapper.unmount()
+})
+
+describe('区域检查与补选任务', () => {
+  async function workflow(items: DisplayRegion[] = []) {
+    const result = await readyWith(items)
+    ;(result.wrapper.get('.preview-scroll').element as HTMLElement).scrollTo = vi.fn()
+    result.store.currentVersionId = 8
+    const mode = vi.spyOn(result.store, 'toggleProofreadMode').mockImplementation(async on => {
+      result.store.proofreadMode = on
+      result.store.pdfData = new ArrayBuffer(on ? 9 : 10)
+    })
+    await flushPromises()
+    return { ...result, mode }
+  }
+  async function draw(wrapper: ReturnType<typeof mount>): Promise<void> {
+    await wrapper.get('.pdf-page').trigger('mousedown', { clientX: 10, clientY: 20, button: 0 })
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 24, clientY: 34 }))
+    window.dispatchEvent(new MouseEvent('mouseup'))
+    await flushPromises()
+  }
+  function action(wrapper: ReturnType<typeof mount>, text: string) {
+    return wrapper.findAll('button').find(button => button.text() === text)!
+  }
+
+  it('检查入口直接进入任务，下一处定位并打开浮层，返回恢复内容版本、缩放与滚动', async () => {
+    const { wrapper, store, mode } = await workflow([
+      region(1, { page: 0, x0: 100, y0: 200, x1: 300, y1: 250 }),
+    ])
+    const confirm = vi.spyOn(store, 'confirmRegion')
+    const container = wrapper.get('.preview-scroll').element as HTMLElement
+    container.scrollTo = vi.fn()
+    container.scrollTop = 85; container.scrollLeft = 12
+    await wrapper.get('[aria-label="预览缩放"]').setValue('1.25'); await flushPromises()
+    await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises()
+    expect(wrapper.get('.frame-guide').text()).toContain('检查可编辑区域')
+    expect(wrapper.get('[data-testid=proofread-progress]').text()).toBe('已处理 0/1')
+    await action(wrapper, '下一处待检查').trigger('click')
+    expect(wrapper.get('[data-testid=proofread-popover]').text()).toContain('字段1')
+    expect(confirm).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid=proofread-popover] .icon-btn').trigger('click')
+    container.scrollTop = 150; container.scrollLeft = 30
+    await wrapper.get('[aria-label="预览缩放"]').setValue('0.5'); await flushPromises()
+    await wrapper.get('[data-testid=finish-region-review]').trigger('click'); await flushPromises()
+    expect(mode.mock.calls.map(call => call[0])).toEqual([true, false])
+    expect(store.currentVersionId).toBe(8)
+    expect(wrapper.get('[aria-label="预览缩放"]').element).toHaveProperty('value', '1.25')
+    expect(container.scrollTop).toBe(85); expect(container.scrollLeft).toBe(12)
+    expect(wrapper.find('.frame-guide').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('默认名称避开已用序号，保存一次即返回文档，不追加重复确认', async () => {
+    const { wrapper, store, mode } = await workflow([1, 3].map(id => ({
+      ...region(id, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 }), label: `补选区域${id}`,
+    })))
+    const create = vi.spyOn(store, 'createFrameRegion').mockResolvedValue({ ok: true, error: null })
+    const confirm = vi.spyOn(store, 'confirmRegion')
+    await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
+    await draw(wrapper)
+    expect(wrapper.get('[data-testid=region-name-input]').element).toHaveProperty('value', '补选区域2')
+    await wrapper.get('[data-testid=region-name-dialog] form').trigger('submit'); await flushPromises()
+    expect(create).toHaveBeenCalledOnce()
+    expect(create.mock.calls[0]?.slice(1)).toEqual(['补选区域2', 'custom'])
+    expect(confirm).not.toHaveBeenCalled()
+    expect(mode.mock.calls.map(call => call[0])).toEqual([true, false])
+    expect(store.proofreadMode).toBe(false)
+    expect(wrapper.get('.region-feedback').text()).toContain('已保存区域「补选区域2」')
+    expect(store.currentVersionId).toBe(8)
+    wrapper.unmount()
+  })
+
+  it('继续添加保持框选，下一次保存可直接返回文档', async () => {
+    const { wrapper, store } = await workflow()
+    const create = vi.spyOn(store, 'createFrameRegion').mockImplementation(async (_frame, label) => {
+      store.regions = [...store.regions, {
+        ...region(store.regions.length + 1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 }), label, review_status: 'confirmed',
+      }]
+      return { ok: true, error: null }
+    })
+    await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
+    await draw(wrapper)
+    await action(wrapper, '保存并继续添加').trigger('click'); await flushPromises()
+    expect(store.proofreadMode).toBe(true)
+    expect(wrapper.find('[data-testid=region-name-dialog]').exists()).toBe(false)
+    expect(wrapper.get('.region-feedback').text()).toContain('可继续框选下一处')
+    await draw(wrapper)
+    expect(wrapper.get('[data-testid=region-name-input]').element).toHaveProperty('value', '补选区域2')
+    await wrapper.get('[data-testid=region-name-dialog] form').trigger('submit'); await flushPromises()
+    expect(create).toHaveBeenCalledTimes(2)
+    expect(store.proofreadMode).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('补选失败可直接重新框选并保留名称与类型', async () => {
+    const { wrapper, store } = await workflow()
+    const create = vi.spyOn(store, 'createFrameRegion').mockResolvedValueOnce({ ok: false, error: '框选包含多个段落' })
+      .mockResolvedValue({ ok: true, error: null })
+    await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
+    await draw(wrapper)
+    await wrapper.get('[data-testid=region-name-input]').setValue('自定义经历')
+    await wrapper.get('[data-testid=region-type-select]').setValue('work')
+    await wrapper.get('[data-testid=region-name-dialog] form').trigger('submit'); await flushPromises()
+    expect(store.proofreadMode).toBe(true)
+    await wrapper.get('[data-testid=reframe-region]').trigger('click')
+    expect(wrapper.find('[data-testid=region-name-dialog]').exists()).toBe(false)
+    await draw(wrapper)
+    expect(wrapper.get('[data-testid=region-name-input]').element).toHaveProperty('value', '自定义经历')
+    expect(wrapper.get('[data-testid=region-type-select]').element).toHaveProperty('value', 'work')
+    await wrapper.get('[data-testid=region-name-dialog] form').trigger('submit'); await flushPromises()
+    expect(create.mock.calls.map(call => call.slice(1))).toEqual([
+      ['自定义经历', 'work'], ['自定义经历', 'work'],
+    ])
+    expect(store.proofreadMode).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('从文档取消补选会返回文档，从检查任务取消只返回检查', async () => {
+    const { wrapper, store } = await workflow()
+    await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
+    await wrapper.get('[data-testid=cancel-region-task]').trigger('click'); await flushPromises()
+    expect(store.proofreadMode).toBe(false)
+    await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises()
+    await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
+    await wrapper.get('[data-testid=cancel-region-task]').trigger('click'); await flushPromises()
+    expect(store.proofreadMode).toBe(true)
+    expect(wrapper.get('.frame-guide').text()).toContain('检查可编辑区域')
+    await draw(wrapper)
+    expect(wrapper.find('[data-testid=region-name-dialog]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('返回失败仍保留文档位置，重试成功才结束检查', async () => {
+    const { wrapper, store, mode } = await workflow()
+    const container = wrapper.get('.preview-scroll').element as HTMLElement
+    container.scrollTop = 85
+    await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises()
+    container.scrollTop = 150
+    mode.mockImplementationOnce(async () => { store.error = '无法返回文档'; store.proofreadMode = true })
+    await wrapper.get('[data-testid=finish-region-review]').trigger('click'); await flushPromises()
+    expect(store.proofreadMode).toBe(true)
+    expect(wrapper.get('.error-banner').text()).toContain('无法返回文档')
+    await wrapper.get('[data-testid=finish-region-review]').trigger('click'); await flushPromises()
+    expect(store.proofreadMode).toBe(false)
+    expect(container.scrollTop).toBe(85)
+    wrapper.unmount()
+  })
+
+  it('模板加载期间不能完成检查或翻转预览模式', async () => {
+    const { wrapper, store, mode } = await workflow()
+    await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises()
+    store.status = 'loading'; await flushPromises()
+    expect(wrapper.get('[data-testid=finish-region-review]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid=add-region]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid=finish-region-review]').trigger('click')
+    expect(mode).toHaveBeenCalledTimes(1)
+    expect(store.proofreadMode).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('旧的返回请求完成后不清除后来同模板的新返回位置', async () => {
+    const { wrapper, store, mode } = await workflow()
+    const container = wrapper.get('.preview-scroll').element as HTMLElement
+    container.scrollTop = 85
+    await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises()
+    let finish!: () => void
+    mode.mockImplementationOnce(async () => {
+      store.proofreadMode = false
+      await new Promise<void>(resolve => { finish = resolve })
+    })
+    await wrapper.get('[data-testid=finish-region-review]').trigger('click')
+    store.currentTemplateId = 2; store.currentTemplateId = 1
+    await flushPromises()
+    container.scrollTop = 220
+    await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises()
+    finish(); await flushPromises()
+    container.scrollTop = 300
+    await wrapper.get('[data-testid=finish-region-review]').trigger('click'); await flushPromises()
+    expect(store.proofreadMode).toBe(false)
+    expect(container.scrollTop).toBe(220)
+    wrapper.unmount()
+  })
+
+  it.each(['template', 'mode'])('同一 tick 的 %s 往返也隔离旧创建与新命名草稿', async context => {
+    const { wrapper, store } = await workflow()
+    await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
+    await draw(wrapper)
+    let finish!: (result: { ok: boolean; error: string | null }) => void
+    vi.spyOn(store, 'createFrameRegion').mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    await wrapper.get('[data-testid=region-name-input]').setValue('旧任务')
+    await wrapper.get('[data-testid=region-name-dialog] form').trigger('submit')
+    if (context === 'template') { store.currentTemplateId = 2; store.currentTemplateId = 1 }
+    else { store.proofreadMode = false; store.proofreadMode = true }
+    await flushPromises()
+    await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
+    await draw(wrapper)
+    await wrapper.get('[data-testid=region-name-input]').setValue('新的同模板任务')
+    finish({ ok: true, error: null }); await flushPromises()
+    expect(wrapper.get('[data-testid=region-name-input]').element).toHaveProperty('value', '新的同模板任务')
+    expect(wrapper.get('[data-testid=region-name-dialog] button[type=submit]').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('切回同模板可开始新的检查保存，旧请求结束不会解锁新请求', async () => {
+    const { wrapper, store } = await workflow([
+      region(1, { page: 0, x0: 100, y0: 200, x1: 300, y1: 250 }),
+    ])
+    const pending: ((result: { ok: boolean; error: string | null }) => void)[] = []
+    vi.spyOn(store, 'confirmRegion').mockImplementation(() => new Promise(resolve => { pending.push(resolve) }))
+    await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises()
+    await action(wrapper, '下一处待检查').trigger('click')
+    await wrapper.get('[data-testid=proofread-confirm]').trigger('click')
+    store.currentTemplateId = 2; store.currentTemplateId = 1
+    await flushPromises()
+    await action(wrapper, '下一处待检查').trigger('click')
+    await wrapper.get('[data-testid=proofread-confirm]').trigger('click')
+    expect(pending).toHaveLength(2)
+    pending[0]!({ ok: true, error: null }); await flushPromises()
+    expect(wrapper.get('[data-testid=proofread-confirm]').attributes('disabled')).toBeDefined()
+    pending[1]!({ ok: false, error: '新任务保存失败' }); await flushPromises()
+    expect(wrapper.get('[data-testid=proofread-popover] [role=alert]').text()).toContain('新任务保存失败')
+    expect(wrapper.get('[data-testid=proofread-confirm]').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+})
+
+describe('区域框选与位置写入的交互保护', () => {
+  async function draw(wrapper: ReturnType<typeof mount>, selector = '.pdf-page'): Promise<void> {
+    await wrapper.get(selector).trigger('mousedown', { clientX: 10, clientY: 20, button: 0 })
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 24, clientY: 34 }))
+    window.dispatchEvent(new MouseEvent('mouseup'))
+    await flushPromises()
+  }
+  it('等待模板请求及新画布全部完成，加载期间不可重入或在旧 PDF 框选', async () => {
+    const { wrapper, store } = await readyWith([])
+    let finishRequest!: () => void
+    let finishCanvas!: () => void
+    const toggle = vi.spyOn(store, 'toggleProofreadMode').mockImplementation(async () => {
+      store.proofreadMode = true; store.refreshing = true
+      await new Promise<void>(resolve => { finishRequest = resolve })
+      store.pdfData = new ArrayBuffer(9); store.refreshing = false
+    })
+    renderSpy.mockImplementationOnce(() => new Promise<void>(resolve => { finishCanvas = resolve }))
+    await wrapper.get('[data-testid=add-region]').trigger('click')
+    await draw(wrapper)
+    expect(wrapper.find('[data-testid=region-name-dialog]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid=add-region]').exists()).toBe(false)
+    expect(toggle).toHaveBeenCalledTimes(1)
+    finishRequest(); await flushPromises()
+    expect(wrapper.get('.frame-guide').text()).toContain('正在准备模板原文')
+    await draw(wrapper)
+    expect(wrapper.find('[data-testid=region-name-dialog]').exists()).toBe(false)
+    finishCanvas(); await flushPromises()
+    await draw(wrapper)
+    expect(wrapper.find('[data-testid=region-name-dialog]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+  it('取消加载后旧请求完成不会重新进入框选', async () => {
+    const { wrapper, store } = await readyWith([])
+    let finish!: () => void
+    vi.spyOn(store, 'toggleProofreadMode').mockImplementation(async on => {
+      if (!on) { store.proofreadMode = false; store.refreshing = false; return }
+      store.proofreadMode = true; store.refreshing = true
+      await new Promise<void>(resolve => { finish = resolve })
+      store.pdfData = new ArrayBuffer(9); store.refreshing = false
+    })
+    await wrapper.get('[data-testid=add-region]').trigger('click')
+    await wrapper.get('[data-testid=cancel-region-task]').trigger('click')
+    finish(); await flushPromises()
+    await draw(wrapper)
+    expect(wrapper.find('[data-testid=region-name-dialog]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+  it('微调保存期间锁定拖动，失败保留矩形并可按相同身份重试', async () => {
+    const { wrapper, store } = await readyWith([
+      region(1, { page: 0, x0: 100, y0: 200, x1: 300, y1: 250 }),
+    ])
+    store.proofreadMode = true; await flushPromises()
+    await wrapper.get('.overlay').trigger('click')
+    await wrapper.get('[data-testid=proofread-adjust]').trigger('click')
+    let finish!: (result: { ok: boolean; error: string | null }) => void
+    const patch = vi.spyOn(store, 'adjustRegionBBox').mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    await draw(wrapper, '[data-testid=adjust-frame]')
+    expect(wrapper.get('.frame-guide').text()).toContain('正在保存区域位置')
+    await draw(wrapper, '[data-testid=adjust-frame]')
+    expect(patch).toHaveBeenCalledTimes(1)
+    finish({ ok: false, error: '位置保存失败，请重试' }); await flushPromises()
+    expect(wrapper.get('.frame-guide [role=alert]').text()).toContain('位置保存失败')
+    expect(wrapper.find('[data-testid=adjust-frame]').exists()).toBe(true)
+    const first = patch.mock.calls[0]
+    patch.mockResolvedValue({ ok: true, error: null })
+    await wrapper.get('[data-testid=retry-region-position]').trigger('click')
+    await flushPromises()
+    expect(patch.mock.calls[1]).toEqual(first)
+    expect(first[0]).toBe(1)
+    expect(wrapper.find('[data-testid=adjust-frame]').exists()).toBe(false)
+    expect(store.regions.map(item => item.id)).toEqual([1])
+    wrapper.unmount()
+  })
+  it('重新定位失败保留任务，重试不会创建新的区域', async () => {
+    const { wrapper, store } = await readyWith([region(7, null)])
+    store.proofreadMode = true; await flushPromises()
+    const create = vi.spyOn(store, 'createFrameRegion')
+    const patch = vi.spyOn(store, 'adjustRegionBBox').mockResolvedValue({ ok: false, error: '位置范围不正确' })
+    await wrapper.get('.unplaced-chip').trigger('click'); await flushPromises()
+    await draw(wrapper)
+    expect(wrapper.get('.frame-guide [role=alert]').text()).toContain('位置范围不正确')
+    expect(wrapper.get('.frame-guide').text()).toContain('重新定位「字段7」')
+    patch.mockResolvedValue({ ok: true, error: null })
+    await wrapper.get('[data-testid=retry-region-position]').trigger('click'); await flushPromises()
+    expect(patch.mock.calls.map(call => call[0])).toEqual([7, 7])
+    expect(create).not.toHaveBeenCalled()
+    expect(store.regions.map(item => item.id)).toEqual([7])
+    wrapper.unmount()
+  })
+  it('区域创建防重复，旧模板请求完成不会清除新模板命名草稿', async () => {
+    const { wrapper, store } = await readyWith([])
+    store.proofreadMode = true; await flushPromises()
+    await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
+    await draw(wrapper)
+    let finish!: (result: { ok: boolean; error: string | null }) => void
+    const create = vi.spyOn(store, 'createFrameRegion').mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    await wrapper.get('[data-testid=region-name-input]').setValue('旧任务')
+    await wrapper.get('[data-testid=region-name-dialog] form').trigger('submit')
+    await wrapper.get('[data-testid=region-name-dialog] form').trigger('submit')
+    expect(create).toHaveBeenCalledTimes(1)
+    store.currentTemplateId = 2; store.pdfData = new ArrayBuffer(10)
+    await flushPromises()
+    await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
+    await draw(wrapper)
+    await wrapper.get('[data-testid=region-name-input]').setValue('新的命名草稿')
+    finish({ ok: true, error: null }); await flushPromises()
+    expect(wrapper.get('[data-testid=region-name-input]').element).toHaveProperty('value', '新的命名草稿')
+    expect(wrapper.get('[data-testid=region-name-dialog] button[type=submit]').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
 })
 
 
@@ -635,7 +973,7 @@ it('未定位项可直接重新框选并保留原区域身份', async () => {
   await flushPromises()
   expect(wrapper.find('.frame-guide').text()).toContain('重新定位「字段7」')
   expect(store.regions.map(r => r.id)).toEqual([7])
-  await wrapper.get('.frame-guide button').trigger('click')
+  await wrapper.get('[data-testid=cancel-region-task]').trigger('click')
   await flushPromises()
   expect(wrapper.find('.frame-guide').text()).not.toContain('重新定位「字段7」')
   wrapper.unmount()
