@@ -115,6 +115,34 @@ it('校对保存期间保留浮层并锁定，失败内联展示，成功后才�
 })
 
 describe('TemplatePreview（M5a 只读预览）', () => {
+  it('预览工具默认折叠，展开后可按 Esc 或点外部收起', async () => {
+    const { wrapper } = await readyWith([])
+    const tools = wrapper.get('details.legend-menu')
+    expect(tools.attributes('open')).toBeUndefined()
+    const element = tools.element as HTMLDetailsElement
+    element.open = true
+    await tools.trigger('keydown', { key: 'Escape' })
+    expect(element.open).toBe(false)
+    element.open = true
+    document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    expect(element.open).toBe(false)
+    wrapper.unmount()
+  })
+  it('正常稿件可从工具条归档，校对或刷新时不归档模板画面', async () => {
+    const { wrapper, store } = await readyWith([])
+    store.currentVersionId = 3
+    await flushPromises()
+    await wrapper.get('[data-testid=archive-btn]').trigger('click')
+    expect(wrapper.emitted('archive')).toHaveLength(1)
+    store.proofreadMode = true
+    await flushPromises()
+    expect(wrapper.get('[data-testid=archive-btn]').attributes('disabled')).toBeDefined()
+    store.proofreadMode = false
+    store.refreshing = true
+    await flushPromises()
+    expect(wrapper.get('[data-testid=archive-btn]').attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
   it('idle 态：提示选择模板', () => {
     const wrapper = mountPreview()
     expect(wrapper.text()).toContain('请在上方工具条选择模板开始预览')
@@ -422,7 +450,7 @@ describe('TemplatePreview 版本控件（M8）', () => {
 
     const select = wrapper.find('[data-testid="version-select"]')
     expect(select.exists()).toBe(true)
-    expect(select.text()).toContain('默认版本（1 项绑定）')
+    expect(select.findAll('option').map(option => option.text())).toEqual(['默认版本', '投递B岗'])
     expect(wrapper.find('[data-testid="template-manage"]').exists()).toBe(true)
   })
 

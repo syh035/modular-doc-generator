@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { formatOverflowGrowth } from '../utils/overflow'
-import { computed } from 'vue'
+import { computed, defineAsyncComponent, ref } from 'vue'
 import type { DisplayRegion } from '../stores/preview'
 import { useAppStore } from '../stores/app'
 import { usePreviewStore } from '../stores/preview'
 
 const appStore = useAppStore()
 const previewStore = usePreviewStore()
+const DataMaintenance = defineAsyncComponent(() => import('./DataMaintenance.vue'))
+const maintenanceOpen = ref(false)
 const emit = defineEmits<{ locate: [region: DisplayRegion] }>()
 /** 溢出区域清单：大超出在前，同级按溢出比例降序。 */
 const overflowRegions = computed(() =>
@@ -43,16 +45,19 @@ const largeOverflowCount = computed(
   <!-- 底部状态条：左下角服务状态（绿点+文字，2026-09-18 自 TopBar 右上角迁入）；
        校对模式开关（M5b，选中模板才可用）/ 溢出提示（M7 实现） -->
   <footer class="status-bar">
-    <span
+    <button
+      type="button"
       class="health"
+      aria-label="服务状态与预览维护"
       :class="{ bad: !!appStore.healthError }"
       :title="appStore.healthError ?? (appStore.health?.libreoffice.hint ?? '服务正常')"
+      @click="maintenanceOpen = true"
     >
       <i class="dot" />
       <span v-if="appStore.healthError">{{ appStore.healthError }}</span>
       <span v-else-if="appStore.health">服务正常</span>
       <span v-else>正在连接本地服务…</span>
-    </span>
+    </button>
     <span
       v-if="appStore.health && !appStore.health.libreoffice.available"
       class="warn"
@@ -99,6 +104,10 @@ const largeOverflowCount = computed(
       校对模式
     </label>
   </footer>
+  <DataMaintenance
+    v-if="maintenanceOpen"
+    @close="maintenanceOpen = false"
+  />
 </template>
 
 <style scoped>
@@ -118,6 +127,11 @@ const largeOverflowCount = computed(
 }
 
 .health {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;

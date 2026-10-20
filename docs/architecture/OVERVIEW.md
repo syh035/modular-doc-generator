@@ -34,9 +34,11 @@ flowchart LR
 | [frontend/src/composables](../../frontend/src/composables/) | 共享弹层键盘与焦点生命周期 |
 | [frontend/src/pdf](../../frontend/src/pdf/) | pdfjs 渲染及坐标换算 |
 
-六类弹层使用原生 `dialog.showModal()` 进入浏览器顶层并隔离背景，遮罩覆盖全窗。[useModalEsc](../../frontend/src/composables/useModalEsc.ts) 统一处理 Esc、Tab 循环、动态内容的焦点保留及关闭后归还焦点；迁移关闭沿用跳过语义。块库分隔条支持鼠标和左右键调宽，沿用现有 store 的边界与持久化。
+弹层使用原生 `dialog.showModal()` 进入浏览器顶层并隔离背景，遮罩覆盖全窗。[useModalEsc](../../frontend/src/composables/useModalEsc.ts) 统一处理 Esc、Tab 循环、动态内容的焦点保留及关闭后归还焦点；迁移关闭沿用跳过语义。块库分隔条支持鼠标和左右键调宽，沿用现有 store 的边界与持久化。
 
-溢出清单在 StatusBar 展示，通过 locate 事件经 App 转发至 TemplatePreview 暴露的 jumpToRegion，保留滚页和 1.8 秒闪烁。状态栏固定高度，清单横向滚动。TemplateManager 模态管理面板集中管理模板和版本：浏览不切换文档，显式使用才触发 store 切换；模板快速选择与内容版本选择仍在工具条，视图缩放和图例另成一行。
+溢出清单在 StatusBar 展示，通过 locate 事件经 App 转发至 TemplatePreview 暴露的 jumpToRegion，保留滚页和 1.8 秒闪烁。状态栏固定高度，清单横向滚动。顶栏默认「工作台／归档库／更多」，导入、指南与撤销／重做收纳到「更多」，快捷键保留。TemplateManager 从文档工具条「管理」打开，集中管理模板和版本：浏览不切换文档，显式使用才触发 store 切换。
+
+文档工具条保留块库、模板／内容版本两个快速选择、「管理」「归档」和「导出」，版本选项不重复显示绑定数量；选择器仅在画布容器 ≤560px 时另排一行，避免展开块库后过早换行。缩放、补选和图例放入画布底部可折叠的「预览工具」，绑定统计或校对进度仍显示；面板占用正常布局空间，不覆盖 PDF。此调整只收敛布局与入口，不改变内容版本命名和校对流程。
 
 BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜索。块库保留块编辑标签与已有数据，统一通过搜索查找；块库只按统一查询过滤，不叠加不可见的 activeTagId。兼容的标签 API 和 store 能力保留。BlockEditor 宽版弹窗处理新建／编辑，App 在 ≤900px 使用 BlockDrawer。整页／宽度缩放由 previewScale 计算，PDF 与覆盖层共用同一 scale 和 viewport，不改变单渲染管线。
 
@@ -46,7 +48,7 @@ BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜�
 
 ## 内容资产和持久化
 
-[schema.py](../../backend/app/models/schema.py) 定义 `blocks / tags / block_tags / templates / regions / versions / bindings / template_blocks / template_candidate_scans / version_region_actions`。
+[schema.py](../../backend/app/models/schema.py) 定义 `blocks / tags / block_tags / templates / regions / versions / bindings / template_blocks / template_candidate_scans / version_region_actions / archives`。
 
 - 块是独立于模板的多行纯文本资产，通过标签组织；删除采用软删除。
 - 模板保存原文件路径、SHA-256 指纹和解析/校对状态；同内容重传关联已有模板。
@@ -54,7 +56,7 @@ BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜�
 - 区域属于模板，文档流 anchor 承担定位身份，bbox 供页面展示和测量。
 - 版本属于模板；一个版本的一个区域至多绑定一个块，同一块可被多个区域或版本引用。
 - 被引用块软删除后，相关绑定进入 missing 状态；渲染与导出按现行降级规则处理。
-- 工作稿渲染读取当前块内容；冻结归档独立存储当时的 DOCX／PDF 字节、来源和校验信息。`archives` 不对来源模板或版本建立级联外键，原件删除、共享块修改及工作稿撤销不影响归档。归档只能读取、下载或显式删除，不提供修改内容接口。
+- 工作稿渲染读取当前块内容；「归档」独立存储当时的 DOCX／PDF 字节、来源和校验信息，不移动或删除工作稿。「归档库」支持搜索、只读预览、下载和显式删除，不提供修改内容接口。`archives` 不对来源模板或版本建立级联外键，原件删除、共享块修改及工作稿撤销不影响归档。
 
 [db.py](../../backend/app/models/db.py) 开启 WAL 与外键。一次 `get_conn()` 范围内的写入统一提交，异常回滚，repositories 不自行提交。现有迁移是幂等的轻量补列/删列，没有单独的版本化迁移框架。
 
@@ -84,7 +86,7 @@ BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜�
 - 渲染与导出：模板/版本 preview、版本 overlay 和 export。
 - 跨模板迁移：模板 migrate/plan 与 migrate/apply；按类型及顺序匹配，custom 需人工选择。
 
-[config.py](../../backend/app/core/config.py) 通过 `MODUDOC_DATA_DIR` 指定数据目录；源码开发默认项目 `data/`，下载 App 使用 `~/Library/Application Support/ModularDocGenerator/Data`。该目录包含 SQLite、模板、缓存、导出、字体配置和 LO profile，备份需保留整个目录。`MODUDOC_STATIC_DIR` 指向 App 内的生产前端，应用资源只读。运行说明见 [应用指南](../../desktop/README.md)和[开发规范](../development/WORKFLOW.md)。
+[config.py](../../backend/app/core/config.py) 通过 `MODUDOC_DATA_DIR` 指定数据目录；源码开发默认项目 `data/`，下载 App 使用 `~/Library/Application Support/ModularDocGenerator/Data`。该目录包含 SQLite、模板、缓存、导出、字体配置和 LO profile；手工复制数据需先退出应用并保留整个目录。应用内不提供备份与恢复，已有备份文件不主动删除。`MODUDOC_STATIC_DIR` 指向 App 内的生产前端，应用资源只读。运行说明见 [应用指南](../../desktop/README.md)和[开发规范](../development/WORKFLOW.md)。
 
 ## 平台与后续边界
 
@@ -98,7 +100,7 @@ BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜�
 
 转换磁盘缓存键包含 DOCX 和字体／转换器环境身份，默认限制 512 MiB；单份超限保留当前产物。读出 PDF 字节前与清理共用锁，响应不再依赖发送期间仍存在的缓存路径。近期渲染键包括来源字节、区域／绑定／块状态、排版动作、环境和溢出阈值。
 
-归档与资料库维护 API 分别位于 `api/archives.py`、`api/maintenance.py`。备份用 SQLite backup API 获取一致性库，ZIP 保存数据库、模板原件与 SHA-256 清单，归档字节包含在数据库内；缓存和临时导出可重建。备份压缩文件上限 256 MiB、解压内容上限 512 MiB。恢复先验证清单、数据库、外键、模板和归档校验值，再保留恢复前备份并替换，失败回滚；同一服务内资料库请求串行化，健康检查仍可响应。恢复后清空撤销与渲染批次。
+归档 API 位于 `api/archives.py`，保存、列出、下载与删除均面向独立归档记录；搜索由前端按名称和来源筛选。`api/maintenance.py` 仅保留预览缓存状态与清理，前端从服务状态进入「预览维护」；归档库不承担系统维护。应用内备份导出、校验、恢复和旧备份下载 API 已移除，磁盘上的已有备份不迁移或删除；旧库迁移继续使用内部 SQLite 一致性复制和空库保护。
 
 
 [原生 AppKit 应用](../../desktop/README.md)通过 WKWebView 提供独立工作台窗口；代码、前端和离线依赖随 App，Python 3.12 与 LibreOffice 由环境检测引导安装。Foundation Process 启动一个 Python 后端，健康响应的 application、project_fingerprint 与 data_fingerprint 校验资源和数据身份后才复用已有服务。停止、退出及启动失败回滚只操作本实例拥有的进程；系统通知须主动授权。

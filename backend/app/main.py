@@ -56,7 +56,6 @@ def create_app() -> FastAPI:
             and (
                 path.startswith("/api/templates")
                 or "/archives" in path
-                or path == "/api/maintenance/restore"
                 or path.endswith("/export")
                 or (
                     request.method == "DELETE"
@@ -100,7 +99,7 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def library_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
-        # A single-user library must not mutate/render while a backup or restore copies it.
+        # Freeze each archive from one consistent state of the live version and library.
         # Health remains responsive while document conversion runs.
         if request.url.path.startswith("/api/") and request.url.path != "/api/health":
             async with library_gate:

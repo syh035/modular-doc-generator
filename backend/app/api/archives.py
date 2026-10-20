@@ -98,7 +98,9 @@ def download_archive(archive_id: int, format: str) -> Response:
         raise AppError("ARCHIVE_NOT_FOUND", "归档不存在", status_code=404)
     data = bytes(row[1])
     if hashlib.sha256(data).hexdigest() != row[2]:
-        raise AppError("ARCHIVE_CORRUPT", "归档校验失败，请从备份恢复", status_code=409)
+        raise AppError(
+            "ARCHIVE_CORRUPT", "归档文件已损坏，无法下载，请使用另行保存的副本", status_code=409
+        )
     filename = quote(f"归档-{sanitize_filename_part(row[0])}.{format}")
     return Response(
         data,

@@ -21,8 +21,18 @@ import TemplateManager from './TemplateManager.vue'
 import { PageCanvasCache } from '../pdf/pageCache'
 import { previewScale } from '../pdf/scale'
 
-const emit = defineEmits<{ import: [] }>()
+const emit = defineEmits<{ import: []; archive: [] }>()
 const managerOpen = ref(false)
+const previewTools = ref<HTMLDetailsElement | null>(null)
+function closePreviewTools(returnFocus = false): void {
+  if (previewTools.value) previewTools.value.open = false
+  if (returnFocus) previewTools.value?.querySelector('summary')?.focus()
+}
+function outsidePreviewTools(event: PointerEvent): void {
+  if (event.target instanceof Node && !previewTools.value?.contains(event.target)) closePreviewTools()
+}
+onMounted(() => document.addEventListener('pointerdown', outsidePreviewTools))
+onBeforeUnmount(() => document.removeEventListener('pointerdown', outsidePreviewTools))
 const store = usePreviewStore()
 const blocksStore = useBlocksStore()
 /** 滚动容器（页面按 fit-width 平铺，纵向滚动）。 */
@@ -860,7 +870,7 @@ defineExpose({ jumpToRegion })
                   :key="v.id"
                   :value="v.id"
                 >
-                  {{ v.name }}（{{ v.binding_count }} 项绑定）
+                  {{ v.name }}
                 </option>
               </select>
             </label>
@@ -869,11 +879,22 @@ defineExpose({ jumpToRegion })
         <button
           class="tool-btn"
           data-testid="template-manage"
+          title="管理模板与内容版本"
+          aria-label="模板与版本"
           @click="managerOpen = true"
         >
-          模板与版本
+          管理
         </button>
         <template v-if="store.currentVersionId !== null">
+          <button
+            class="tool-btn"
+            :disabled="store.proofreadMode || store.exportBusy || store.refreshing || store.status !== 'ready'"
+            title="保存此刻的 Word 和 PDF 到独立归档库"
+            data-testid="archive-btn"
+            @click="emit('archive')"
+          >
+            归档
+          </button>
           <button
             class="tool-btn primary"
             :disabled="store.proofreadMode || store.exportBusy"
@@ -881,7 +902,7 @@ defineExpose({ jumpToRegion })
             data-testid="export-btn"
             @click="onExport"
           >
-            导出 DOCX
+            导出
           </button>
         </template>
       </div>
@@ -890,79 +911,73 @@ defineExpose({ jumpToRegion })
       v-if="store.status === 'ready'"
       class="preview-controls"
     >
-      <label class="zoom-control">视图
-        <select
-          v-model="zoom"
-          aria-label="预览缩放"
-        ><option value="page">整页</option><option value="width">适合宽度</option><option value="0.5">50%</option><option value="0.75">75%</option><option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option></select>
-        <span>{{ Math.round(renderedScale * 100) }}% · {{ pages.length }} 页</span>
-      </label>
-      <span
-        v-if="blocksStore.selectedBlock"
-        class="selected-context"
-      >已选：{{ blocksStore.selectedBlock.name }} <button
-        class="clear-selection"
-        aria-label="取消选中的内容块"
-        @click="blocksStore.selectBlock(blocksStore.selectedBlock.id)"
-      >×</button></span>
-      <button
-        class="tool-btn"
-        data-testid="add-region"
-        @click="startFrame()"
-      >
-        添加遗漏区域
-      </button>
-      <span class="legend legend-wide">
+      <div class="preview-context">
+        <span
+          v-if="blocksStore.selectedBlock"
+          class="selected-context"
+        >已选：{{ blocksStore.selectedBlock.name }} <button
+          class="clear-selection"
+          aria-label="取消选中的内容块"
+          @click="blocksStore.selectBlock(blocksStore.selectedBlock.id)"
+        >×</button></span>
         <span
           v-if="store.refreshing"
           class="refreshing"
         ><span class="spinner" />正在刷新预览…</span>
-        <!-- 校对模式图例：候选按置信度分色 + 进度 -->
-        <template v-if="store.status === 'ready' && store.proofreadMode">
-          <i class="dot cand-high" />高置信候选
-          <i class="dot cand-low" />低置信候选
-          <i class="dot confirmed" />已确认
-          <i class="dot excluded" />已排除
+        <span class="legend legend-wide">
           <span
+            v-if="store.proofreadMode"
             class="progress"
             data-testid="proofread-progress"
           >已处理 {{ proofreadProgress.done }}/{{ proofreadProgress.total }}</span>
-        </template>
-        <template v-else-if="store.status === 'ready'">
-          <i class="dot bound" />已绑定 {{ boundCount }}
-          <i class="dot pending" />待绑定 {{ pendingCount }}
-          <i class="dot unrecognized" />未定位 {{ unplaced.length }}
-        </template>
-      </span>
-      <details
-        name="preview-toolbar-menu"
-        class="legend-menu"
-      >
-        <summary aria-label="显示图例">
-          ? 图例
-        </summary>
-        <span class="legend">
-          <span
-            v-if="store.refreshing"
-            class="refreshing"
-          ><span class="spinner" />正在刷新预览…</span>
-          <!-- 校对模式图例：候选按置信度分色 + 进度 -->
-          <template v-if="store.status === 'ready' && store.proofreadMode">
-            <i class="dot cand-high" />高置信候选
-            <i class="dot cand-low" />低置信候选
-            <i class="dot confirmed" />已确认
-            <i class="dot excluded" />已排除
-            <span
-              class="progress"
-              data-testid="proofread-progress"
-            >已处理 {{ proofreadProgress.done }}/{{ proofreadProgress.total }}</span>
-          </template>
-          <template v-else-if="store.status === 'ready'">
-            <i class="dot bound" />已绑定 {{ boundCount }}
-            <i class="dot pending" />待绑定 {{ pendingCount }}
-            <i class="dot unrecognized" />未定位 {{ unplaced.length }}
+          <template v-else>
+            <span>已绑定 {{ boundCount }}</span>
+            <span>待绑定 {{ pendingCount }}</span>
+            <span v-if="unplaced.length">未定位 {{ unplaced.length }}</span>
           </template>
         </span>
+      </div>
+      <details
+        ref="previewTools"
+        name="preview-toolbar-menu"
+        class="legend-menu"
+        @keydown.esc.stop.prevent="closePreviewTools(true)"
+      >
+        <summary aria-label="预览工具">
+          预览工具 <span>{{ pages.length }} 页</span>
+        </summary>
+        <div class="preview-options">
+          <label class="zoom-control">缩放
+            <select
+              v-model="zoom"
+              aria-label="预览缩放"
+            ><option value="page">整页</option><option value="width">适合宽度</option><option value="0.5">50%</option><option value="0.75">75%</option><option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option></select>
+            <span>{{ Math.round(renderedScale * 100) }}%</span>
+          </label>
+          <button
+            class="tool-btn"
+            data-testid="add-region"
+            @click="closePreviewTools(); startFrame()"
+          >
+            添加遗漏区域
+          </button>
+          <p class="legend-title">
+            区域图例
+          </p>
+          <div class="legend">
+            <template v-if="store.proofreadMode">
+              <span><i class="dot cand-high" />高置信候选</span>
+              <span><i class="dot cand-low" />低置信候选</span>
+              <span><i class="dot confirmed" />已确认</span>
+              <span><i class="dot excluded" />已排除</span>
+            </template>
+            <template v-else>
+              <span><i class="dot bound" />已绑定</span>
+              <span><i class="dot pending" />待绑定</span>
+              <span><i class="dot unrecognized" />未定位</span>
+            </template>
+          </div>
+        </div>
       </details>
     </div>
 
@@ -1213,29 +1228,39 @@ defineExpose({ jumpToRegion })
   container-type: inline-size;
 }
 
-.preview-toolbar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
-.toolbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; width: 100%; }
+.preview-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+.toolbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; width: 100%; }
 .overlay.heading { border-style: dashed; }
 .frame-guide { position: sticky; top: 0; z-index: 5; background: var(--bg-muted); padding: 10px 12px; border: 1px solid var(--border); margin-bottom: 10px; }
-.selection-group { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
-.context-select { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; max-width: 340px; }
-.context-select > span { font-size: 11px; color: var(--text-2); }
-.version-context { max-width: 240px; }
-.template-select { width: 100%; min-width: 0; color: var(--text-1); }
-.library-expand, .tool-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 7px 12px; font-size: 13px; color: var(--text-2); background: var(--bg-surface); border: 1px solid var(--border-control); border-radius: 7px; white-space: nowrap; cursor: pointer; flex-shrink: 0; }
+.selection-group { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.context-select { display: flex; min-width: 0; flex: 1.5; max-width: 340px; }
+.context-select > span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+.version-context { flex: 1; max-width: 180px; }
+.template-select { width: 100%; min-width: 0; min-height: 34px; padding: 6px 8px; font-size: 12px; color: var(--text-1); text-overflow: ellipsis; border: 1px solid var(--border); border-radius: 6px; }
+.library-expand, .tool-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 6px 9px; font-size: 13px; color: var(--text-2); background: var(--bg-surface); border: 1px solid transparent; border-radius: 6px; white-space: nowrap; cursor: pointer; flex-shrink: 0; }
+.library-expand:hover, .tool-btn:hover { background: var(--bg-hover); }
+.tool-btn[data-testid=archive-btn] { border-color: var(--border); color: var(--text-1); }
 .tool-btn.primary { color: var(--text-on-primary); background: var(--primary); border-color: var(--primary); }
-.preview-controls { display: flex; align-items: center; gap: 14px; min-height: 44px; padding: 6px 18px; background: var(--bg-surface); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
+.tool-btn.primary:hover { background: var(--primary-hover); }
+.preview-controls { position: relative; order: 3; z-index: 6; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 6px 12px; border-top: 1px solid var(--border); background: var(--bg-preview); font-size: 12px; color: var(--text-2); pointer-events: none; }
+.preview-context { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
 .zoom-control { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-.zoom-control select { min-height: 30px; padding: 4px 6px; font-size: 12px; }
-.selected-context { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--primary); }
+.zoom-control select { flex: 1; min-width: 0; min-height: 30px; padding: 4px 6px; font-size: 12px; }
+.selected-context { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--primary); background: var(--bg-surface); border-radius: 6px; padding: 4px 8px; pointer-events: auto; }
 .clear-selection { border: none; padding: 2px 4px; color: var(--text-2); }
-.legend-wide { margin-left: auto; }
-.legend-menu { display: none; position: relative; margin-left: auto; }
-.legend-menu summary { cursor: pointer; white-space: nowrap; }
-.legend-menu > .legend { display: none; }
-.legend-menu[open] > .legend { display: flex; position: absolute; right: 0; top: 100%; width: 240px; flex-wrap: wrap; padding: 14px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; z-index: 10; box-shadow: 0 4px 16px var(--shadow-modal); }
-@container (max-width: 800px) { .legend.legend-wide { display: none; } .legend-menu { display: block; } .preview-toolbar { padding: 10px 12px; } .toolbar-left { flex-wrap: wrap; } .selection-group { order: 3; flex-basis: 100%; } .context-select { max-width: none; } .tool-btn.primary { margin-left: auto; } .preview-controls { padding: 6px 12px; gap: 8px; flex-wrap: wrap; } .selected-context { order: 3; flex-basis: 100%; } }
-@container (max-width: 420px) { .tool-btn, .library-expand { padding: 6px 9px; font-size: 12px; } .toolbar-left { gap: 6px; } .zoom-control { gap: 4px; } }
+.legend.legend-wide { gap: 10px; flex-wrap: wrap; font-size: 11px; }
+.legend-menu { position: relative; flex-shrink: 0; pointer-events: auto; }
+.legend-menu summary { padding: 7px 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 7px; cursor: pointer; white-space: nowrap; box-shadow: 0 2px 8px var(--shadow-page); }
+.legend-menu summary > span { color: var(--text-3); margin-left: 8px; font-size: 11px; }
+.legend-menu > .preview-options { display: none; }
+.legend-menu[open] > .preview-options { display: flex; flex-direction: column; gap: 14px; position: absolute; right: 0; bottom: calc(100% + 8px); width: min(300px, calc(100vw - 32px)); max-height: calc(100dvh - 200px); overflow: auto; padding: 16px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 10px; z-index: 10; box-shadow: 0 4px 16px var(--shadow-modal); }
+.preview-options .tool-btn { justify-content: flex-start; border-color: var(--border); }
+.preview-options .legend { flex-wrap: wrap; gap: 10px; }
+.preview-options .legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.preview-options .dot { margin: 0; }
+.legend-title { font-size: 11px; color: var(--text-3); }
+@container (max-width: 560px) { .toolbar-left { flex-wrap: wrap; } .selection-group { order: 2; flex-basis: 100%; } .context-select { max-width: none; } .library-expand { margin-right: auto; } }
+@container (max-width: 420px) { .tool-btn, .library-expand { padding: 6px 8px; font-size: 12px; } .toolbar-left { gap: 6px; } .preview-controls { gap: 6px; } .legend.legend-wide { gap: 6px; font-size: 10px; } }
 
 .legend {
   display: flex;

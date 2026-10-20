@@ -14,9 +14,15 @@ import GuidePage from './components/GuidePage.vue'
 import StatusBar from './components/StatusBar.vue'
 import TemplatePreview from './components/TemplatePreview.vue'
 import TopBar from './components/TopBar.vue'
+import ArchiveDialog from './components/ArchiveDialog.vue'
 
 const previewRef = ref<InstanceType<typeof TemplatePreview> | null>(null)
 const topBarRef = ref<InstanceType<typeof TopBar> | null>(null)
+const archiveOpen = ref(false)
+function archived(archiveId: number): void {
+  archiveOpen.value = false
+  topBarRef.value?.openArchives(archiveId)
+}
 const narrow = ref(false)
 const narrowQuery = window.matchMedia('(max-width: 900px)')
 function updateNarrow(): void { narrow.value = narrowQuery.matches }
@@ -130,9 +136,15 @@ onBeforeUnmount(stopResize)
       <TemplatePreview
         ref="previewRef"
         @import="topBarRef?.pickFile()"
+        @archive="archiveOpen = true"
       />
     </div>
     <StatusBar @locate="previewRef?.jumpToRegion($event)" />
+    <ArchiveDialog
+      v-if="archiveOpen"
+      @close="archiveOpen = false"
+      @saved="archived"
+    />
   </div>
 </template>
 

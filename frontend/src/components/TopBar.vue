@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAppStore } from '../stores/app'
 import { useHistoryStore } from '../stores/history'
 import { useBlocksStore } from '../stores/blocks'
@@ -11,7 +11,50 @@ const previewStore = usePreviewStore()
 const history = useHistoryStore()
 const blocks = useBlocksStore()
 const libraryOpen = ref(false)
+const initialArchiveId = ref<number | null>(null)
+const moreOpen = ref(false)
+const moreRoot = ref<HTMLElement | null>(null)
+const moreTrigger = ref<HTMLButtonElement | null>(null)
+const moreMenu = ref<HTMLElement | null>(null)
+function closeMore(returnFocus = false): void {
+  const focusedInside = moreMenu.value?.contains(document.activeElement)
+  moreOpen.value = false
+  if (returnFocus && focusedInside) moreTrigger.value?.focus()
+}
+async function toggleMore(): Promise<void> {
+  moreOpen.value = !moreOpen.value
+  if (moreOpen.value) {
+    await nextTick()
+    moreMenu.value?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+  }
+}
+function closeMoreOutside(event: MouseEvent): void {
+  if (event.target instanceof Node && !moreRoot.value?.contains(event.target)) closeMore()
+}
+function moreKeydown(event: KeyboardEvent): void {
+  if (!moreOpen.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault(); closeMore(); moreTrigger.value?.focus()
+  } else if (event.key === 'Tab') closeMore(true)
+  else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    event.preventDefault()
+    const buttons = [...moreMenu.value?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? []]
+    const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+      : (current + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length
+    buttons[next]?.focus()
+  }
+}
+function selectTab(tab: 'workbench' | 'guide'): void {
+  closeMore(true); appStore.setTab(tab)
+}
+function openArchives(archiveId: number | null = null): void {
+  closeMore()
+  initialArchiveId.value = archiveId
+  libraryOpen.value = true
+}
 async function moveHistory(redo: boolean): Promise<void> {
+  closeMore(true)
   await history.move(redo, async () => {
     await Promise.all([blocks.loadBlocks(), blocks.loadTags()])
     await previewStore.reloadAfterHistory()
@@ -31,14 +74,21 @@ watch([() => previewStore.uploadStartedAt, rendering], ([started, active]) => {
   renderStartedAt.value = active ? Date.now() : null
   if (started !== null || active) ticker = setInterval(() => { now.value = Date.now() }, 1000)
 })
-onBeforeUnmount(() => { if (ticker) clearInterval(ticker) })
+onBeforeUnmount(() => {
+  if (ticker) clearInterval(ticker)
+  document.removeEventListener('click', closeMoreOutside)
+  document.removeEventListener('keydown', moreKeydown)
+})
 
 onMounted(() => {
   void appStore.refreshHealth()
+  document.addEventListener('click', closeMoreOutside)
+  document.addEventListener('keydown', moreKeydown)
 })
 
 /** 打开系统文件选择框（仅 .docx）。 */
 function pickFile(): void {
+  closeMore(true)
   fileInput.value?.click()
 }
 
@@ -55,53 +105,33 @@ async function onFileChange(event: Event): Promise<void> {
     alert(result.error ?? '导入失败')
   }
 }
-defineExpose({ pickFile })
+defineExpose({ pickFile, openArchives })
 </script>
 
 <template>
   <header class="top-bar">
     <strong class="brand">模块化文档生成助手</strong>
-    <!-- UI 调整①：顶部 tab 切换（工作台 / 模板制作指南） -->
-    <nav class="tabs">
+    <nav
+      class="tabs"
+      aria-label="主导航"
+    >
       <button
         class="tab"
-        :class="{ active: appStore.activeTab === 'workbench' }"
-        @click="appStore.setTab('workbench')"
+        :class="{ active: appStore.activeTab === 'workbench' && !libraryOpen }"
+        @click="selectTab('workbench')"
       >
         工作台
       </button>
       <button
         class="tab"
-        :class="{ active: appStore.activeTab === 'guide' }"
-        @click="appStore.setTab('guide')"
+        :class="{ active: libraryOpen }"
+        :disabled="uploading || previewStore.refreshing"
+        @click="openArchives()"
       >
-        模板制作指南
+        归档库
       </button>
     </nav>
     <div class="actions">
-      <button
-        :disabled="uploading || previewStore.refreshing"
-        @click="libraryOpen = true"
-      >
-        归档与备份
-      </button>
-      <button
-        v-if="history.enabled"
-        :disabled="!history.canUndo || previewStore.refreshing || uploading || previewStore.exportBusy"
-        :title="`撤销 ${history.undoLabel}（⌘Z）`"
-        @click="moveHistory(false)"
-      >
-        撤销
-      </button>
-      <button
-        v-if="history.enabled"
-        :disabled="!history.canRedo || previewStore.refreshing || uploading || previewStore.exportBusy"
-        :title="`重做 ${history.redoLabel}（⌘⇧Z）`"
-        @click="moveHistory(true)"
-      >
-        重做
-      </button>
-      <!-- 导入模板（占位按钮转正，M9 验收开放项）：导出功能在预览工具条，顶栏不再放导出占位 -->
       <input
         ref="fileInput"
         type="file"
@@ -109,13 +139,66 @@ defineExpose({ pickFile })
         hidden
         @change="onFileChange"
       >
-      <button
-        :disabled="uploading"
-        data-testid="import-template"
-        @click="pickFile"
+      <div
+        ref="moreRoot"
+        class="more"
       >
-        {{ uploading ? '导入中…' : '导入模板' }}
-      </button>
+        <button
+          ref="moreTrigger"
+          class="more-trigger"
+          aria-haspopup="menu"
+          :aria-expanded="moreOpen"
+          aria-controls="top-more-menu"
+          @click="toggleMore"
+        >
+          更多 <span aria-hidden="true">⌄</span>
+        </button>
+        <div
+          v-if="moreOpen"
+          id="top-more-menu"
+          ref="moreMenu"
+          class="more-menu"
+          role="menu"
+          aria-label="更多操作"
+        >
+          <button
+            role="menuitem"
+            :disabled="uploading"
+            data-testid="import-template"
+            @click="pickFile"
+          >
+            {{ uploading ? '导入中…' : '导入模板' }}
+          </button>
+          <button
+            role="menuitem"
+            @click="selectTab('guide')"
+          >
+            模板制作指南
+          </button>
+          <template v-if="history.enabled">
+            <div
+              class="menu-divider"
+              role="separator"
+            />
+            <button
+              role="menuitem"
+              :disabled="!history.canUndo || previewStore.refreshing || uploading || previewStore.exportBusy"
+              :title="`撤销 ${history.undoLabel}（⌘Z）`"
+              @click="moveHistory(false)"
+            >
+              撤销 <kbd>⌘Z</kbd>
+            </button>
+            <button
+              role="menuitem"
+              :disabled="!history.canRedo || previewStore.refreshing || uploading || previewStore.exportBusy"
+              :title="`重做 ${history.redoLabel}（⌘⇧Z）`"
+              @click="moveHistory(true)"
+            >
+              重做 <kbd>⌘⇧Z</kbd>
+            </button>
+          </template>
+        </div>
+      </div>
     </div>
     <p
       v-if="history.error"
@@ -144,6 +227,7 @@ defineExpose({ pickFile })
   </header>
   <LibraryDialog
     v-if="libraryOpen"
+    :initial-archive-id="initialArchiveId"
     @close="libraryOpen = false"
   />
 </template>
@@ -195,5 +279,12 @@ defineExpose({ pickFile })
   align-items: center;
   gap: 8px;
 }
-.actions > button { min-height: 32px; border-radius: 7px; font-size: 13px; }
+.more { position: relative; }
+.more-trigger { min-height: 32px; padding: 4px 10px; border: 0; border-radius: 7px; color: var(--text-2); background: transparent; font-size: 13px; }
+.more-trigger:hover, .more-trigger[aria-expanded=true] { color: var(--text-1); background: var(--bg-hover); }
+.more-menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 100; width: 190px; padding: 6px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); box-shadow: 0 6px 24px var(--shadow-modal); }
+.more-menu button { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; padding: 8px 10px; border: 0; border-radius: 5px; color: var(--text-1); background: transparent; font-size: 13px; text-align: left; }
+.more-menu button:hover:not(:disabled) { background: var(--bg-hover); }
+.more-menu kbd { font: inherit; font-size: 11px; color: var(--text-3); }
+.menu-divider { margin: 5px 4px; border-top: 1px solid var(--border); }
 </style>
