@@ -7,7 +7,7 @@
  * - 正向绑定流：点选块高亮 → 右栏点目标区域即绑定（PRD 4.4）
  */
 
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Block } from '../api/blocks'
 import { useBlocksStore } from '../stores/blocks'
 import { usePreviewStore } from '../stores/preview'
@@ -17,7 +17,37 @@ import SharedBlockDialog from './SharedBlockDialog.vue'
 import BlockImpact from './BlockImpact.vue'
 import { apiFetch } from '../api/client'
 
-const emit = defineEmits<{ select: [] }>()
+defineProps<{ drawer?: boolean }>()
+const emit = defineEmits<{ select: []; close: [] }>()
+const libraryRoot = ref<HTMLElement | null>(null)
+function openMenus(): HTMLDetailsElement[] {
+  return [...libraryRoot.value?.querySelectorAll<HTMLDetailsElement>('details.library-menu[open]') ?? []]
+}
+function closeMenus(returnFocus = false): void {
+  for (const menu of openMenus()) {
+    const focusedInside = menu.contains(document.activeElement)
+    menu.open = false
+    if (returnFocus && focusedInside) menu.querySelector('summary')?.focus()
+  }
+}
+function outsideMenus(event: PointerEvent): void {
+  for (const menu of openMenus()) {
+    if (event.target instanceof Node && !menu.contains(event.target)) menu.open = false
+  }
+}
+function outsideMenuFocus(event: FocusEvent): void {
+  for (const menu of openMenus()) {
+    if (event.target instanceof Node && !menu.contains(event.target)) menu.open = false
+  }
+}
+function menuKeydown(event: KeyboardEvent): void {
+  if (event.isComposing || !(event.target instanceof Node)) return
+  const menu = openMenus().find(item => item.contains(event.target as Node))
+  if (!menu) return
+  if (event.key === 'Escape') {
+    event.preventDefault(); event.stopImmediatePropagation(); closeMenus(true)
+  }
+}
 const store = useBlocksStore()
 const query = ref('')
 const sharedOpen = ref(false)
@@ -61,6 +91,7 @@ function resetForm(): void {
 
 function onNewClick(): void {
   if (deleting.value) return
+  closeMenus(true)
   resetForm()
   formError.value = null
   showForm.value = true
@@ -68,6 +99,7 @@ function onNewClick(): void {
 
 function startEdit(block: Block): void {
   if (deleting.value) return
+  closeMenus(true)
   editingId.value = block.id
   showForm.value = true
   name.value = block.name
@@ -138,6 +170,18 @@ const batchConfirm = ref(false)
 const batchResult = ref('')
 const impactReady = ref(false)
 const batchImpactReady = ref<number[]>([])
+async function beginDelete(id: number): Promise<void> {
+  if (deleting.value) return
+  closeMenus(true)
+  impactReady.value = false; deletingId.value = id
+  await nextTick()
+  libraryRoot.value?.querySelector<HTMLButtonElement>(`[data-delete-block="${id}"] .cancel-delete`)?.focus()
+}
+function cancelDelete(): void {
+  const confirmation = libraryRoot.value?.querySelector(`[data-delete-block="${deletingId.value}"]`)
+  confirmation?.closest('.block-item')?.querySelector('summary')?.focus()
+  deletingId.value = null
+}
 async function confirmDelete(id: number): Promise<void> {
   if (deleting.value) return
   deleting.value = true
@@ -157,6 +201,7 @@ const visibleBlocks = computed(() => store.libraryBlocks.filter(b => matchesBloc
 const allChecked = computed(() => visibleBlocks.value.length > 0 && visibleBlocks.value.every(b => checkedIds.value.includes(b.id)))
 watch(query, () => { checkedIds.value = []; batchConfirm.value = false })
 function toggleBatch(): void {
+  closeMenus(true)
   batchMode.value = !batchMode.value
   checkedIds.value = []
   batchConfirm.value = false
@@ -207,25 +252,77 @@ async function share(id: number): Promise<void> {
 }
 
 onMounted(() => {
+  document.addEventListener('pointerdown', outsideMenus)
+  document.addEventListener('focusin', outsideMenuFocus)
+  document.addEventListener('keydown', menuKeydown, true)
   void store.loadBlocks()
   void store.loadTags()
 })
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', outsideMenus)
+  document.removeEventListener('focusin', outsideMenuFocus)
+  document.removeEventListener('keydown', menuKeydown, true)
+})
+function openShared(): void {
+  closeMenus(true)
+  sharedError.value = null; sharedOpen.value = true; void store.loadBlocks()
+}
 </script>
 
 <template>
   <aside
+    ref="libraryRoot"
     class="block-library"
     :style="{ width: store.libraryWidth + 'px' }"
   >
     <div class="header">
-      <span>字符块库</span>
+      <span class="library-title"><span>字符块库 <span
+        v-if="previewStore.currentTemplateId !== null"
+        class="library-count"
+      >{{ query.trim() ? `${visibleBlocks.length}/${store.libraryBlocks.length}` : store.libraryBlocks.length }}</span></span><small v-if="previewStore.currentTemplateId !== null">当前模板</small></span>
       <div class="header-ops">
         <button
           class="primary"
+          aria-label="+ 新建字符块"
           :disabled="deleting || previewStore.currentTemplateId === null"
           @click="onNewClick"
         >
-          + 新建字符块
+          + 新建
+        </button>
+        <details
+          v-if="previewStore.currentTemplateId !== null"
+          class="library-menu library-actions"
+          name="block-library-actions"
+        >
+          <summary
+            aria-label="字符块库操作"
+            :aria-disabled="deleting"
+            @click="deleting && $event.preventDefault()"
+          >
+            •••
+          </summary>
+          <div class="menu-actions">
+            <button
+              :disabled="deleting"
+              @click="openShared"
+            >
+              共享块
+            </button>
+            <button
+              :disabled="deleting"
+              @click="toggleBatch"
+            >
+              {{ batchMode ? '退出批量' : '批量管理' }}
+            </button>
+          </div>
+        </details>
+        <button
+          v-if="drawer"
+          class="drawer-close"
+          aria-label="关闭块库"
+          @click="emit('close')"
+        >
+          ×
         </button>
       </div>
     </div>
@@ -237,39 +334,12 @@ onMounted(() => {
       请先选择模板，再查看模板字符块库
     </div>
     <template v-else>
-      <p class="scope-hint">
-        当前模板的字符块
-        <button
-          class="ui-btn"
-          :disabled="deleting"
-          @click="sharedError = null; sharedOpen = true; store.loadBlocks()"
-        >
-          共享块
-        </button>
-      </p>
-      <p
-        v-if="store.selectedBlock && !store.libraryBlocks.some(b => b.id === store.selectedBlockId)"
-        class="scope-hint"
-        role="status"
-      >
-        已选「{{ store.selectedBlock.name }}」，可点击预览区域完成绑定
-      </p>
-      <label class="block-search"><span>搜索内容块</span><input
+      <label class="block-search"><span class="visually-hidden">搜索内容块</span><input
         v-model="query"
         type="search"
         :disabled="deleting"
-        placeholder="名称、正文或标签"
+        placeholder="搜索名称、正文、标签"
       ></label>
-      <div class="result-count">
-        {{ visibleBlocks.length }} 个内容块
-        <button
-          class="ui-btn"
-          :disabled="deleting"
-          @click="toggleBatch"
-        >
-          {{ batchMode ? '退出批量' : '批量管理' }}
-        </button>
-      </div>
       <div
         v-if="batchMode"
         class="batch-bar"
@@ -283,6 +353,13 @@ onMounted(() => {
           @change="selectAll"
         >全选当前列表</label>
         <span>已选 {{ checkedIds.length }} 项</span>
+        <button
+          class="batch-exit"
+          :disabled="deleting"
+          @click="toggleBatch"
+        >
+          退出批量
+        </button>
         <button
           class="ui-btn ui-danger"
           :disabled="deleting || checkedIds.length === 0"
@@ -345,7 +422,7 @@ onMounted(() => {
         v-if="store.selectedBlock"
         class="selected-tip"
       >
-        已选中「{{ store.selectedBlock.name }}」，点击右侧预览区域绑定
+        已选中「{{ store.selectedBlock.name }}」，点击文档区域绑定
       </div>
 
       <p
@@ -411,48 +488,58 @@ onMounted(() => {
               class="ops"
               @click.stop
             >
-              <template v-if="deletingId === block.id">
-                <button
-                  class="op danger"
-                  :disabled="deleting || !impactReady"
-                  @click="confirmDelete(block.id)"
-                >
-                  确认删除
-                </button>
-                <button
-                  class="op"
-                  @click="deletingId = null"
-                >
-                  取消
-                </button>
-              </template>
-              <template v-else>
-                <button
-                  class="op danger"
-                  :disabled="deleting"
-                  @click="impactReady = false; deletingId = block.id"
-                >删除</button>
-                <details
-                  class="block-menu"
-                  name="block-actions"
-                >
-                  <summary :aria-label="`管理内容块：${block.name}`">•••</summary>
-                  <div class="block-menu-actions">
-                    <button
-                      class="op"
-                      @click="startEdit(block)"
-                    >编辑</button>
-                  </div>
-                </details>
-              </template>
+              <details
+                class="library-menu block-menu"
+                name="block-library-actions"
+              >
+                <summary
+                  :aria-label="`管理内容块：${block.name}`"
+                  :aria-disabled="deleting"
+                  @click="deleting && $event.preventDefault()"
+                >•••</summary>
+                <div class="menu-actions">
+                  <button
+                    :disabled="deleting"
+                    @click="startEdit(block)"
+                  >编辑</button>
+                  <button
+                    class="danger"
+                    :disabled="deleting"
+                    @click="beginDelete(block.id)"
+                  >删除</button>
+                </div>
+              </details>
             </span>
           </div>
-          <BlockImpact
+          <div
             v-if="deletingId === block.id"
-            :block-id="block.id"
-            @loaded="impactReady = $event !== null"
-          />
-          <span class="content">{{ block.content }}</span>
+            class="delete-confirm"
+            :data-delete-block="block.id"
+            @click.stop
+          >
+            <p>删除此字符块？相关绑定将标记为缺失。</p>
+            <BlockImpact
+              :block-id="block.id"
+              @loaded="impactReady = $event !== null"
+            />
+            <div class="delete-actions">
+              <button
+                class="op cancel-delete"
+                :disabled="deleting"
+                @click="cancelDelete"
+              >
+                取消
+              </button>
+              <button
+                class="op danger"
+                :disabled="deleting || !impactReady"
+                @click="confirmDelete(block.id)"
+              >
+                确认删除
+              </button>
+            </div>
+          </div>
+          <span class="content">{{ block.kind === 'blank' ? '空行块 · 保留段落留白' : block.content }}</span>
           <span
             v-if="block.tags.length > 0"
             class="item-tags"
@@ -481,10 +568,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.scope-hint { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; padding: 8px 12px; font-size: 12px; color: var(--text-3); border-bottom: 1px solid var(--border); }
-.result-count { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .batch-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12px; }
 .batch-bar label { display: flex; align-items: center; gap: 4px; }
+.batch-exit { margin-left: auto; padding: 4px 6px; border: 0; background: transparent; font-size: 12px; color: var(--text-2); }
 .batch-confirm { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; color: var(--danger); }
 .batch-confirm span { flex-basis: 100%; }
 .batch-result { padding: 8px 12px; margin: 0; font-size: 12px; overflow-wrap: anywhere; }
@@ -493,19 +579,20 @@ onMounted(() => {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  min-height: 0;
   background: var(--bg-surface);
   border-right: 1px solid var(--border);
 }
 
 .header {
-  height: 42px;
+  min-height: 50px;
   box-sizing: border-box;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  padding: 8px 12px;
+  padding: 9px 12px;
   border-bottom: 1px solid var(--border);
   font-weight: 600;
   white-space: nowrap; /* 宽度下限=头部行不换行（LIBRARY_MIN_WIDTH），不允许多行 */
@@ -514,8 +601,12 @@ onMounted(() => {
 .header-ops {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
+.library-title { display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
+.library-title > small { font-size: 11px; font-weight: 400; color: var(--text-3); }
+.library-count { padding: 2px 5px; border-radius: 5px; background: var(--bg-hover); font-size: 11px; font-weight: 400; color: var(--text-3); }
+.drawer-close { width: 26px; height: 28px; padding: 0; border: 0; color: var(--text-2); background: transparent; font-size: 18px; }
 
 .icon-collapse {
   display: inline-flex;
@@ -537,12 +628,13 @@ onMounted(() => {
 }
 
 .primary {
-  padding: 4px 10px;
+  min-height: 30px;
+  padding: 5px 9px;
   font-size: 12px;
   color: var(--primary);
-  background: none;
-  border: 1px solid var(--primary);
-  border-radius: 4px;
+  background: var(--primary-bg-subtle);
+  border: 1px solid transparent;
+  border-radius: 6px;
   cursor: pointer;
 }
 
@@ -591,8 +683,9 @@ onMounted(() => {
 }
 
 .selected-tip {
-  padding: 6px 12px;
+  padding: 8px 14px;
   font-size: 12px;
+  line-height: 1.6;
   color: var(--success);
   background: var(--success-bg-subtle);
   border-bottom: 1px solid var(--border);
@@ -608,7 +701,7 @@ onMounted(() => {
 .block-list {
   flex: 1;
   overflow: auto;
-  padding: 8px;
+  padding: 4px 10px 10px;
 }
 
 .empty {
@@ -642,10 +735,10 @@ onMounted(() => {
 .block-item {
   display: block;
   width: 100%;
-  margin-bottom: 6px;
-  padding: 8px 10px;
+  margin-bottom: 8px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--bg-surface);
   text-align: left;
   cursor: pointer;
@@ -707,13 +800,15 @@ onMounted(() => {
 }
 
 .content {
-  /* UI 调整②批：最多显示前 2 行（约 44 字），超出省略；宽度压缩时以高度换宽度自然换行 */
+  /* 保留正文换行，显示前三行；详细内容从编辑入口查看。 */
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   overflow: hidden;
-  font-size: 12px;
-  color: var(--text-3);
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text-2);
   word-break: break-word;
   white-space: pre-wrap;
 }
@@ -732,13 +827,22 @@ onMounted(() => {
   background: var(--bg-hover);
   border-radius: 8px;
 }
-.block-search { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px 6px; font-size: 12px; color: var(--text-2); }
+.block-search { display: block; padding: 4px 12px 12px; }
 .block-search input { width: 100%; }
-.result-count { padding: 4px 14px 10px; font-size: 12px; color: var(--text-3); }
-.block-menu { position: relative; }
-.block-menu summary { cursor: pointer; list-style: none; padding: 0 6px; font-size: 16px; }
-.block-menu-actions { position: absolute; right: 0; top: 100%; z-index: 8; display: flex; gap: 8px; padding: 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 16px var(--shadow-modal); }
-.block-menu-actions .op { min-height: 30px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+.library-menu { position: relative; font-weight: 400; }
+.library-menu summary { display: flex; align-items: center; justify-content: center; width: 26px; height: 28px; padding: 0; border-radius: 5px; cursor: pointer; list-style: none; color: var(--text-3); font-size: 14px; }
+.library-menu summary::-webkit-details-marker { display: none; }
+.library-menu summary:hover, .library-menu[open] summary { color: var(--text-1); background: var(--bg-hover); }
+.menu-actions { display: none; }
+.library-menu[open] > .menu-actions { position: absolute; right: 0; top: calc(100% + 4px); z-index: 8; display: flex; flex-direction: column; width: 124px; padding: 4px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 16px var(--shadow-modal); }
+.library-actions[open] > .menu-actions { z-index: 12; }
+.menu-actions button { min-height: 32px; padding: 6px 10px; border: 0; border-radius: 4px; text-align: left; background: transparent; color: var(--text-1); font-size: 13px; }
+.menu-actions button:hover:not(:disabled) { background: var(--bg-hover); }
+.menu-actions .danger { color: var(--danger); }
+.delete-confirm { padding: 10px; margin: 10px 0; border-radius: 6px; background: var(--bg-hover); cursor: default; }
+.delete-confirm > p { margin: 0 0 8px; font-size: 12px; line-height: 1.6; color: var(--text-2); }
+.delete-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.delete-actions button { padding: 5px 8px; font-size: 12px; }
 .block-item:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
-.block-library .content { -webkit-line-clamp: 2; }
 </style>

@@ -3,7 +3,7 @@ import { onBeforeUnmount, onMounted, onUpdated, useTemplateRef } from 'vue'
 // 原生 dialog 进入顶层并隔离背景；栈确保叠加弹层只有最上层处理键盘。
 const modalStack: HTMLDialogElement[] = []
 const focusableSelector =
-  'button, input, select, textarea, a[href], [tabindex], [contenteditable="true"]'
+  'button, input, select, textarea, a[href], details > summary, [tabindex], [contenteditable="true"]'
 
 export function useModalEsc(onClose: () => void) {
   const modal = useTemplateRef<HTMLDialogElement>('modal')
@@ -21,6 +21,10 @@ export function useModalEsc(onClose: () => void) {
         return false
       }
       for (let parent: HTMLElement | null = element; parent; parent = parent.parentElement) {
+        if (parent instanceof HTMLDetailsElement && !parent.open) {
+          const summary = [...parent.children].find(child => child.tagName === 'SUMMARY')
+          if (!summary?.contains(element)) return false
+        }
         const style = getComputedStyle(parent)
         if (style.display === 'none' || style.visibility === 'hidden') return false
         if (parent === dialog) break

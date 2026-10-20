@@ -358,11 +358,12 @@ def scenario_2(browser) -> list[str]:
         ).get_by_role("button", name="使用", exact=True).click()
         page.get_by_role("dialog", name="模板与版本管理").wait_for(state="hidden")
         version_select = page.locator('[data-testid="version-select"]')
-        expect(version_select.locator("option:checked")).to_have_text(
-            re.compile(f"{re.escape(version_name)}（1 项绑定）")
+        expect(version_select.locator("option:checked")).to_have_text(version_name)
+        expect(page.locator(".legend-wide")).to_contain_text(
+            "已绑定 1", timeout=RENDER_TIMEOUT
         )
 
-        # 版本来回切换（绑定数随绑定刷新）。
+        # 版本名与图例绑定数分别校验，不耦合下拉选项的展示格式。
         def _version_value(substring: str) -> str:
             option = version_select.locator("option", has_text=substring).first
             value = option.get_attribute("value")
@@ -442,7 +443,7 @@ def scenario_3(browser) -> list[str]:
         expect(page.locator(".legend-wide")).to_contain_text("已绑定 2", timeout=RENDER_TIMEOUT)
         version_select = page.locator('[data-testid="version-select"]')
         expect(version_select.locator("option:checked")).to_have_text(
-            re.compile("默认版本（2 项绑定）"), timeout=RENDER_TIMEOUT
+            "默认版本", timeout=RENDER_TIMEOUT
         )
         result = verify_preview(target_id, expect=["李四", work_content], absent=["{{"])
         assert result["ok"], f"迁移后预览 PDF 校验失败: {result}"
