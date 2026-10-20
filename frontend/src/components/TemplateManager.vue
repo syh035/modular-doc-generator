@@ -296,7 +296,7 @@ const managerModal = useModalEsc(() => { if (!busy.value) emit('close') })
               v-if="store.proofreadMode"
               class="notice"
             >
-              当前为校对模式，退出校对后可管理和使用内容版本。
+              正在检查可编辑区域，请先点击“完成并返回文档”，再管理或切换内容版本。
             </p>
             <p
               v-if="loading"
