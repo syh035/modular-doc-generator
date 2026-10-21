@@ -3,7 +3,7 @@ import { useModalEsc } from '../composables/useModalEsc'
 import { ref } from 'vue'
 import BlockImpact, { type BlockUsage } from './BlockImpact.vue'
 
-const props = defineProps<{ editing: boolean; busy: boolean; error: string | null; submitLabel: string; blockId?: number; versionId?: number | null }>()
+const props = defineProps<{ editing: boolean; busy: boolean; error: string | null; submitLabel: string; blockId?: number; versionId?: number | null; material?: boolean }>()
 const name = defineModel<string>('name', { required: true })
 const content = defineModel<string>('content', { required: true })
 const kind = defineModel<'text' | 'blank'>('kind', { default: 'text' })
@@ -18,7 +18,7 @@ useModalEsc(() => { if (!props.busy) emit('close') })
   <dialog
     ref="modal"
     class="dialog-mask"
-    aria-label="字符块编辑"
+    :aria-label="material ? '素材编辑' : '字符块编辑'"
     @click.self="!busy && emit('close')"
   >
     <form
@@ -26,7 +26,7 @@ useModalEsc(() => { if (!props.busy) emit('close') })
       @submit.prevent="!busy && (!blockId || usage) && emit('submit', scope)"
     >
       <header>
-        <h2>{{ editing ? '编辑字符块' : '新建字符块' }}</h2><button
+        <h2>{{ editing ? (material ? '编辑素材' : '编辑字符块') : (material ? '新建素材' : '新建字符块') }}</h2><button
           type="button"
           class="ui-btn"
           :disabled="busy"
@@ -47,7 +47,7 @@ useModalEsc(() => { if (!props.busy) emit('close') })
             :disabled="busy"
             aria-label="修改范围"
           >
-            <option value="shared">同步修改原字符块及所有引用版本</option>
+            <option value="shared">{{ material ? '更新素材及所有引用文稿' : '同步修改原字符块及所有引用版本' }}</option>
             <option
               v-if="usage?.versions.some(v => v.id === versionId)"
               value="version"

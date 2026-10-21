@@ -9,6 +9,8 @@ import { usePreviewStore, type DisplayRegion } from '../stores/preview'
 import TemplatePreview from './TemplatePreview.vue'
 import { openDocument } from '../pdf/viewer'
 import StatusBar from './StatusBar.vue'
+import DocumentActions from './DocumentActions.vue'
+import { useHistoryStore } from '../stores/history'
 
 /** 假 PDF 页（612×792pt，rotation=0），与真实 pdfjs 行为对齐。 */
 const fakePage = {
@@ -148,7 +150,7 @@ describe('TemplatePreview（M5a 只读预览）', () => {
   })
   it('idle 态：提示选择模板', () => {
     const wrapper = mountPreview()
-    expect(wrapper.text()).toContain('请在上方工具条选择模板开始预览')
+    expect(wrapper.text()).toContain('选择文稿开始编辑')
   })
 
   it('loading 态：显示生成中提示（D12 首次渲染进度反馈）', async () => {
@@ -244,7 +246,7 @@ describe('TemplatePreview（M5a 只读预览）', () => {
     store.status = 'idle'
     await flushPromises()
     expect(wrapper.find('.pdf-page').exists()).toBe(false)
-    expect(wrapper.text()).toContain('请在上方工具条选择模板开始预览')
+    expect(wrapper.text()).toContain('选择文稿开始编辑')
   })
 
   it('P22 回归：loading 态 pdfData 先到不渲染（DOM 无 canvas），ready 后补渲染', async () => {
@@ -347,7 +349,8 @@ describe('TemplatePreview 绑定交互（M6a）', () => {
     const { wrapper, store } = await readyWith([region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 })])
     store.error = '块不存在'
     await flushPromises()
-    expect(wrapper.find('.error-banner').text()).toBe('块不存在')
+    expect(wrapper.find('.error-banner').text()).toContain('块不存在')
+    expect(wrapper.find('.error-banner button').text()).toBe('重试预览')
     expect(wrapper.find('.pdf-page').exists()).toBe(true)
   })
 
@@ -359,7 +362,7 @@ describe('TemplatePreview 绑定交互（M6a）', () => {
   })
 })
 
-describe('TemplatePreview 工具条模板下拉（UI 调整③，idle 态可选）', () => {
+describe('TemplatePreview 模板浏览与文稿入口', () => {
   /** stub /api/templates（组件挂载即 loadTemplates）。 */
   function stubTemplates(list: unknown[]): void {
     vi.stubGlobal(
@@ -373,37 +376,36 @@ describe('TemplatePreview 工具条模板下拉（UI 调整③，idle 态可选�
     )
   }
 
-  it('挂载即加载模板列表并渲染下拉项（工具条常驻）', async () => {
+  it('缺少模板元数据时仍加载列表，空白编辑页不直接切换模板', async () => {
     stubTemplates([
       { id: 1, filename: '简历模板A.docx', regions_count: 3 },
       { id: 2, filename: '简历模板B.docx', regions_count: 0 },
     ])
     const wrapper = mountPreview()
     await flushPromises()
-    const options = wrapper.findAll('.template-select option')
-    expect(options).toHaveLength(3) // 占位项 + 2 模板
-    expect(options[1].text()).toBe('简历模板A.docx')
-    expect(options[2].text()).toBe('简历模板B.docx')
+    expect(usePreviewStore().templates.map(template => template.filename)).toEqual(['简历模板A.docx', '简历模板B.docx'])
+    expect(wrapper.find('.template-select').exists()).toBe(false)
+    expect(wrapper.text()).toContain('查看文稿')
   })
 
-  it('列表为空：下拉禁用并显示（暂无模板）', async () => {
+  it('列表为空仍可导入或回到文稿页，不显示空模板选择器', async () => {
     stubTemplates([])
     const wrapper = mountPreview()
     await flushPromises()
-    const select = wrapper.find('.template-select')
-    expect((select.element as HTMLSelectElement).disabled).toBe(true)
-    expect(select.text()).toContain('（暂无模板）')
+    expect(wrapper.find('.template-select').exists()).toBe(false)
+    expect(wrapper.text()).toContain('导入模板')
   })
 
-  it('idle 态选择模板触发 store.selectTemplate', async () => {
+  it('浏览所用模板只进入模板页，不调用预览切换', async () => {
     stubTemplates([{ id: 7, filename: '模板七.docx', regions_count: 1 }])
     const wrapper = mountPreview()
     await flushPromises()
     const store = usePreviewStore()
     expect(store.status).toBe('idle')
     const spy = vi.spyOn(store, 'selectTemplate').mockResolvedValue(undefined)
-    await wrapper.find('.template-select').setValue('7')
-    expect(spy).toHaveBeenCalledWith(7)
+    await wrapper.get('.template-context').trigger('click')
+    expect(useAppStore().activeTab).toBe('templates')
+    expect(spy).not.toHaveBeenCalled()
   })
 })
 
@@ -441,8 +443,8 @@ describe('块库展开按钮（UI 调整②批）', () => {
   })
 })
 
-describe('TemplatePreview 版本控件（M8）', () => {
-  it('当前版本存在：工具条快速切换，统一管理入口常驻', async () => {
+describe('TemplatePreview 当前文稿上下文', () => {
+  it('直接显示当前稿名称和保存状态，不把版本下拉当成文稿入口', async () => {
     const { wrapper, store } = await readyWith([])
     store.currentVersionId = 5
     store.versions = [
@@ -451,15 +453,20 @@ describe('TemplatePreview 版本控件（M8）', () => {
     ]
     await flushPromises()
 
-    const select = wrapper.find('[data-testid="version-select"]')
-    expect(select.exists()).toBe(true)
-    expect(select.findAll('option').map(option => option.text())).toEqual(['默认版本', '投递B岗'])
-    expect(wrapper.find('[data-testid="template-manage"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid=current-document-name]').text()).toBe('默认版本')
+    expect(wrapper.get('[data-testid=document-save-state]').text()).toBe('修改已保存')
+    expect(wrapper.find('[data-testid=version-select]').exists()).toBe(false)
+    expect(wrapper.findComponent(DocumentActions).exists()).toBe(true)
+    useHistoryStore().pending = 1
+    await flushPromises()
+    expect(wrapper.get('[data-testid=document-save-state]').text()).toContain('正在保存')
   })
 
   it('无版本（历史模板兜底）：不渲染版本控件', async () => {
     const { wrapper } = await readyWith([])
     expect(wrapper.find('[data-testid="version-select"]').exists()).toBe(false)
+    expect(wrapper.findComponent(DocumentActions).exists()).toBe(false)
+    expect(wrapper.get('[data-testid=current-document-name]').text()).toBe('模板原文')
   })
 
   it('校对模式：版本控件全部置灰', async () => {
@@ -470,11 +477,11 @@ describe('TemplatePreview 版本控件（M8）', () => {
     ]
     store.proofreadMode = true
     await flushPromises()
-    expect((wrapper.find('[data-testid="version-select"]').element as HTMLSelectElement).disabled).toBe(true)
-    expect(wrapper.find('[data-testid="template-manage"]').exists()).toBe(true)
+    expect(wrapper.findComponent(DocumentActions).props('disabled')).toBe(true)
+    expect(wrapper.get('[data-testid=document-save-state]').text()).toContain('正在检查所用模板')
   })
 
-  it('切换版本触发 store.selectVersion', async () => {
+  it('另存完成后直接打开返回的文稿 ID', async () => {
     const { wrapper, store } = await readyWith([])
     store.currentVersionId = 5
     store.versions = [
@@ -482,17 +489,28 @@ describe('TemplatePreview 版本控件（M8）', () => {
       { id: 6, template_id: 1, name: '投递B岗', binding_count: 0, created_at: '', updated_at: '' },
     ]
     await flushPromises()
-    const spy = vi.spyOn(store, 'selectVersion').mockResolvedValue(undefined)
-    await wrapper.find('[data-testid="version-select"]').setValue('6')
-    expect(spy).toHaveBeenCalledWith(6)
+    const spy = vi.spyOn(store, 'selectTemplate').mockResolvedValue(undefined)
+    wrapper.getComponent(DocumentActions).vm.$emit('open', store.versions[1])
+    await flushPromises()
+    expect(spy).toHaveBeenCalledWith(1, { versionId: 6 })
   })
 
-  it('管理入口打开面板，浏览模板不会切换当前文档', async () => {
+  it('浏览模板入口不会打开包含文稿操作的旧管理弹窗', async () => {
     const { wrapper, store } = await readyWith([])
     const spy = vi.spyOn(store, 'selectTemplate').mockResolvedValue(undefined)
-    await wrapper.find('[data-testid="template-manage"]').trigger('click')
-    expect(wrapper.find('[aria-label="模板与版本管理"]').exists()).toBe(true)
+    await wrapper.get('.template-context').trigger('click')
+    expect(useAppStore().activeTab).toBe('templates')
+    expect(wrapper.find('[aria-label="模板与版本管理"]').exists()).toBe(false)
     expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('预览失败重试保持当前稿 ID，不退回默认稿', async () => {
+    const { wrapper, store } = await readyWith([])
+    store.currentVersionId = 6; store.status = 'error'; store.error = '转换失败'
+    const select = vi.spyOn(store, 'selectTemplate').mockResolvedValue()
+    await flushPromises()
+    await wrapper.get('.state.error button').trigger('click')
+    expect(select).toHaveBeenCalledWith(1, { versionId: 6 })
   })
 })
 

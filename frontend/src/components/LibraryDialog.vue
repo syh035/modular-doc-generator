@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { deleteArchive, listArchives, type Archive } from '../api/archives'
 import { useModalEsc } from '../composables/useModalEsc'
 import ArchivePreview from './ArchivePreview.vue'
-const props = defineProps<{ initialArchiveId?: number | null }>()
+const props = defineProps<{ initialArchiveId?: number | null; embedded?: boolean }>()
 const emit = defineEmits<{ close: [] }>()
 const archives = ref<Archive[]>([])
 const busy = ref(false)
@@ -13,6 +13,9 @@ const selected = ref<number | null>(props.initialArchiveId ?? null)
 const selectedArchive = computed(() => archives.value.find(archive => archive.id === selected.value))
 const card = ref<HTMLElement | null>(null)
 const query = ref('')
+let disposed = false
+let request = 0
+watch(() => props.initialArchiveId, id => { selected.value = id ?? null })
 const visibleArchives = computed(() => {
   const term = query.value.trim().toLocaleLowerCase()
   return archives.value.filter(archive =>
@@ -25,14 +28,19 @@ async function selectArchive(id: number): Promise<void> {
   await nextTick()
   card.value?.scrollTo?.({ top: 0, behavior: 'smooth' })
 }
-useModalEsc(close)
+if (!props.embedded) useModalEsc(close)
 async function load(): Promise<void> {
-  archives.value = await listArchives()
+  const seq = ++request
+  loading.value = true; error.value = ''
+  try {
+    const result = await listArchives()
+    if (!disposed && seq === request) archives.value = result
+  } catch (err) {
+    if (!disposed && seq === request) error.value = err instanceof Error ? err.message : String(err)
+  } finally { if (!disposed && seq === request) loading.value = false }
 }
-onMounted(async () => {
-  try { await load() } catch (err) { error.value = String(err) }
-  finally { loading.value = false }
-})
+onMounted(() => { void load() })
+onBeforeUnmount(() => { disposed = true; request++ })
 async function remove(archive: Archive): Promise<void> {
   if (!confirm(`永久删除归档「${archive.name}」？此操作无法撤销，原内容版本不受影响。`)) return
   busy.value = true; error.value = ''
@@ -40,14 +48,18 @@ async function remove(archive: Archive): Promise<void> {
     await deleteArchive(archive.id)
     if (selected.value === archive.id) selected.value = null
     await load()
+    await nextTick()
+    if (document.activeElement === document.body) card.value?.querySelector<HTMLInputElement>('.archive-search input')?.focus()
   } catch (err) { error.value = String(err) } finally { busy.value = false }
 }
 </script>
 
 <template>
-  <dialog
+  <component
+    :is="embedded ? 'main' : 'dialog'"
     ref="modal"
     class="library-dialog"
+    :class="{ embedded }"
     aria-label="归档库"
     @click.self="close"
   >
@@ -57,6 +69,7 @@ async function remove(archive: Archive): Promise<void> {
     >
       <header>
         <h2>归档库</h2><button
+          v-if="!embedded"
           :disabled="busy"
           aria-label="关闭归档库"
           @click="close"
@@ -90,6 +103,12 @@ async function remove(archive: Archive): Promise<void> {
         class="error"
       >
         {{ error }}
+        <button
+          :disabled="loading || busy"
+          @click="load"
+        >
+          重试
+        </button>
       </p>
       <div
         class="archive-layout"
@@ -113,7 +132,7 @@ async function remove(archive: Archive): Promise<void> {
         </section>
         <div class="archive-list">
           <p v-if="!loading && !error && !archives.length">
-            暂无归档。在工作台点击“归档”，即可把当前稿件保存到这里。
+            暂无归档。在文稿编辑页点击“归档”，即可把当前稿件保存到这里。
           </p>
           <p v-else-if="!loading && archives.length && !visibleArchives.length">
             没有找到匹配的归档。
@@ -152,12 +171,14 @@ async function remove(archive: Archive): Promise<void> {
         </div>
       </div>
     </section>
-  </dialog>
+  </component>
 </template>
 
 <style scoped>
 .library-dialog { position: fixed; inset: 0; width: 100vw; height: 100vh; max-width: none; max-height: none; margin: 0; padding: 20px; border: 0; background: transparent; }
 .library-dialog::backdrop { background: var(--modal-backdrop); }
+.library-dialog.embedded { position: static; flex: 1; width: auto; height: auto; min-height: 0; padding: 24px; overflow: auto; }
+.embedded .library-card { width: min(1100px, 100%); max-height: none; box-shadow: none; border: 1px solid var(--border); }
 .library-card { width: min(1060px, 100%); max-height: calc(100dvh - 40px); margin: auto; padding: 24px; overflow: auto; background: var(--bg-surface); color: var(--text-1); border-radius: 12px; box-shadow: 0 8px 32px var(--shadow-modal); }
 header, .row-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 header { justify-content: space-between; } h2, p { margin: 0 0 12px; }
@@ -173,4 +194,5 @@ button, a { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6
 article.selected { border-color: var(--primary); } article strong { display: block; margin-bottom: 8px; }
 .row-actions { gap: 8px; font-size: 12px; } .error { color: var(--danger); }
 @media (max-width: 760px) { .archive-layout.has-preview { grid-template-columns: 1fr; } .archive-result, .archive-list { grid-area: auto; } .archive-result :deep(.archive-preview) { max-height: 46dvh; } .library-card { padding: 16px; } }
+@media (max-width: 600px) { .library-dialog.embedded { padding: 16px 12px; } }
 </style>

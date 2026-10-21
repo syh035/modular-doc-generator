@@ -17,8 +17,8 @@ export interface HealthStatus {
   libreoffice: LibreOfficeStatus
 }
 
-/** 文稿列表、文稿编辑与模板制作指南；完整四入口在 M38b 承接。 */
-export type AppTab = 'documents' | 'workbench' | 'guide'
+/** 四入口页面、保留的文稿编辑器与模板制作指南。 */
+export type AppTab = 'documents' | 'workbench' | 'templates' | 'materials' | 'archives' | 'guide'
 
 export const useAppStore = defineStore('app', () => {
   /** 后端健康状态；null = 尚未探测 */
@@ -26,9 +26,22 @@ export const useAppStore = defineStore('app', () => {
   /** 健康探测错误信息（网络不通等） */
   const healthError = ref<string | null>(null)
   const activeTab = ref<AppTab>('documents')
+  const archiveId = ref<number | null>(null)
+  const documentTemplateId = ref<number | null>(null)
 
   function setTab(tab: AppTab): void {
+    if (tab === 'documents') documentTemplateId.value = null
     activeTab.value = tab
+  }
+
+  function openArchives(id: number | null = null): void {
+    archiveId.value = id
+    activeTab.value = 'archives'
+  }
+
+  function openTemplateDocuments(templateId: number | null): void {
+    documentTemplateId.value = templateId
+    activeTab.value = 'documents'
   }
 
   async function refreshHealth(): Promise<void> {
@@ -41,5 +54,5 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  return { health, healthError, activeTab, setTab, refreshHealth }
+  return { health, healthError, activeTab, archiveId, documentTemplateId, setTab, openArchives, openTemplateDocuments, refreshHealth }
 })

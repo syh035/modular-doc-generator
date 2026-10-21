@@ -8,6 +8,19 @@ const healthy: HealthStatus = {
 }
 
 describe('app store（冒烟）', () => {
+  it('模板文稿筛选和归档定位彼此独立，文稿主入口会返回全部文稿', () => {
+    const store = useAppStore()
+    store.openTemplateDocuments(5)
+    expect(store.documentTemplateId).toBe(5)
+    expect(store.activeTab).toBe('documents')
+    store.openArchives(7)
+    expect(store.activeTab).toBe('archives')
+    expect(store.archiveId).toBe(7)
+    store.setTab('documents')
+    expect(store.documentTemplateId).toBeNull()
+    store.openArchives()
+    expect(store.archiveId).toBeNull()
+  })
   beforeEach(() => {
     setActivePinia(createPinia())
   })

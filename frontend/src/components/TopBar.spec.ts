@@ -6,10 +6,6 @@ import { usePreviewStore } from '../stores/preview'
 import { useHistoryStore } from '../stores/history'
 import TopBar from './TopBar.vue'
 
-vi.mock('./LibraryDialog.vue', () => ({ __esModule: true, default: {
-  props: ['initialArchiveId'], emits: ['close'],
-  template: '<div role="dialog" aria-label="归档库" :data-archive-id="initialArchiveId"><button @click="$emit(\'close\')">关闭归档库</button></div>',
-} }))
 const wrappers: VueWrapper[] = []
 beforeEach(() => {
   vi.unstubAllGlobals()
@@ -47,16 +43,17 @@ function mountTopBar(attach = false) {
 }
 
 describe('TopBar 紧凑导航', () => {
-  it('默认仅展示文稿、归档库和更多，折叠操作不出现在 DOM', () => {
+  it('四个主入口明确当前页面，帮助和其他操作保持折叠', () => {
     stubHealth(true)
     const wrapper = mountTopBar()
     const tabs = wrapper.findAll('.tab')
-    expect(tabs).toHaveLength(2)
+    expect(tabs).toHaveLength(4)
     expect(tabs[0].text()).toBe('文稿')
-    expect(tabs[1].text()).toBe('归档库')
+    expect(tabs.map(tab => tab.text())).toEqual(['文稿', '模板', '素材', '归档库'])
     expect(tabs[0].classes()).toContain('active')
     expect(tabs[1].classes()).not.toContain('active')
-    expect(wrapper.findAll('button').map(button => button.text())).toEqual(['文稿', '归档库', '更多 ⌄'])
+    expect(tabs[0].attributes('aria-current')).toBe('page')
+    expect(wrapper.findAll('button').map(button => button.text())).toEqual(['文稿', '模板', '素材', '归档库', '更多 ⌄'])
     expect(wrapper.find('[role=menu]').exists()).toBe(false)
     expect(wrapper.find('[data-testid=import-template]').exists()).toBe(false)
   })
@@ -94,17 +91,18 @@ describe('TopBar 紧凑导航', () => {
     expect(wrapper.find('.health-dot').exists()).toBe(false)
   })
 
-  it('归档库按需打开，保留按归档编号定位的公开接口', async () => {
+  it('归档库进入独立页面，保留按归档编号定位的公开接口', async () => {
     stubHealth(true)
     const wrapper = mountTopBar()
     expect(wrapper.find('[role=dialog]').exists()).toBe(false)
-    await wrapper.findAll('.tab')[1].trigger('click')
-    await vi.waitFor(() => expect(wrapper.find('[aria-label="归档库"]').exists()).toBe(true))
-    await wrapper.get('[role=dialog] button').trigger('click')
+    await wrapper.findAll('.tab')[3].trigger('click')
+    expect(useAppStore().activeTab).toBe('archives')
+    expect(useAppStore().archiveId).toBeNull()
     expect(wrapper.find('[role=dialog]').exists()).toBe(false)
     wrapper.vm.openArchives(7)
     await flushPromises()
-    expect(wrapper.get('[role=dialog]').attributes('data-archive-id')).toBe('7')
+    expect(useAppStore().archiveId).toBe(7)
+    expect(useAppStore().activeTab).toBe('archives')
   })
 
   it('更多菜单响应 Esc 和外部点击，键盘可移动到下一项', async () => {
@@ -190,7 +188,23 @@ describe('TopBar 紧凑导航', () => {
     const historyButtons = wrapper.findAll('[role=menuitem]').filter(button => /^(撤销|重做)/.test(button.text()))
     expect(historyButtons).toHaveLength(2)
     expect(historyButtons.every(button => button.attributes('disabled') !== undefined)).toBe(true)
-    expect(wrapper.findAll('.tab')[1].attributes('disabled')).toBeDefined()
+    expect(wrapper.findAll('.tab')[3].attributes('disabled')).toBeDefined()
+  })
+
+  it('浏览模板、素材和归档不改变当前模板或文稿，不请求切换预览', async () => {
+    stubHealth(true)
+    const wrapper = mountTopBar()
+    const preview = usePreviewStore()
+    preview.currentTemplateId = 9; preview.currentVersionId = 23
+    const select = vi.spyOn(preview, 'selectTemplate')
+    for (const [index, page] of [[1, 'templates'], [2, 'materials'], [3, 'archives']] as const) {
+      await wrapper.findAll('.tab')[index]!.trigger('click')
+      expect(useAppStore().activeTab).toBe(page)
+      expect(wrapper.findAll('.tab')[index]!.attributes('aria-current')).toBe('page')
+      expect(preview.currentTemplateId).toBe(9)
+      expect(preview.currentVersionId).toBe(23)
+    }
+    expect(select).not.toHaveBeenCalled()
   })
 })
 

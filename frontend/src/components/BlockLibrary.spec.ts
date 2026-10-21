@@ -29,6 +29,26 @@ function mountLibrary(attach = false) {
   return wrapper
 }
 
+it.each([null, 9])('素材主页面展示全库，新建不自动加入当前模板（当前模板=%s）', async templateId => {
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input) === '/api/tags' ? Response.json({ tags: [] })
+    : Response.json({ blocks: [{ id: 6, name: '全库素材', content: '共用正文', tags: [], created_at: '', updated_at: '' }] }))
+  vi.stubGlobal('fetch', fetcher)
+  usePreviewStore().currentTemplateId = templateId
+  const store = useBlocksStore()
+  const create = vi.spyOn(store, 'createNewBlock').mockResolvedValue(true)
+  const wrapper = mount(BlockLibrary, { props: { standalone: true } })
+  wrappers.push(wrapper)
+  await flushPromises()
+  expect(wrapper.text()).toContain('全库素材')
+  expect(fetcher.mock.calls.map(call => String(call[0]))).not.toContain(`/api/blocks?template_id=${templateId}`)
+  await wrapper.get('[aria-label=新建素材]').trigger('click')
+  await wrapper.get('input[placeholder="1–30 字"]').setValue('独立素材')
+  await wrapper.get('textarea').setValue('可复用正文')
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  expect(create).toHaveBeenCalledWith('独立素材', '可复用正文', [], 'text', undefined)
+})
+
 describe('字符块批量删除', () => {
   async function library() {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => Response.json(String(input).endsWith('/usage') ? { versions: [], templates: [] } : String(input) === '/api/tags' ? { tags: [] } : { blocks: [1, 2].map(id => ({ id, name: id === 1 ? '工作' : '项目', content: '正文', tags: [], created_at: '', updated_at: '' })) })))
@@ -444,5 +464,24 @@ describe('字符块库紧凑菜单', () => {
     expect(wrapper.find('.delete-confirm').exists()).toBe(false)
     expect(remove).not.toHaveBeenCalled()
     expect(document.activeElement).toBe(menu.get('summary').element)
+  })
+  it('删除成功后归还搜索输入，不把键盘焦点留在已移除的卡片', async () => {
+    stubLibrary()
+    const wrapper = mountLibrary(true)
+    await flushPromises()
+    vi.spyOn(useBlocksStore(), 'removeBlock').mockImplementation(async () => {
+      useBlocksStore().blocks = []
+      return true
+    })
+    const menu = wrapper.get<HTMLDetailsElement>('.block-menu')
+    menu.element.open = true
+    await menu.findAll('button').find(button => button.text() === '删除')!.trigger('click')
+    await flushPromises()
+    const confirm = wrapper.findAll('.delete-actions button').find(button => button.text() === '确认删除')!
+    ;(confirm.element as HTMLButtonElement).focus()
+    await confirm.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.block-item').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('.block-search input').element)
   })
 })

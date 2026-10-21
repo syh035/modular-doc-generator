@@ -1,9 +1,10 @@
-import { shallowMount } from '@vue/test-utils'
+import { flushPromises, shallowMount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 import { LIBRARY_MAX_WIDTH, LIBRARY_MIN_WIDTH, useBlocksStore } from './stores/blocks'
 import { useAppStore } from './stores/app'
+import { usePreviewStore } from './stores/preview'
 
 vi.mock('./pdf/viewer', () => ({ openDocument: vi.fn(), preparePage: vi.fn() }))
 
@@ -33,15 +34,76 @@ it('首页展示文稿列表，返回列表保留编辑器，窄屏抽屉不会�
   await wrapper.vm.$nextTick()
   const editor = wrapper.getComponent({ name: 'TemplatePreview' }).element
   expect(wrapper.findComponent({ name: 'BlockDrawer' }).exists()).toBe(true)
-  app.setTab('documents')
-  await wrapper.vm.$nextTick()
-  expect(wrapper.getComponent({ name: 'TemplatePreview' }).element).toBe(editor)
-  expect(wrapper.get('.main-columns').isVisible()).toBe(false)
-  expect(wrapper.findComponent({ name: 'BlockDrawer' }).exists()).toBe(false)
+  for (const page of ['documents', 'templates', 'materials', 'archives', 'guide'] as const) {
+    app.setTab(page)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.getComponent({ name: 'TemplatePreview' }).element).toBe(editor)
+    expect(wrapper.get('.main-columns').isVisible()).toBe(false)
+    expect(wrapper.findComponent({ name: 'BlockDrawer' }).exists()).toBe(false)
+    if (page === 'templates') expect(wrapper.getComponent({ name: 'TemplateManager' }).props('embedded')).toBe(true)
+    if (page === 'materials') expect(wrapper.get('.materials-page').findComponent({ name: 'BlockLibrary' }).props('standalone')).toBe(true)
+    if (page === 'archives') expect(wrapper.getComponent({ name: 'LibraryDialog' }).props('embedded')).toBe(true)
+  }
   app.setTab('workbench')
   await wrapper.vm.$nextTick()
   expect(wrapper.getComponent({ name: 'TemplatePreview' }).element).toBe(editor)
   expect(wrapper.get('.main-columns').isVisible()).toBe(true)
+  wrapper.unmount()
+})
+
+it('模板页显式打开指定稿，离开页面后旧结果不抢回编辑器', async () => {
+  const wrapper = shallowMount(App, { global: { plugins: [createPinia()] } })
+  const app = useAppStore(), preview = usePreviewStore()
+  app.setTab('templates')
+  await wrapper.vm.$nextTick()
+  let complete!: () => void
+  const select = vi.spyOn(preview, 'selectTemplate').mockImplementation(async (id, options) => {
+    await new Promise<void>(resolve => { complete = resolve })
+    preview.currentTemplateId = id; preview.currentVersionId = options?.versionId ?? null; preview.status = 'ready'
+  })
+  wrapper.getComponent({ name: 'TemplateManager' }).vm.$emit('use', 2, 23)
+  app.setTab('guide')
+  complete()
+  await flushPromises()
+  expect(select).toHaveBeenCalledWith(2, { versionId: 23 })
+  expect(app.activeTab).toBe('guide')
+  wrapper.unmount()
+})
+
+it('模板页再次编辑当前稿直接返回现有编辑器，不重复转换或清空编辑状态', async () => {
+  const wrapper = shallowMount(App, { global: { plugins: [editingPinia()] } })
+  const app = useAppStore(), preview = usePreviewStore()
+  preview.currentTemplateId = 2; preview.currentVersionId = 23; preview.status = 'ready'
+  const select = vi.spyOn(preview, 'selectTemplate')
+  const editor = wrapper.getComponent({ name: 'TemplatePreview' }).element
+  app.setTab('templates')
+  await wrapper.vm.$nextTick()
+  wrapper.getComponent({ name: 'TemplateManager' }).vm.$emit('use', 2, 23)
+  await flushPromises()
+  expect(select).not.toHaveBeenCalled()
+  expect(app.activeTab).toBe('workbench')
+  expect(wrapper.getComponent({ name: 'TemplatePreview' }).element).toBe(editor)
+  wrapper.unmount()
+})
+
+it('模板页打开失败显示错误并归还发起按钮焦点，允许原位重试', async () => {
+  const wrapper = shallowMount(App, {
+    attachTo: document.body,
+    global: { plugins: [createPinia()], stubs: {
+      TemplateManager: { name: 'TemplateManager', emits: ['use'], template: '<button @click="$emit(\'use\', 2, 23)">编辑文稿</button>' },
+    } },
+  })
+  const app = useAppStore(), preview = usePreviewStore()
+  app.setTab('templates')
+  await wrapper.vm.$nextTick()
+  vi.spyOn(preview, 'selectTemplate').mockImplementation(async () => { preview.status = 'error'; preview.error = '无法打开' })
+  const opener = wrapper.getComponent({ name: 'TemplateManager' }).get('button')
+  ;(opener.element as HTMLButtonElement).focus()
+  await opener.trigger('click')
+  await flushPromises()
+  expect(wrapper.get('[role=alert]').text()).toBe('无法打开')
+  expect(document.activeElement).toBe(opener.element)
+  expect(app.activeTab).toBe('templates')
   wrapper.unmount()
 })
 

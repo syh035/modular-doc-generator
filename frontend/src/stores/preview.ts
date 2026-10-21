@@ -209,12 +209,14 @@ export const usePreviewStore = defineStore('preview', () => {
       && currentVersionId.value === versionId && proofreadMode.value === reviewing
   }
 
+  let templatesRequest = 0
   async function loadTemplates(): Promise<void> {
+    const request = ++templatesRequest
     try {
-      templates.value = await listTemplates()
-      templatesError.value = null
+      const result = await listTemplates()
+      if (request === templatesRequest) { templates.value = result; templatesError.value = null }
     } catch (err) {
-      templatesError.value = err instanceof Error ? err.message : String(err)
+      if (request === templatesRequest) templatesError.value = err instanceof Error ? err.message : String(err)
     }
   }
 
@@ -288,6 +290,7 @@ export const usePreviewStore = defineStore('preview', () => {
   async function removeTemplate(id: number): Promise<ProofreadResult> {
     try {
       await deleteTemplateApi(id)
+      templatesRequest++
       templates.value = templates.value.filter(t => t.id !== id)
       if (currentTemplateId.value === id) {
         dismissExportWarnings()

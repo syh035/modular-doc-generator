@@ -235,6 +235,22 @@ def select_template(page, template_id: int) -> None:
     expect(page.locator(".legend-wide")).to_be_visible()
 
 
+def select_document(page, template_id: int, name: str) -> None:
+    """通过文稿列表显式选择，验证当前标题与实际稿件一致。"""
+    from playwright.sync_api import expect
+
+    page.get_by_role("navigation", name="主导航").get_by_role(
+        "button", name="文稿", exact=True
+    ).click()
+    page.locator(f"#template-documents-{template_id}").get_by_role(
+        "article", name=name, exact=True
+    ).locator(".edit-document").click()
+    expect(page.get_by_test_id("current-document-name")).to_have_text(name)
+    page.locator(".pdf-page canvas").first.wait_for(
+        state="visible", timeout=CANVAS_TIMEOUT
+    )
+
+
 def confirm_all_candidates(page, expected: int) -> None:
     """检查模板区域：逐个保留候选 → 进度 N/N → 返回当前文档。"""
     from playwright.sync_api import expect
@@ -350,37 +366,22 @@ def scenario_2(browser) -> list[str]:
         # 新建版本（复制当前绑定底稿）→ 自动切换
         stamp = time.strftime("%H%M%S")
         version_name = f"投递版{stamp}"
-        page.locator('[data-testid="template-manage"]').click()
-        page.get_by_role("dialog", name="模板与版本管理").get_by_role(
-            "button", name="复制", exact=True
-        ).first.click()
+        page.locator('.template-preview .document-actions summary').click()
+        page.get_by_role("button", name="另存为文稿", exact=True).click()
         dialog = page.locator('[data-testid="version-dialog"]')
         dialog.wait_for(state="visible")
         dialog.locator('[data-testid="version-name-input"]').fill(version_name)
-        # Manager copy opens an explicit copy-mode version dialog.
+        # 另存明确复制当前稿，成功直接打开新文稿。
         dialog.locator('button[type="submit"]').click()
         dialog.wait_for(state="hidden")
-        page.get_by_role("dialog", name="模板与版本管理").locator("article").filter(
-            has_text=version_name
-        ).get_by_role("button", name="使用", exact=True).click()
-        page.get_by_role("dialog", name="模板与版本管理").wait_for(state="hidden")
-        version_select = page.locator('[data-testid="version-select"]')
-        expect(version_select.locator("option:checked")).to_have_text(version_name)
+        expect(page.get_by_test_id("current-document-name")).to_have_text(version_name)
         expect(page.locator(".legend-wide")).to_contain_text(
             "已绑定 1", timeout=RENDER_TIMEOUT
         )
 
-        # 版本名与图例绑定数分别校验，不耦合下拉选项的展示格式。
-        def _version_value(substring: str) -> str:
-            option = version_select.locator("option", has_text=substring).first
-            value = option.get_attribute("value")
-            assert value is not None, f"版本下拉找不到含 {substring!r} 的选项"
-            return value
-
-        version_select.select_option(value=_version_value("默认版本"))
-        page.locator(".pdf-page canvas").first.wait_for(state="visible", timeout=CANVAS_TIMEOUT)
-        version_select.select_option(value=_version_value(version_name))
-        page.locator(".pdf-page canvas").first.wait_for(state="visible", timeout=CANVAS_TIMEOUT)
+        # 文稿名与绑定数分别校验，从列表来回切换，不能只改当前标题。
+        select_document(page, template_id, "默认版本")
+        select_document(page, template_id, version_name)
         expect(bar).to_be_visible(timeout=RENDER_TIMEOUT)  # 大超出在新版本同样存在
 
         # 导出：大超出拦截 → 警示弹层 → 确认重排导出 → 文件名与产物校验
@@ -434,7 +435,8 @@ def scenario_3(browser) -> list[str]:
         bind_selected_block(page, "工作经历", bound_count=2)
 
         # 切目标模板 → 迁移弹层（prompt）→ 方案（自动匹配 2）→ 确认
-        page.locator("select.template-select").first.select_option(value=str(target_id))
+        page.locator('.template-preview .document-actions summary').click()
+        page.get_by_role("combobox", name="更换模板", exact=True).select_option(value=str(target_id))
         migration = page.locator('[data-testid="migration-dialog"]')
         migration.wait_for(state="visible")
         expect(migration).to_contain_text("2 个绑定")
@@ -448,8 +450,7 @@ def scenario_3(browser) -> list[str]:
 
         # 绑定零重录：目标默认版本 2 项绑定 + 预览替换生效（迁移后首次替换渲染，放宽超时）
         expect(page.locator(".legend-wide")).to_contain_text("已绑定 2", timeout=RENDER_TIMEOUT)
-        version_select = page.locator('[data-testid="version-select"]')
-        expect(version_select.locator("option:checked")).to_have_text(
+        expect(page.get_by_test_id("current-document-name")).to_have_text(
             "默认版本", timeout=RENDER_TIMEOUT
         )
         result = verify_preview(target_id, expect=["李四", work_content], absent=["{{"])

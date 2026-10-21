@@ -76,8 +76,18 @@ export const useDocumentsStore = defineStore('documents', () => {
     // 新建完成时隔离较早的列表响应，避免刚创建的文稿被旧列表覆盖。
     groupRequests.set(document.template_id, (groupRequests.get(document.template_id) ?? 0) + 1)
     group.loading = false
-    group.documents = [...group.documents.filter(item => item.id !== document.id), document]
+    const index = group.documents.findIndex(item => item.id === document.id)
+    if (index >= 0) group.documents[index] = document
+    else group.documents = [...group.documents, document]
   }
 
-  return { groups, loading, error, documentCount, incomplete, load, loadGroup, acceptDocument }
+  function removeDocument(templateId: number, documentId: number): void {
+    const group = groups.value.find(item => item.template.id === templateId)
+    if (!group) return
+    groupRequests.set(templateId, (groupRequests.get(templateId) ?? 0) + 1)
+    group.loading = false
+    group.documents = group.documents.filter(item => item.id !== documentId)
+  }
+
+  return { groups, loading, error, documentCount, incomplete, load, loadGroup, acceptDocument, removeDocument }
 })

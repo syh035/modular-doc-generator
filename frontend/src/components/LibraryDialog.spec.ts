@@ -7,6 +7,39 @@ vi.mock('./ArchivePreview.vue', () => ({ default: { template: '<div>只读 PDF</
 beforeEach(() => { setActivePinia(createPinia()) })
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 describe('独立归档库', () => {
+  it('页面删除归档后回到搜索输入', async () => {
+    const archive = { id: 7, name: '定稿', template_name: '模板', version_name: '文稿', created_at: '2026-10-17T00:00:00Z' }
+    let deleted = false
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'DELETE') { deleted = true; return new Response(null, { status: 204 }) }
+      return Response.json({ archives: deleted ? [] : [archive] })
+    }))
+    const wrapper = mount(LibraryDialog, { props: { embedded: true }, attachTo: document.body })
+    try {
+      await flushPromises()
+      const remove = wrapper.findAll('article button').find(button => button.text() === '删除')!
+      ;(remove.element as HTMLButtonElement).focus()
+      await remove.trigger('click')
+      await flushPromises()
+      expect(wrapper.find('article').exists()).toBe(false)
+      expect(document.activeElement).toBe(wrapper.get('input[type=search]').element)
+    } finally { wrapper.unmount() }
+  })
+  it('主页面无模态和关闭按钮，读取失败可重试，不依赖工作稿上下文', async () => {
+    const fetcher = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(Response.json({ archives: [] }))
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = mount(LibraryDialog, { props: { embedded: true } })
+    await flushPromises()
+    expect(wrapper.element.tagName).toBe('MAIN')
+    expect(wrapper.find('dialog').exists()).toBe(false)
+    expect(wrapper.find('[aria-label=关闭归档库]').exists()).toBe(false)
+    await wrapper.get('[role=alert] button').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[role=alert]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('暂无归档')
+    wrapper.unmount()
+  })
   it('无需选择模板或版本即可查看下载，不再请求备份接口', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ archives: [
       { id: 7, name: '定稿', template_name: '模板', version_name: '版本', created_at: '2026-10-17T00:00:00Z' },

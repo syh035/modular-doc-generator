@@ -38,6 +38,47 @@ beforeEach(() => {
   localStorage.clear()
 })
 
+it.each(['create', 'update', 'delete'] as const)('迟到的全库列表不会覆盖已保存的素材（%s）', async action => {
+  let resolve!: (response: Response) => void
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input), method = init?.method ?? 'GET'
+    if (path === '/api/tags') return Response.json({ tags: [] })
+    if (path === '/api/blocks' && method === 'GET') return new Promise<Response>(complete => { resolve = complete })
+    if (method === 'DELETE') return new Response(null, { status: 204 })
+    return Response.json(block(action === 'create' ? 2 : 1, '新素材'))
+  }))
+  const store = useBlocksStore()
+  store.blocks = [block(1, '旧素材')]
+  const old = store.loadBlocks()
+  if (action === 'create') await store.createNewBlock('新素材', '正文')
+  else if (action === 'update') await store.updateExistingBlock(1, { name: '新素材', content: '正文' })
+  else await store.removeBlock(1)
+  resolve(Response.json({ blocks: [block(1, '旧素材')] }))
+  await old
+  expect(store.blocks.map(item => item.name)).toEqual(action === 'create' ? ['新素材', '旧素材'] : action === 'update' ? ['新素材'] : [])
+})
+
+it('失效正在读取的模板素材后重新读取成员，保留新保存内容并结束加载', async () => {
+  let resolveOld!: (response: Response) => void
+  let reads = 0
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input)
+    if (path === '/api/tags') return Response.json({ tags: [] })
+    if (init?.method === 'PUT') return Response.json(block(1, '新素材'))
+    if (reads++ === 0) return new Promise<Response>(resolve => { resolveOld = resolve })
+    return Response.json({ blocks: [block(1, '新素材')] })
+  }))
+  const store = useBlocksStore()
+  const old = store.loadTemplateBlocks(1)
+  await store.updateExistingBlock(1, { name: '新素材', content: '正文' })
+  resolveOld(Response.json({ blocks: [block(1, '旧素材')] }))
+  await old
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(store.libraryBlocks.map(block => block.name)).toEqual(['新素材'])
+  expect(store.libraryLoading).toBe(false)
+  expect(reads).toBe(2)
+})
+
 it('标签刷新丢弃旧响应，防止批量删除后恢复过期标签', async () => {
   let resolveOld!: (response: Response) => void
   const fetchFn = vi.fn()

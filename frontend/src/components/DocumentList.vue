@@ -6,6 +6,7 @@ import { useAppStore } from '../stores/app'
 import { useDocumentsStore, type DocumentGroup } from '../stores/documents'
 import { usePreviewStore } from '../stores/preview'
 import VersionDialog from './VersionDialog.vue'
+import DocumentActions from './DocumentActions.vue'
 
 const emit = defineEmits<{ import: [] }>()
 const store = useDocumentsStore()
@@ -23,7 +24,7 @@ let disposed = false
 const busy = computed(() => saving.value || openingId.value !== null || preview.uploadPhase !== 'idle')
 const filtered = computed(() => {
   const search = query.value.trim().toLocaleLowerCase()
-  return store.groups.map(group => ({
+  return store.groups.filter(group => app.documentTemplateId === null || group.template.id === app.documentTemplateId).map(group => ({
     group,
     documents: !search || group.template.filename.toLocaleLowerCase().includes(search)
       ? group.documents : group.documents.filter(document => document.name.toLocaleLowerCase().includes(search)),
@@ -64,7 +65,7 @@ async function open(group: DocumentGroup, draft: VersionInfo): Promise<void> {
       preview.templates = store.groups.map(item => item.template)
       await preview.selectTemplate(group.template.id, { versionId: draft.id })
     }
-    if (disposed) return
+    if (disposed || app.activeTab !== 'documents') return
     if (preview.currentTemplateId !== group.template.id || preview.currentVersionId !== draft.id) return
     if (preview.status !== 'ready') throw new Error(preview.error ?? '文稿未能打开，请重试')
     app.setTab('workbench')
@@ -144,6 +145,18 @@ onBeforeUnmount(() => { disposed = true })
           {{ store.loading ? '加载中…' : '刷新' }}
         </button>
       </div>
+      <p
+        v-if="app.documentTemplateId !== null"
+        class="template-filter"
+      >
+        仅显示此模板的文稿
+        <button
+          class="ui-btn"
+          @click="app.openTemplateDocuments(null)"
+        >
+          查看全部文稿
+        </button>
+      </p>
       <p
         v-if="store.error"
         role="alert"
@@ -254,6 +267,13 @@ onBeforeUnmount(() => { disposed = true })
             >
               {{ openingId === document.id ? '打开中…' : '继续编辑' }}
             </button>
+            <DocumentActions
+              compact
+              :document="document"
+              :can-delete="group.documents.length > 1"
+              :disabled="busy || !!group.error"
+              @open="open(group, $event)"
+            />
           </article>
         </div>
       </section>
@@ -296,8 +316,9 @@ h1 { font-size: 24px; letter-spacing: .02em; }
 .list-tools { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
 .list-tools input { flex: 1; max-width: 400px; }
 .list-count { color: var(--text-2); font-size: 12px; margin-left: auto; }
+.template-filter { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; color: var(--text-2); font-size: 13px; }
 .refresh { border-color: transparent; color: var(--text-2); }
-.template-group { margin-bottom: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); overflow: hidden; }
+.template-group { margin-bottom: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); }
 .group-heading { display: flex; align-items: center; gap: 16px; padding: 14px 20px; }
 .group-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; border: 0; padding: 4px 0; text-align: left; background: transparent; }
 .group-toggle:disabled { cursor: default; opacity: 1; color: inherit; }

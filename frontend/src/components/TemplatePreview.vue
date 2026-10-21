@@ -10,6 +10,9 @@ import {
 } from '../pdf/geometry'
 import { openDocument, preparePage, type OpenedPdf, type RenderedPage } from '../pdf/viewer'
 import { useBlocksStore } from '../stores/blocks'
+import { useAppStore } from '../stores/app'
+import { useHistoryStore } from '../stores/history'
+import type { VersionInfo } from '../api/versions'
 import { usePreviewStore, type DisplayRegion } from '../stores/preview'
 import BindingDialog from './BindingDialog.vue'
 import RegionTextEditor from './RegionTextEditor.vue'
@@ -17,12 +20,13 @@ import ExportDialog from './ExportDialog.vue'
 import MigrationDialog from './MigrationDialog.vue'
 import ProofreadPopover from './ProofreadPopover.vue'
 import RegionNameDialog from './RegionNameDialog.vue'
-import TemplateManager from './TemplateManager.vue'
+import DocumentActions from './DocumentActions.vue'
 import { PageCanvasCache } from '../pdf/pageCache'
 import { previewScale } from '../pdf/scale'
 
 const emit = defineEmits<{ import: []; archive: [] }>()
-const managerOpen = ref(false)
+const app = useAppStore()
+const history = useHistoryStore()
 const previewTools = ref<HTMLDetailsElement | null>(null)
 function closePreviewTools(returnFocus = false): void {
   if (previewTools.value) previewTools.value.open = false
@@ -370,7 +374,10 @@ function jumpToRegion(region: DisplayRegion): void {
 
 /** 模板下拉（UI 调整③：从顶栏挪到本工具条，idle 态也要可选）。 */
 function onTemplateChange(event: Event): void {
-  const value = (event.target as HTMLSelectElement).value
+  const select = event.target as HTMLSelectElement
+  const value = select.value
+  const menu = select.closest('details')
+  if (menu) { menu.open = false; menu.querySelector('summary')?.focus() }
   void store.selectTemplate(value === '' ? null : Number(value))
 }
 
@@ -380,28 +387,27 @@ function onTemplateChange(event: Event): void {
 const currentVersionName = computed(
   () => store.versions.find(v => v.id === store.currentVersionId)?.name ?? '',
 )
-
-async function useManagedVersion(templateId: number, versionId: number | null): Promise<void> {
-  managerOpen.value = false
-  if (templateId !== store.currentTemplateId || store.status !== 'ready') await store.selectTemplate(templateId)
-  if (store.currentTemplateId === templateId && store.status === 'ready' && versionId !== null) {
-    // M10 提示针对新模板的默认空白版本；显式打开其他版本时不迁移到它。
-    if (versionId !== store.currentVersionId) store.dismissMigration()
-    await store.selectVersion(versionId)
-  }
+const currentDocument = computed(() => store.versions.find(version => version.id === store.currentVersionId))
+const documentState = computed(() => {
+  if (store.status === 'loading') return '正在打开文稿…'
+  if (store.error) return '预览未更新'
+  if (textEditing.value || history.pending > 0) return '正在保存修改…'
+  if (textEditorTarget.value) return '编辑中 · 提交后保存'
+  if (store.proofreadMode) return '正在检查所用模板'
+  if (store.refreshing || canvasBusy.value) return '正在更新预览…'
+  return store.currentVersionId !== null && store.status === 'ready' ? '修改已保存' : '模板原文'
+})
+async function openCopiedDocument(document: VersionInfo): Promise<void> {
+  await store.selectTemplate(document.template_id, { versionId: document.id })
+}
+async function retryPreview(): Promise<void> {
+  if (store.status === 'ready') await store.refreshVersionRender()
+  else if (store.currentTemplateId !== null) await store.selectTemplate(store.currentTemplateId,
+    !store.proofreadMode && store.currentVersionId !== null ? { versionId: store.currentVersionId } : undefined)
 }
 
 function importTemplate(): void {
-  managerOpen.value = false
   emit('import')
-}
-
-/** 版本切换：整体刷新渲染（校对模式下拉置灰，此处不再兜底）。 */
-function onVersionChange(event: Event): void {
-  const value = (event.target as HTMLSelectElement).value
-  if (value !== '') {
-    void store.selectVersion(Number(value))
-  }
 }
 
 // ---- 换模板迁移（M10）：切换触发提示 → 三清单确认 → 整包落库 ----
@@ -1030,61 +1036,49 @@ defineExpose({ jumpToRegion })
           </svg>
           块库
         </button>
-        <div class="selection-group">
-          <label class="context-select"><span>模板</span>
+        <div class="document-context">
+          <h1 data-testid="current-document-name">
+            {{ currentVersionName || (store.currentVersionId === null ? '模板原文' : '文稿') }}
+          </h1>
+          <div class="context-meta">
+            <button
+              class="template-context"
+              :disabled="regionWriteBusy"
+              title="浏览所用模板，不更改当前文稿"
+              @click="app.setTab('templates')"
+            >
+              模板：{{ store.currentTemplate?.filename ?? '尚未选择' }}
+            </button>
+            <span
+              class="save-status"
+              role="status"
+              data-testid="document-save-state"
+            >{{ documentState }}</span>
+          </div>
+        </div>
+        <DocumentActions
+          v-if="currentDocument"
+          :document="currentDocument"
+          :can-delete="store.versions.length > 1"
+          :disabled="store.proofreadMode || store.exportBusy || regionWriteBusy || store.refreshing || store.status !== 'ready'"
+          @open="openCopiedDocument"
+        >
+          <label class="template-change">更换模板
             <select
               class="template-select"
+              aria-label="更换模板"
               :value="store.currentTemplateId ?? ''"
-              :disabled="store.templates.length === 0"
-              :title="store.templatesError ?? '选择要预览的模板'"
+              :disabled="store.proofreadMode || store.refreshing || regionWriteBusy || store.status !== 'ready'"
               @change="onTemplateChange"
             >
               <option
-                value=""
-                disabled
-              >
-                {{ store.templatesError ?? (store.templates.length === 0 ? '（暂无模板）' : '（选择模板）') }}
-              </option>
-              <option
-                v-for="t in store.templates"
-                :key="t.id"
-                :value="t.id"
-              >
-                {{ t.filename }}
-              </option>
+                v-for="template in store.templates"
+                :key="template.id"
+                :value="template.id"
+              >{{ template.filename }}</option>
             </select>
           </label>
-          <!-- 版本控件组（M8）：下拉切换（整体刷新）+ 新建/重命名/删除；校对模式置灰 -->
-          <template v-if="store.currentVersionId !== null">
-            <label class="context-select version-context"><span>内容版本</span>
-              <select
-                class="template-select version-select"
-                :value="store.currentVersionId"
-                :disabled="store.proofreadMode"
-                :title="`${currentVersionName} · 检查区域时不可切换内容版本`"
-                data-testid="version-select"
-                @change="onVersionChange"
-              >
-                <option
-                  v-for="v in store.versions"
-                  :key="v.id"
-                  :value="v.id"
-                >
-                  {{ v.name }}
-                </option>
-              </select>
-            </label>
-          </template>
-        </div>
-        <button
-          class="tool-btn"
-          data-testid="template-manage"
-          title="管理模板与内容版本"
-          aria-label="模板与版本"
-          @click="managerOpen = true"
-        >
-          管理
-        </button>
+        </DocumentActions>
         <template v-if="store.currentVersionId !== null">
           <button
             class="tool-btn"
@@ -1196,19 +1190,19 @@ defineExpose({ jumpToRegion })
       </div>
     </div>
 
-    <TemplateManager
-      v-if="managerOpen"
-      @close="managerOpen = false"
-      @use="useManagedVersion"
-      @import="importTemplate"
-    />
-
     <!-- 绑定/刷新错误横幅（不动摇 ready 态的已渲染内容） -->
     <div
       v-if="store.status === 'ready' && store.error"
       class="error-banner"
     >
       {{ store.error }}
+      <button
+        class="tool-btn"
+        :disabled="store.refreshing"
+        @click="retryPreview"
+      >
+        重试预览
+      </button>
     </div>
 
     <section
@@ -1318,8 +1312,8 @@ defineExpose({ jumpToRegion })
             class="welcome-icon"
             aria-hidden="true"
           >▤</span>
-          <h1>把内容组合成一份文档</h1>
-          <p>选择模板版式，为不同用途保存内容版本，再导出 DOCX。</p>
+          <h1>选择文稿开始编辑</h1>
+          <p>文稿按模板整理，选择已有稿件或新建一份。</p>
           <div class="welcome-actions">
             <button
               class="ui-btn ui-primary"
@@ -1328,12 +1322,12 @@ defineExpose({ jumpToRegion })
               导入模板
             </button><button
               class="ui-btn"
-              @click="managerOpen = true"
+              @click="app.setTab('documents')"
             >
-              打开最近模板
+              查看文稿
             </button>
           </div>
-          <span class="welcome-hint">请在上方工具条选择模板开始预览，或打开模板管理搜索</span>
+          <span class="welcome-hint">模板与素材可从顶部独立管理。</span>
         </div>
       </div>
       <div
@@ -1348,6 +1342,12 @@ defineExpose({ jumpToRegion })
         class="state error"
       >
         {{ store.error }}
+        <button
+          class="ui-btn"
+          @click="retryPreview"
+        >
+          重试预览
+        </button>
       </div>
       <template v-else>
         <div
@@ -1523,6 +1523,13 @@ defineExpose({ jumpToRegion })
 
 .preview-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
 .toolbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; width: 100%; }
+.document-context { flex: 1; min-width: 0; }
+.document-context h1 { font-size: 15px; line-height: 1.6; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-meta { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.template-context { min-width: 0; max-width: 65%; border: 0; padding: 0; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; font-size: 11px; line-height: 1.6; color: var(--text-2); text-align: left; }
+.save-status { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.template-change { display: flex; flex-direction: column; padding: 9px 10px; gap: 6px; font-size: 12px; color: var(--text-2); }
+@container (max-width: 600px) { .document-context { flex: 1 0 calc(100% - 80px); } .toolbar-left { flex-wrap: wrap; } .context-meta { flex-wrap: wrap; gap: 2px 8px; } .template-context { max-width: 100%; } }
 .overlay.heading { border-style: dashed; }
 .frame-guide { flex-shrink: 0; background: var(--bg-panel); padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
 .region-task-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; color: var(--text-1); }

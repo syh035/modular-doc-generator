@@ -17,7 +17,7 @@ import SharedBlockDialog from './SharedBlockDialog.vue'
 import BlockImpact from './BlockImpact.vue'
 import { apiFetch } from '../api/client'
 
-defineProps<{ drawer?: boolean }>()
+const props = defineProps<{ drawer?: boolean; standalone?: boolean }>()
 const emit = defineEmits<{ select: []; close: [] }>()
 const libraryRoot = ref<HTMLElement | null>(null)
 function openMenus(): HTMLDetailsElement[] {
@@ -54,6 +54,16 @@ const sharedOpen = ref(false)
 const sharing = ref(false)
 const sharedError = ref<string | null>(null)
 const previewStore = usePreviewStore()
+const standaloneLoading = ref(!!props.standalone)
+const scopeBlocks = computed(() => props.standalone ? store.blocks : store.libraryBlocks)
+const scopeLoading = computed(() => props.standalone ? standaloneLoading.value : store.libraryLoading)
+const scopeError = computed(() => props.standalone ? store.error : store.libraryError)
+async function reload(): Promise<void> {
+  if (!props.standalone) { await store.loadTemplateBlocks(previewStore.currentTemplateId); return }
+  standaloneLoading.value = true
+  await store.loadBlocks()
+  standaloneLoading.value = false
+}
 
 // ---- 新建/编辑表单（一表两用）----
 const showForm = ref(false)
@@ -115,6 +125,11 @@ function chooseBlock(id: number): void {
     checkedIds.value = checkedIds.value.includes(id) ? checkedIds.value.filter(n => n !== id) : [...checkedIds.value, id]
     return
   }
+  if (props.standalone) {
+    const block = store.blocks.find(block => block.id === id)
+    if (block) startEdit(block)
+    return
+  }
   store.selectBlock(id)
   emit('select')
 }
@@ -152,8 +167,9 @@ async function submit(scope: 'shared' | 'version' = 'shared'): Promise<void> {
     }
     return
   }
-  if (previewStore.currentTemplateId === null) return
-  const ok = await store.createNewBlock(name.value.trim(), kind.value === 'blank' ? '' : content.value, tagNames, kind.value, previewStore.currentTemplateId)
+  if (!props.standalone && previewStore.currentTemplateId === null) return
+  const ok = await store.createNewBlock(name.value.trim(), kind.value === 'blank' ? '' : content.value, tagNames, kind.value,
+    props.standalone ? undefined : previewStore.currentTemplateId ?? undefined)
   if (ok) {
     resetForm()
   } else {
@@ -194,10 +210,12 @@ async function confirmDelete(id: number): Promise<void> {
     // 被引用删除 → 绑定已置 missing：刷新版本预览让覆盖层回落黄框（D11）
     void previewStore.refreshVersionRender()
   }
+  await nextTick()
+  if (document.activeElement === document.body) libraryRoot.value?.querySelector<HTMLInputElement>('.block-search input')?.focus()
 }
 
 // ---- 统一搜索：保留已有标签匹配，不叠加隐藏的历史标签筛选 ----
-const visibleBlocks = computed(() => store.libraryBlocks.filter(b => matchesBlock(b, query.value)))
+const visibleBlocks = computed(() => scopeBlocks.value.filter(b => matchesBlock(b, query.value)))
 const allChecked = computed(() => visibleBlocks.value.length > 0 && visibleBlocks.value.every(b => checkedIds.value.includes(b.id)))
 watch(query, () => { checkedIds.value = []; batchConfirm.value = false })
 function toggleBatch(): void {
@@ -228,9 +246,12 @@ async function removeChecked(): Promise<void> {
   batchResult.value = `已删除 ${targets.length - failedIds.length} 个字符块${failures.length ? `；未删除：${failures.join('；')}` : ''}`
   deleting.value = false
   if (targets.length > failedIds.length) void previewStore.refreshVersionRender()
+  await nextTick()
+  if (document.activeElement === document.body) libraryRoot.value?.querySelector<HTMLButtonElement>('.batch-exit')?.focus()
 }
 
 watch(() => previewStore.currentTemplateId, () => {
+  if (props.standalone) return
   resetForm()
   sharedOpen.value = false; sharedError.value = null
   query.value = ''; store.activeTagId = null
@@ -239,7 +260,7 @@ watch(() => previewStore.currentTemplateId, () => {
   deletingId.value = null
 })
 watch([() => previewStore.currentTemplateId, () => previewStore.regions, () => previewStore.versions],
-  () => { void store.loadTemplateBlocks(previewStore.currentTemplateId) }, { immediate: true })
+  () => { if (!props.standalone) void store.loadTemplateBlocks(previewStore.currentTemplateId) }, { immediate: true })
 
 async function share(id: number): Promise<void> {
   const templateId = previewStore.currentTemplateId
@@ -255,7 +276,7 @@ onMounted(() => {
   document.addEventListener('pointerdown', outsideMenus)
   document.addEventListener('focusin', outsideMenuFocus)
   document.addEventListener('keydown', menuKeydown, true)
-  void store.loadBlocks()
+  void store.loadBlocks().finally(() => { standaloneLoading.value = false })
   void store.loadTags()
 })
 onBeforeUnmount(() => {
@@ -273,29 +294,35 @@ function openShared(): void {
   <aside
     ref="libraryRoot"
     class="block-library"
-    :style="{ width: store.libraryWidth + 'px' }"
+    :class="{ standalone }"
+    :style="standalone ? undefined : { width: store.libraryWidth + 'px' }"
   >
     <div class="header">
-      <span class="library-title"><span>字符块库 <span
-        v-if="previewStore.currentTemplateId !== null"
-        class="library-count"
-      >{{ query.trim() ? `${visibleBlocks.length}/${store.libraryBlocks.length}` : store.libraryBlocks.length }}</span></span><small v-if="previewStore.currentTemplateId !== null">当前模板</small></span>
+      <div class="library-title">
+        <span
+          :role="standalone ? 'heading' : undefined"
+          :aria-level="standalone ? 1 : undefined"
+        >{{ standalone ? '素材' : '字符块库' }} <span
+          v-if="standalone || previewStore.currentTemplateId !== null"
+          class="library-count"
+        >{{ query.trim() ? `${visibleBlocks.length}/${scopeBlocks.length}` : scopeBlocks.length }}</span></span><small v-if="standalone || previewStore.currentTemplateId !== null">{{ standalone ? '保存可在不同文稿中反复使用的文字' : '当前模板' }}</small>
+      </div>
       <div class="header-ops">
         <button
           class="primary"
-          aria-label="+ 新建字符块"
-          :disabled="deleting || previewStore.currentTemplateId === null"
+          :aria-label="standalone ? '新建素材' : '+ 新建字符块'"
+          :disabled="deleting || scopeLoading || (!standalone && previewStore.currentTemplateId === null)"
           @click="onNewClick"
         >
           + 新建
         </button>
         <details
-          v-if="previewStore.currentTemplateId !== null"
+          v-if="standalone || previewStore.currentTemplateId !== null"
           class="library-menu library-actions"
           name="block-library-actions"
         >
           <summary
-            aria-label="字符块库操作"
+            :aria-label="standalone ? '素材库操作' : '字符块库操作'"
             :aria-disabled="deleting"
             @click="deleting && $event.preventDefault()"
           >
@@ -303,6 +330,7 @@ function openShared(): void {
           </summary>
           <div class="menu-actions">
             <button
+              v-if="!standalone"
               :disabled="deleting"
               @click="openShared"
             >
@@ -328,7 +356,7 @@ function openShared(): void {
     </div>
 
     <div
-      v-if="previewStore.currentTemplateId === null"
+      v-if="!standalone && previewStore.currentTemplateId === null"
       class="empty"
     >
       请先选择模板，再查看模板字符块库
@@ -408,8 +436,9 @@ function openShared(): void {
         v-model:kind="kind"
         v-model:tags="tagsInput"
         :editing="editingId !== null"
+        :material="standalone"
         :block-id="editingId ?? undefined"
-        :version-id="previewStore.currentVersionId"
+        :version-id="standalone ? null : previewStore.currentVersionId"
         :busy="store.creating || store.updating || copying"
         :error="formError"
         :submit-label="submitLabel"
@@ -419,7 +448,7 @@ function openShared(): void {
 
       <!-- 选中块提示（正向绑定流指引） -->
       <div
-        v-if="store.selectedBlock"
+        v-if="!standalone && store.selectedBlock"
         class="selected-tip"
       >
         已选中「{{ store.selectedBlock.name }}」，点击文档区域绑定
@@ -440,23 +469,30 @@ function openShared(): void {
 
       <div class="block-list">
         <div
-          v-if="store.libraryLoading"
+          v-if="scopeLoading"
           class="empty"
         >
-          正在加载当前模板字符块…
+          {{ standalone ? '正在读取素材…' : '正在加载当前模板字符块…' }}
         </div>
         <div
-          v-else-if="store.libraryError"
+          v-else-if="scopeError"
           class="empty"
           role="alert"
         >
-          {{ store.libraryError }}
+          {{ scopeError }}
+          <button
+            class="ui-btn"
+            :disabled="deleting || scopeLoading"
+            @click="reload"
+          >
+            重试读取
+          </button>
         </div>
         <div
-          v-else-if="store.libraryBlocks.length === 0"
+          v-else-if="scopeBlocks.length === 0"
           class="empty"
         >
-          当前模板暂无字符块。可新建，或从“共享块”加入已有内容
+          {{ standalone ? '还没有素材，点击“新建”保存可复用的文字。' : '当前模板暂无字符块。可新建，或从“共享块”加入已有内容' }}
         </div>
         <div
           v-else-if="visibleBlocks.length === 0"
@@ -606,6 +642,16 @@ function openShared(): void {
 .library-title { display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
 .library-title > small { font-size: 11px; font-weight: 400; color: var(--text-3); }
 .library-count { padding: 2px 5px; border-radius: 5px; background: var(--bg-hover); font-size: 11px; font-weight: 400; color: var(--text-3); }
+.block-library.standalone { flex: 1; width: 100%; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.standalone .header { padding: 20px 24px; min-height: 84px; white-space: normal; gap: 12px; }
+.standalone .library-title { font-size: 22px; gap: 7px; min-width: 0; }
+.standalone .library-title small { font-size: 12px; line-height: 1.6; }
+.standalone .header-ops { flex-shrink: 0; white-space: nowrap; }
+.standalone .block-search { padding: 16px 24px; }
+.standalone .block-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; align-content: start; padding: 0 24px 24px; }
+.standalone .block-item { min-width: 0; margin: 0; align-self: start; }
+.standalone .block-list > .empty { grid-column: 1 / -1; }
+@media (max-width: 600px) { .standalone .header { padding: 16px; } .standalone .block-search { padding: 12px 16px; } .standalone .block-list { grid-template-columns: minmax(0, 1fr); padding: 0 16px 16px; } }
 .drawer-close { width: 26px; height: 28px; padding: 0; border: 0; color: var(--text-2); background: transparent; font-size: 18px; }
 
 .icon-collapse {

@@ -467,6 +467,35 @@ describe('删除模板', () => {
 })
 
 describe('loadTemplates', () => {
+  it.each([false, true])('只发布最后一次列表读取，迟到的旧响应不覆盖数据或错误（失败=%s）', async failed => {
+    let resolve!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>(complete => { resolve = complete }))
+      .mockResolvedValueOnce(Response.json({ templates: [{ id: 2, filename: '新模板.docx' }] })))
+    const store = usePreviewStore()
+    const old = store.loadTemplates()
+    await store.loadTemplates()
+    resolve(failed
+      ? Response.json({ error: { code: 'FAILED', message: '旧错误' } }, { status: 500 })
+      : Response.json({ templates: [{ id: 1, filename: '旧模板.docx' }] }))
+    await old
+    expect(store.templates.map(template => template.id)).toEqual([2])
+    expect(store.templatesError).toBeNull()
+  })
+
+  it('删除模板后迟到的列表不能把已删除模板带回来', async () => {
+    let resolve!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === 'DELETE'
+      ? new Response(null, { status: 204 })
+      : new Promise<Response>(complete => { resolve = complete })))
+    const store = usePreviewStore()
+    const old = store.loadTemplates()
+    expect((await store.removeTemplate(1)).ok).toBe(true)
+    resolve(Response.json({ templates: [{ id: 1, filename: '已删除.docx' }] }))
+    await old
+    expect(store.templates).toEqual([])
+  })
+
   it('成功写入列表', async () => {
     stubFetch({
       '/api/templates': () => ({ templates: [{ id: 3, filename: 'a.docx', regions_count: 2 }] }),

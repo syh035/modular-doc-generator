@@ -36,6 +36,15 @@ beforeEach(() => {
 afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); vi.restoreAllMocks() })
 
 describe('文稿分组列表', () => {
+  it('从模板页进入按 ID 筛选文稿，查看全部后恢复其他组', async () => {
+    const wrapper = list()
+    useAppStore().openTemplateDocuments(2)
+    await flushPromises()
+    expect(wrapper.findAll('.template-group')).toHaveLength(1)
+    expect(wrapper.text()).toContain('项目模板.docx')
+    await wrapper.get('.template-filter button').trigger('click')
+    expect(wrapper.findAll('.template-group')).toHaveLength(2)
+  })
   it('按模板列出旧稿和空模板，组可折叠，搜索文稿或模板会展开命中组', async () => {
     const wrapper = list()
     await flushPromises()

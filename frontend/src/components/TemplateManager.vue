@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { createVersion, deleteVersion, listVersions, renameVersion, type VersionInfo } from '../api/versions'
 import { usePreviewStore } from '../stores/preview'
 import { useModalEsc } from '../composables/useModalEsc'
 import VersionDialog from './VersionDialog.vue'
 
-const emit = defineEmits<{ close: []; use: [templateId: number, versionId: number | null]; import: [] }>()
+const props = defineProps<{ embedded?: boolean }>()
+const emit = defineEmits<{ close: []; use: [templateId: number, versionId: number | null]; import: []; documents: [templateId: number] }>()
 const store = usePreviewStore()
 const query = ref('')
 const selectedId = ref(store.currentTemplateId ?? store.templates[0]?.id ?? null)
@@ -21,6 +22,12 @@ const deleteResult = ref('')
 const deletingId = ref<number | null>(null)
 const editor = ref<{ mode: 'create' | 'rename'; source: VersionInfo | null; copy: boolean } | null>(null)
 const editorError = ref<string | null>(null)
+const templatesLoading = ref(false)
+async function refreshTemplates(): Promise<void> {
+  templatesLoading.value = true
+  await store.loadTemplates()
+  templatesLoading.value = false
+}
 let request = 0
 const templates = computed(() => store.templates
   .filter(t => t.filename.toLocaleLowerCase().includes(query.value.trim().toLocaleLowerCase()))
@@ -81,6 +88,11 @@ async function load(): Promise<void> {
   }
 }
 watch(selectedId, () => { void load() }, { immediate: true })
+watch(() => store.templates, templates => {
+  if (!templates.some(template => template.id === selectedId.value)) selectedId.value = templates[0]?.id ?? null
+  else void load()
+})
+onMounted(() => { if (props.embedded) void refreshTemplates() })
 onBeforeUnmount(() => { request++ })
 
 function edit(mode: 'create' | 'rename', source: VersionInfo | null = null, copy = false): void {
@@ -135,20 +147,31 @@ async function remove(version: VersionInfo): Promise<void> {
     managerModal.value?.querySelector<HTMLElement>('[data-modal-autofocus]')?.focus({ preventScroll: true })
   }
 }
-const managerModal = useModalEsc(() => { if (!busy.value) emit('close') })
+const managerModal = props.embedded ? useTemplateRef<HTMLElement>('modal') : useModalEsc(() => { if (!busy.value) emit('close') })
 </script>
 
 <template>
-  <dialog
+  <component
+    :is="embedded ? 'main' : 'dialog'"
     ref="modal"
     class="dialog-mask"
-    aria-label="模板与版本管理"
+    :class="{ embedded }"
+    :aria-label="embedded ? '模板库' : '模板与版本管理'"
     @click.self="!busy && emit('close')"
   >
     <section class="manager-card">
       <header class="manager-head">
-        <div><h2>模板与版本</h2><p>选择版式，管理该模板下的内容组合</p></div>
+        <div><h2>{{ embedded ? '模板' : '模板与版本' }}</h2><p>{{ embedded ? '管理原 Word 模板与版式，浏览模板不会更改当前文稿。' : '选择版式，管理该模板下的内容组合' }}</p></div>
         <button
+          v-if="embedded"
+          class="ui-btn"
+          :disabled="busy || templatesLoading"
+          @click="refreshTemplates"
+        >
+          {{ templatesLoading ? '刷新中…' : '刷新' }}
+        </button>
+        <button
+          v-else
           class="icon-btn"
           aria-label="关闭模板管理"
           :disabled="busy"
@@ -270,11 +293,11 @@ const managerModal = useModalEsc(() => { if (!busy.value) emit('close') })
         </aside>
         <section
           class="version-panel"
-          aria-label="内容版本列表"
+          :aria-label="embedded ? '模板详情' : '内容版本列表'"
         >
           <template v-if="selected">
             <div class="version-heading">
-              <h3>{{ selected.filename }}</h3><p>模板决定版式，内容版本保存不同的块组合。</p>
+              <h3>{{ selected.filename }}</h3><p>{{ embedded ? '版式和可编辑区域保存在模板中，具体文字在文稿中编辑。' : '模板决定版式，内容版本保存不同的块组合。' }}</p>
               <button
                 class="ui-btn ui-danger delete-template"
                 :disabled="busy || store.proofreadMode"
@@ -284,7 +307,15 @@ const managerModal = useModalEsc(() => { if (!busy.value) emit('close') })
               </button>
             </div>
             <div class="version-heading-actions">
-              <strong>内容版本 <span class="muted">{{ versions.length }}</span></strong><button
+              <strong>{{ embedded ? '使用此模板的文稿' : '内容版本' }} <span class="muted">{{ versions.length }}</span></strong><button
+                v-if="embedded"
+                class="ui-btn"
+                :disabled="busy || loading"
+                @click="emit('documents', selected.id)"
+              >
+                查看文稿列表
+              </button><button
+                v-else
                 class="ui-btn"
                 :disabled="busy || loading || store.proofreadMode"
                 @click="edit('create')"
@@ -302,7 +333,7 @@ const managerModal = useModalEsc(() => { if (!busy.value) emit('close') })
               v-if="loading"
               class="empty"
             >
-              正在加载版本…
+              {{ embedded ? '正在加载文稿…' : '正在加载版本…' }}
             </p>
             <p
               v-if="error"
@@ -329,13 +360,13 @@ const managerModal = useModalEsc(() => { if (!busy.value) emit('close') })
                 v-for="v in versions"
                 :key="v.id"
                 class="version-item"
-                :class="{ current: store.currentVersionId === v.id }"
+                :class="{ current: store.currentVersionId === v.id && store.status === 'ready' }"
               >
                 <div class="version-info">
                   <strong>{{ v.name }}</strong><span
-                    v-if="store.currentVersionId === v.id"
+                    v-if="store.currentVersionId === v.id && store.status === 'ready'"
                     class="current-badge"
-                  >当前使用</span><p>{{ v.binding_count }} 项绑定 · 更新 {{ date(v.updated_at) }}</p>
+                  >当前使用</span><p>{{ embedded ? `创建于 ${date(v.created_at)}` : `${v.binding_count} 项绑定 · 更新 ${date(v.updated_at)}` }}</p>
                 </div>
                 <div class="version-ops">
                   <button
@@ -343,9 +374,10 @@ const managerModal = useModalEsc(() => { if (!busy.value) emit('close') })
                     :disabled="busy || store.proofreadMode"
                     @click="emit('use', selected.id, v.id)"
                   >
-                    使用
+                    {{ embedded ? '编辑文稿' : '使用' }}
                   </button>
                   <button
+                    v-if="!embedded"
                     class="ui-btn"
                     :disabled="busy || store.proofreadMode"
                     @click="edit('create', v, true)"
@@ -353,13 +385,17 @@ const managerModal = useModalEsc(() => { if (!busy.value) emit('close') })
                     复制
                   </button>
                   <button
+                    v-if="!embedded"
                     class="ui-btn"
                     :disabled="busy || store.proofreadMode"
                     @click="edit('rename', v)"
                   >
                     重命名
                   </button>
-                  <details class="item-menu">
+                  <details
+                    v-if="!embedded"
+                    class="item-menu"
+                  >
                     <summary aria-label="更多版本操作">
                       •••
                     </summary><button
@@ -394,12 +430,12 @@ const managerModal = useModalEsc(() => { if (!busy.value) emit('close') })
                 v-if="!loading && !error && versions.length === 0"
                 class="empty"
               >
-                <p>此模板还没有内容版本</p><button
+                <p>{{ embedded ? '此模板还没有文稿' : '此模板还没有内容版本' }}</p><button
                   class="ui-btn"
                   :disabled="busy"
-                  @click="emit('use', selected.id, null)"
+                  @click="embedded ? emit('documents', selected.id) : emit('use', selected.id, null)"
                 >
-                  打开模板校对
+                  {{ embedded ? '前往文稿页新建' : '打开模板校对' }}
                 </button>
               </div>
             </div>
@@ -424,11 +460,14 @@ const managerModal = useModalEsc(() => { if (!busy.value) emit('close') })
         @close="!busy && (editor = null)"
       />
     </section>
-  </dialog>
+  </component>
 </template>
 
 <style scoped>
 .batch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 12px; }
+.dialog-mask.embedded { position: static; flex: 1; width: auto; height: auto; min-height: 0; display: flex; padding: 24px; background: transparent; }
+.dialog-mask.embedded .manager-card { width: min(1100px, 100%); height: 100%; max-height: none; margin: auto; box-shadow: none; border: 1px solid var(--border); }
+@media (max-width: 760px) { .embedded { padding: 16px 12px; } .embedded .manager-card { width: 100%; height: 100%; } }
 .batch-bar label { display: flex; align-items: center; gap: 4px; }
 .template-row { display: flex; align-items: flex-start; gap: 8px; }
 .template-row .template-item { min-width: 0; }

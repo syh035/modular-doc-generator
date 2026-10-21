@@ -149,12 +149,21 @@ export const useBlocksStore = defineStore('blocks', () => {
     return err instanceof Error ? err.message : String(err)
   }
 
+  let blocksRequest = 0
+  function invalidateBlockReads(): void {
+    const reloadTemplate = libraryLoading.value ? libraryTemplateId.value : null
+    blocksRequest++
+    libraryRequest++
+    libraryLoading.value = false
+    if (reloadTemplate !== null) void loadTemplateBlocks(reloadTemplate)
+  }
   async function loadBlocks(): Promise<void> {
+    const request = ++blocksRequest
     try {
-      blocks.value = await listBlocks()
-      error.value = null
+      const result = await listBlocks()
+      if (request === blocksRequest) { blocks.value = result; error.value = null }
     } catch (err) {
-      error.value = _errMessage(err)
+      if (request === blocksRequest) error.value = _errMessage(err)
     }
   }
 
@@ -188,6 +197,7 @@ export const useBlocksStore = defineStore('blocks', () => {
         payload.tags = tagNames
       }
       const block = await createBlock(payload)
+      invalidateBlockReads()
       blocks.value = [block, ...blocks.value] // 更新时间倒序：新块排最前
       if (templateId === undefined || libraryTemplateId.value === templateId) {
         selectedBlockId.value = block.id // New blocks are immediately available before region binding.
@@ -209,6 +219,7 @@ export const useBlocksStore = defineStore('blocks', () => {
     updateError.value = null
     try {
       const updated = await updateBlock(id, payload)
+      invalidateBlockReads()
       // 更新时间倒序：刚编辑过的块排最前，其余保持原相对顺序
       blocks.value = [updated, ...blocks.value.filter(b => b.id !== updated.id)]
       void loadTags()
@@ -226,6 +237,7 @@ export const useBlocksStore = defineStore('blocks', () => {
     mutationError.value = null
     try {
       await deleteBlock(id)
+      invalidateBlockReads()
       blocks.value = blocks.value.filter(b => b.id !== id)
       if (selectedBlockId.value === id) {
         selectedBlockId.value = null
@@ -247,6 +259,7 @@ export const useBlocksStore = defineStore('blocks', () => {
     mutationError.value = null
     try {
       await renameTag(id, name)
+      invalidateBlockReads()
       await Promise.all([loadBlocks(), loadTags()])
       return null
     } catch (err) {
@@ -259,6 +272,7 @@ export const useBlocksStore = defineStore('blocks', () => {
     mutationError.value = null
     try {
       await deleteTag(id)
+      invalidateBlockReads()
       if (activeTagId.value === id) {
         activeTagId.value = null
       }
@@ -281,7 +295,7 @@ export const useBlocksStore = defineStore('blocks', () => {
       const desired = mode === 'replace' ? names : mode === 'add'
         ? [...new Set([...previous, ...names])]
         : previous.filter(name => !names.includes(name))
-      try { await updateBlock(id, { tags: desired }) }
+      try { await updateBlock(id, { tags: desired }); invalidateBlockReads() }
       catch (err) { failedIds.push(id); failures.push(`${block.name}：${_errMessage(err)}`) }
     }
     await Promise.all([loadBlocks(), loadTags()])

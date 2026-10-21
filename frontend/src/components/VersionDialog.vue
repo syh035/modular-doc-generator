@@ -56,7 +56,7 @@ useModalEsc(close)
       @submit.prevent="onSubmit"
     >
       <div class="dialog-head">
-        <span class="title">{{ subject === 'document' ? (mode === 'create' ? '新建文稿' : '重命名文稿') : (mode === 'create' ? '新建内容版本' : '重命名版本') }}</span>
+        <span class="title">{{ subject === 'document' ? (mode === 'create' ? (copyMode === 'copy' ? '另存为文稿' : '新建文稿') : '重命名文稿') : (mode === 'create' ? '新建内容版本' : '重命名版本') }}</span>
         <button
           type="button"
           class="icon-btn"
@@ -96,7 +96,7 @@ useModalEsc(close)
         v-if="mode === 'create' && copyMode"
         class="copy-row"
       >
-        {{ subject === 'document' ? '保留模板原文和版式，创建后可直接编辑。' : (copyMode === 'copy' ? '复制所选版本的绑定内容，作为新版本底稿。' : '创建空白内容版本，保留模板版式。') }}
+        {{ subject === 'document' ? (copyMode === 'copy' ? '复制这份文稿的已保存内容和排版，原稿保留。' : '保留模板原文和版式，创建后可直接编辑。') : (copyMode === 'copy' ? '复制所选版本的绑定内容，作为新版本底稿。' : '创建空白内容版本，保留模板版式。') }}
       </p>
       <p
         v-if="error"

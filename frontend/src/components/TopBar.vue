@@ -1,19 +1,16 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useAppStore } from '../stores/app'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useAppStore, type AppTab } from '../stores/app'
 import { useHistoryStore } from '../stores/history'
 import { useBlocksStore } from '../stores/blocks'
 import { usePreviewStore } from '../stores/preview'
 import { useDocumentsStore } from '../stores/documents'
-const LibraryDialog = defineAsyncComponent(() => import('./LibraryDialog.vue'))
 
 const appStore = useAppStore()
 const previewStore = usePreviewStore()
 const history = useHistoryStore()
 const blocks = useBlocksStore()
 const documents = useDocumentsStore()
-const libraryOpen = ref(false)
-const initialArchiveId = ref<number | null>(null)
 const moreOpen = ref(false)
 const moreRoot = ref<HTMLElement | null>(null)
 const moreTrigger = ref<HTMLButtonElement | null>(null)
@@ -47,13 +44,12 @@ function moreKeydown(event: KeyboardEvent): void {
     buttons[next]?.focus()
   }
 }
-function selectTab(tab: 'documents' | 'guide'): void {
+function selectTab(tab: AppTab): void {
   closeMore(true); appStore.setTab(tab)
 }
 function openArchives(archiveId: number | null = null): void {
   closeMore()
-  initialArchiveId.value = archiveId
-  libraryOpen.value = true
+  appStore.openArchives(archiveId)
 }
 async function moveHistory(redo: boolean): Promise<void> {
   closeMore(true)
@@ -121,14 +117,32 @@ defineExpose({ pickFile, openArchives })
     >
       <button
         class="tab"
-        :class="{ active: appStore.activeTab !== 'guide' && !libraryOpen }"
+        :class="{ active: ['documents', 'workbench'].includes(appStore.activeTab) }"
+        :aria-current="['documents', 'workbench'].includes(appStore.activeTab) ? 'page' : undefined"
         @click="selectTab('documents')"
       >
         文稿
       </button>
       <button
         class="tab"
-        :class="{ active: libraryOpen }"
+        :class="{ active: appStore.activeTab === 'templates' }"
+        :aria-current="appStore.activeTab === 'templates' ? 'page' : undefined"
+        @click="selectTab('templates')"
+      >
+        模板
+      </button>
+      <button
+        class="tab"
+        :class="{ active: appStore.activeTab === 'materials' }"
+        :aria-current="appStore.activeTab === 'materials' ? 'page' : undefined"
+        @click="selectTab('materials')"
+      >
+        素材
+      </button>
+      <button
+        class="tab"
+        :class="{ active: appStore.activeTab === 'archives' }"
+        :aria-current="appStore.activeTab === 'archives' ? 'page' : undefined"
         :disabled="uploading || previewStore.refreshing"
         @click="openArchives()"
       >
@@ -229,11 +243,6 @@ defineExpose({ pickFile, openArchives })
       正在更新预览，已等待 {{ elapsed }} 秒。较大文档或首次转换需要更久，请稍候。
     </p>
   </header>
-  <LibraryDialog
-    v-if="libraryOpen"
-    :initial-archive-id="initialArchiveId"
-    @close="libraryOpen = false"
-  />
 </template>
 
 <style scoped>
@@ -258,7 +267,7 @@ defineExpose({ pickFile, openArchives })
 }
 
 .tab {
-  padding: 5px 14px;
+  padding: 5px 12px;
   font-size: 13px;
   color: var(--text-2);
   background: none;
@@ -277,6 +286,7 @@ defineExpose({ pickFile, openArchives })
   background: var(--primary-bg-subtle);
   font-weight: 600;
 }
+@media (max-width: 400px) { .tab { padding: 5px 8px; } .tabs { gap: 0; } }
 
 .actions {
   display: flex;
