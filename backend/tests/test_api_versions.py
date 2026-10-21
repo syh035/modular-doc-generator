@@ -10,7 +10,7 @@ import pytest
 from docx import Document
 from fastapi.testclient import TestClient
 
-from app.services.libreoffice import find_soffice
+from app.services.libreoffice import find_soffice, get_manager
 
 
 def make_docx(text: str = "电话：{{手机号}}，姓名：{{姓名}}") -> bytes:
@@ -151,7 +151,12 @@ def _patch_fake_convert(
                 return pdf
         raise AssertionError(f"无匹配假 PDF：{path}")
 
-    monkeypatch.setattr("app.services.libreoffice._manager", SimpleNamespace(convert=convert))
+    monkeypatch.setattr(
+        "app.services.libreoffice._manager",
+        SimpleNamespace(
+            convert=convert, convert_many=lambda paths: [convert(path) for path in paths]
+        ),
+    )
     return seen
 
 
@@ -242,6 +247,7 @@ def test_version_render_real_lo(client: TestClient) -> None:
     assert resp.content.startswith(b"%PDF")
 
     # 成品 PDF 必须含替换文本、不含占位符（文本层验证；墨迹验证见手动验收）
+    assert get_manager().conversions == 1  # 原文与绑定成品只启动一次转换进程。
     with pymupdf.open(stream=resp.content) as pdf:
         text = pdf[0].get_text()
     assert "13800138000" in text
@@ -251,6 +257,7 @@ def test_version_render_real_lo(client: TestClient) -> None:
     region = overlay["regions"][0]
     assert region["bbox"] is not None
     assert region["binding"]["status"] == "active"
+    assert get_manager().conversions == 1
 
 
 # ---- 版本管理（M8：新建 / 复制底稿 / 重命名 / 删除保护）----

@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -206,41 +207,73 @@ class LibreOfficeManager:
                 path.unlink(missing_ok=True)
             return self.cache_status()
 
-    def _prune_cache(self, current: Path) -> None:
+    def _prune_cache(self, current: set[Path]) -> None:
         files = sorted(self.cache_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime_ns)
         total = sum(p.stat().st_size for p in files)
         for path in files:
             if total <= self.max_cache_bytes:
                 break
-            if path == current:
-                continue  # One document larger than the limit must remain usable.
+            if path in current:
+                continue  # All documents in the current batch must remain usable.
             total -= path.stat().st_size
             path.unlink(missing_ok=True)
 
     def convert(self, input_path: Path) -> Path:
         """DOCX → PDF，返回缓存 PDF 路径（同内容重复转换零开销）。"""
-        sha = hashlib.sha256(
-            (self._sha256(input_path) + self.environment_fingerprint()).encode()
-        ).hexdigest()
-        cached = self.cache_dir / f"{sha}.pdf"
+        return self.convert_many([input_path])[0]
+
+    def convert_many(self, input_paths: list[Path]) -> list[Path]:
+        """Batch cache misses without renaming inputs; split colliding output names."""
+        if not input_paths:
+            return []
         with self._lock:
-            if cached.is_file():  # 双检：等锁期间别人可能已转完
-                cached.touch()
-                return cached
+            environment = self.environment_fingerprint()
+            results = []
+            pending: dict[Path, Path] = {}
+            for input_path in input_paths:
+                sha = hashlib.sha256((self._sha256(input_path) + environment).encode()).hexdigest()
+                cached = self.cache_dir / f"{sha}.pdf"
+                results.append(cached)
+                if cached.is_file():
+                    cached.touch()
+                else:
+                    pending[cached] = input_path
+            if not pending:
+                return results
             self.profile_dir.mkdir(parents=True, exist_ok=True)
             (self.cache_dir / "tmp").mkdir(parents=True, exist_ok=True)
             workdir = Path(tempfile.mkdtemp(prefix="lo_", dir=self.cache_dir / "tmp"))
             try:
-                pdf_path = self._run_soffice(input_path, workdir)
-                cached.parent.mkdir(parents=True, exist_ok=True)
-                pdf_path.replace(cached)  # 同缓存目录内原子移动
-                self.conversions += 1
-                self._prune_cache(cached)
-                return cached
+                # LO outputs source.stem.pdf. Preserve paths for FILENAME fields and
+                # relative resources; split collisions instead of renaming the sources.
+                groups: list[dict[Path, Path]] = []
+                names: list[set[str]] = []
+                for cached, source in pending.items():
+                    stem = unicodedata.normalize("NFC", source.stem).casefold()
+                    for group, used in zip(groups, names, strict=True):
+                        if stem not in used:
+                            group[cached] = source
+                            used.add(stem)
+                            break
+                    else:
+                        groups.append({cached: source})
+                        names.append({stem})
+                outputs: dict[Path, Path] = {}
+                for index, group in enumerate(groups):
+                    output_dir = workdir / str(index)
+                    output_dir.mkdir()
+                    converted = self._run_soffice(list(group.values()), output_dir)
+                    outputs.update(zip(group, converted, strict=True))
+                # Validate the entire batch before publishing any new cache entries.
+                for cached, pdf_path in outputs.items():
+                    pdf_path.replace(cached)
+                self.conversions += len(groups)
+                self._prune_cache(set(results))
+                return results
             finally:
                 shutil.rmtree(workdir, ignore_errors=True)
 
-    def _run_soffice(self, input_path: Path, workdir: Path) -> Path:
+    def _run_soffice(self, input_paths: list[Path], workdir: Path) -> list[Path]:
         cmd = [
             self.soffice_path,
             "--headless",
@@ -251,7 +284,7 @@ class LibreOfficeManager:
             "pdf",
             "--outdir",
             str(workdir),
-            str(input_path),
+            *(str(input_path) for input_path in input_paths),
         ]
         # start_new_session：子进程自成进程组组长，超时可整组击杀
         env = dict(os.environ)
@@ -278,15 +311,15 @@ class LibreOfficeManager:
                 status_code=500,
             ) from None
         # soffice 对部分失败也返回 0，必须以产物存在为准
-        out = workdir / f"{input_path.stem}.pdf"
-        if proc.returncode != 0 or not out.is_file():
+        outputs = [workdir / f"{input_path.stem}.pdf" for input_path in input_paths]
+        if proc.returncode != 0 or not all(out.is_file() for out in outputs):
             detail = (stderr or "").strip().splitlines()[-1] if stderr else ""
             raise AppError(
                 RENDER_FAILED,
                 "LibreOffice 转换失败" + (f"：{detail}" if detail else ""),
                 status_code=500,
             )
-        return out
+        return outputs
 
     @staticmethod
     def _kill_group(proc: subprocess.Popen[str]) -> None:

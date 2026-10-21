@@ -276,18 +276,15 @@ def render_version(version_id: int) -> VersionRender:
         return _copy_render(cached)
 
     # M7：溢出测量需要模板原 bbox（regions.bbox，ensure 时落库）——有绑定时
-    # 缺失即触发模板渲染补齐（幂等，LO 内容缓存吸收重复开销），再重读区域
-    if block_contents and any(
+    # 首次缺少原框时，原件与成品合并转换，仍分别测量原高度和替换后几何。
+    needs_template_preview = bool(block_contents) and any(
         r.id in block_contents
         and (
             r.bbox_json is None
             or (r.bbox_source != "manual" and json.loads(r.bbox_json).get("geometry_version") != 2)
         )
         for r in regions
-    ):
-        ensure_template_preview(tpl.id)
-        with get_conn() as conn:
-            regions = regions_repo.list_regions(conn, tpl.id)
+    )
 
     outcome = apply_replacements(
         source_data,
@@ -311,7 +308,15 @@ def render_version(version_id: int) -> VersionRender:
     tmp_docx = tmp_dir / f"v_{version_id}_{uuid.uuid4().hex}.docx"
     try:
         tmp_docx.write_bytes(outcome.data)
-        pdf_path = libreoffice.get_manager().convert(tmp_docx)
+        if needs_template_preview:
+            template_pdf, pdf_path = manager.convert_many([docx_path, tmp_docx])
+            template_sha = pdf_sha256(template_pdf)
+            if any(_auto_bbox_stale(region, template_sha) for region in regions):
+                _persist_region_bboxes(tpl, regions, template_pdf, template_sha)
+            with get_conn() as conn:
+                regions = regions_repo.list_regions(conn, tpl.id)
+        else:
+            pdf_path = manager.convert(tmp_docx)
     finally:
         tmp_docx.unlink(missing_ok=True)
 

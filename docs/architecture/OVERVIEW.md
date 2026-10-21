@@ -72,6 +72,8 @@ BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜�
 
 [LibreOfficeManager](../../backend/app/services/libreoffice.py) 使用串行锁、独立 profile、超时回收和内容 SHA-256 缓存。替换后的 DOCX 序列化归一 ZIP 时间戳，保证未变内容可命中缓存。版本预览仍整份转换以保证重新分页；前端根据实际 PDF 页指纹复用未变页画布，详情见下方页级缓存说明。
 
+首次绑定若缺少模板原区域测量，原件和成品的缓存未命中文件合并进入同次转换，仍分别提取原高度与替换后坐标。批量输入保留原文件路径，输出文件名冲突时分组执行；全部输出齐备后才发布缓存，容量清理保护本批所有返回产物。
+
 自动 bbox 依据来源 PDF 指纹与 geometry_version 失效重算，人工 bbox 保护不覆盖。跨页 bbox 保留首框顶层字段并通过可选 fragments 保存各页框；定位回查未消费行以处理晚写表格块。PDF 内容流顺序不能直接视为阅读顺序。相关陷阱见 [技术经验](../development/KNOWN_ISSUES.md)。
 
 ## 接口与数据目录
