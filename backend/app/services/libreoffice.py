@@ -237,7 +237,7 @@ class LibreOfficeManager:
                 if cached.is_file():
                     cached.touch()
                 else:
-                    pending[cached] = input_path
+                    pending.setdefault(cached, input_path)
             if not pending:
                 return results
             self.profile_dir.mkdir(parents=True, exist_ok=True)

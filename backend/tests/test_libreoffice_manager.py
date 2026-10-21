@@ -35,7 +35,7 @@ for index, inp in enumerate(inputs):
     if os.environ.get("FAKE_SKIP_LAST") and index == len(inputs) - 1:
         break
     (outdir / (inp.stem + ".pdf")).write_bytes(
-        b"%PDF-fake\\n%M4" + hashlib.sha256(inp.read_bytes()).digest()
+        b"%PDF-fake\\n%M4" + inp.name.encode() + hashlib.sha256(inp.read_bytes()).digest()
     )
 with marker.open("a") as f:
     f.write("x")
@@ -140,6 +140,20 @@ def test_batch_splits_same_names_without_overwriting(
     assert manager.convert_many([second, first]) == [result[1], result[0]]
     assert manager.conversions == 2
     assert not list((tmp_path / "cache" / "tmp").iterdir())
+
+
+def test_batch_duplicate_content_preserves_first_source_name(
+    fake_soffice: Path, tmp_path: Path
+) -> None:
+    manager = make_manager(fake_soffice, tmp_path)
+    first = make_docx_file(tmp_path, "first.docx")
+    second = tmp_path / "second.docx"
+    second.write_bytes(first.read_bytes())
+
+    result = manager.convert_many([first, second])
+    assert result[0] == result[1] and manager.conversions == 1
+    assert b"first.docx" in result[0].read_bytes()
+    assert b"second.docx" not in result[0].read_bytes()
 
 
 def test_batch_keeps_cached_inputs_when_pruning(fake_soffice: Path, tmp_path: Path) -> None:
