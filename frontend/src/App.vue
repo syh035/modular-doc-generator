@@ -15,6 +15,8 @@ import StatusBar from './components/StatusBar.vue'
 import TemplatePreview from './components/TemplatePreview.vue'
 import TopBar from './components/TopBar.vue'
 import ArchiveDialog from './components/ArchiveDialog.vue'
+import DocumentList from './components/DocumentList.vue'
+import { useDocumentsStore } from './stores/documents'
 
 const previewRef = ref<InstanceType<typeof TemplatePreview> | null>(null)
 const topBarRef = ref<InstanceType<typeof TopBar> | null>(null)
@@ -33,6 +35,10 @@ const appStore = useAppStore()
 const blocksStore = useBlocksStore()
 const history = useHistoryStore()
 const preview = usePreviewStore()
+const documents = useDocumentsStore()
+// 返回列表或指南时保留编辑器；再次打开当前稿不丢失尚未提交的编辑文字。
+const workbenchMounted = ref(false)
+watch(() => appStore.activeTab, tab => { if (tab === 'workbench') workbenchMounted.value = true }, { immediate: true })
 watch([() => preview.currentTemplateId, () => preview.regions, () => preview.versions],
   () => { void blocksStore.loadTemplateBlocks(preview.currentTemplateId) }, { immediate: true })
 function onHistoryKey(event: KeyboardEvent): void {
@@ -45,6 +51,7 @@ function onHistoryKey(event: KeyboardEvent): void {
     void history.move(event.shiftKey, async () => {
       await Promise.all([blocksStore.loadBlocks(), blocksStore.loadTags()])
       await preview.reloadAfterHistory()
+      if (appStore.activeTab === 'documents') await documents.load()
     })
   }
 }
@@ -106,8 +113,13 @@ onBeforeUnmount(stopResize)
   <div class="app-shell">
     <TopBar ref="topBarRef" />
     <GuidePage v-if="appStore.activeTab === 'guide'" />
+    <DocumentList
+      v-if="appStore.activeTab === 'documents'"
+      @import="topBarRef?.pickFile()"
+    />
     <div
-      v-else
+      v-if="workbenchMounted"
+      v-show="appStore.activeTab === 'workbench'"
       class="main-columns"
     >
       <BlockLibrary
@@ -115,7 +127,7 @@ onBeforeUnmount(stopResize)
         v-show="blocksStore.libraryOpen"
       />
       <BlockDrawer
-        v-if="narrow && blocksStore.libraryOpen"
+        v-if="narrow && blocksStore.libraryOpen && appStore.activeTab === 'workbench'"
         @close="blocksStore.toggleLibrary()"
       />
       <!-- UI 质量调整②批：分割线拖拽热区（骑缝覆盖分割线，hover 高亮） -->

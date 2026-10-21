@@ -24,6 +24,7 @@ from __future__ import annotations
 import atexit
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -48,6 +49,7 @@ RENDER_TIMEOUT = 120_000  # 绑定/迁移后的局部刷新（替换产物首次
 DEFAULT_TIMEOUT = 15_000
 
 _spawned: list[subprocess.Popen] = []
+logger = logging.getLogger(__name__)
 
 
 # ---- 环境准备 ----
@@ -57,7 +59,7 @@ def _port_up(url: str) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=3):
             return True
-    except Exception:
+    except OSError:
         return False
 
 
@@ -146,7 +148,8 @@ def cleanup() -> None:
 
 def _run_venv(script: Path, *args: str) -> str:
     result = subprocess.run(
-        [str(VENV_PY), str(script), *args], capture_output=True, text=True, timeout=300
+        [str(VENV_PY), str(script), *args], capture_output=True, text=True, timeout=300,
+        check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -223,13 +226,11 @@ def new_page(browser, console_errors: list[str]):
 
 
 def select_template(page, template_id: int) -> None:
-    """工具条模板下拉选择 → 等 ready（canvas + 图例出现）。"""
+    """文稿首页按模板找到既有文稿 → 等 ready（canvas + 图例出现）。"""
     from playwright.sync_api import expect
 
     page.goto(FRONTEND_URL)
-    template_select = page.locator("select.template-select").first
-    template_select.wait_for(state="visible")
-    template_select.select_option(value=str(template_id))
+    page.locator(f"#template-documents-{template_id} .edit-document").first.click()
     page.locator(".pdf-page canvas").first.wait_for(state="visible", timeout=CANVAS_TIMEOUT)
     expect(page.locator(".legend-wide")).to_be_visible()
 
@@ -490,6 +491,7 @@ def main() -> None:
                 results.append((f"场景{number} {name}", "PASS", errors))
                 print(f"  PASS {name}")
             except Exception as exc:
+                logger.exception("场景 %s 验证失败", number)
                 results.append((f"场景{number} {name}", "FAIL", [str(exc)]))
                 print(f"  FAIL {name}: {exc}")
                 if _diag:

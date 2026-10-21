@@ -945,7 +945,7 @@ watch(
 )
 
 onMounted(() => {
-  void store.loadTemplates() // 模板列表数据源（UI 调整③：下拉随工具条常驻）
+  if (store.templates.length === 0) void store.loadTemplates()
   containerWidth.value = scrollRef.value?.clientWidth ?? 0
   containerHeight.value = scrollRef.value?.clientHeight ?? 0
   if (typeof ResizeObserver !== 'undefined') {

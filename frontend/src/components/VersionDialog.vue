@@ -4,9 +4,10 @@
  * 后端校验错误（VERSION_INVALID / VERSION_NAME_TAKEN）经 error prop 内联显示。
  */
 import { useModalEsc } from '../composables/useModalEsc'
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 
 const props = defineProps<{
+  subject?: 'version' | 'document'
   copyMode?: 'copy' | 'blank'
   mode: 'create' | 'rename'
   initialName: string
@@ -21,16 +22,22 @@ const emit = defineEmits<{
 }>()
 
 const name = ref(props.initialName)
+const nameInput = ref<HTMLInputElement | null>(null)
 const copyFrom = ref(props.copyMode !== 'blank')
+watch(() => props.submitting, (submitting, wasSubmitting) => {
+  if (wasSubmitting && !submitting && props.error) nameInput.value?.focus({ preventScroll: true })
+}, { flush: 'post' })
 
 function onSubmit(): void {
+  if (props.submitting) return
   const trimmed = name.value.trim()
   if (trimmed.length === 0 || trimmed.length > 30) {
     return // 前端先行拦截，后端 VERSION_INVALID 同口径（名称 1–30 字符）
   }
   emit('submit', trimmed, props.mode === 'create' ? copyFrom.value : false)
 }
-useModalEsc(() => emit('close'))
+function close(): void { if (!props.submitting) emit('close') }
+useModalEsc(close)
 </script>
 
 <template>
@@ -38,34 +45,39 @@ useModalEsc(() => emit('close'))
   <dialog
     ref="modal"
     class="dialog-mask"
-    aria-label="内容版本"
+    :aria-label="subject === 'document' ? '文稿' : '内容版本'"
     aria-modal="true"
     tabindex="-1"
     data-testid="version-dialog"
-    @click.self="emit('close')"
+    @click.self="close"
   >
     <form
       class="dialog-card"
       @submit.prevent="onSubmit"
     >
       <div class="dialog-head">
-        <span class="title">{{ mode === 'create' ? '新建内容版本' : '重命名版本' }}</span>
+        <span class="title">{{ subject === 'document' ? (mode === 'create' ? '新建文稿' : '重命名文稿') : (mode === 'create' ? '新建内容版本' : '重命名版本') }}</span>
         <button
           type="button"
           class="icon-btn"
           aria-label="关闭"
-          @click="emit('close')"
+          :disabled="submitting"
+          @click="close"
         >
           ×
         </button>
       </div>
       <label class="field">
-        <span class="field-label">版本名称</span>
+        <span class="field-label">{{ subject === 'document' ? '文稿名称' : '版本名称' }}</span>
         <input
+          ref="nameInput"
           v-model="name"
           data-modal-autofocus
           maxlength="30"
-          :placeholder="mode === 'create' ? '如：投递A岗（1–30 字）' : '版本名称（1–30 字）'"
+          :placeholder="mode === 'create' ? '如：投递A岗（1–30 字）' : '名称（1–30 字）'"
+          :disabled="submitting"
+          :aria-invalid="!!error"
+          :aria-describedby="error ? 'version-name-error' : undefined"
           data-testid="version-name-input"
         >
       </label>
@@ -84,11 +96,13 @@ useModalEsc(() => emit('close'))
         v-if="mode === 'create' && copyMode"
         class="copy-row"
       >
-        {{ copyMode === 'copy' ? '复制所选版本的绑定内容，作为新版本底稿。' : '创建空白内容版本，保留模板版式。' }}
+        {{ subject === 'document' ? '保留模板原文和版式，创建后可直接编辑。' : (copyMode === 'copy' ? '复制所选版本的绑定内容，作为新版本底稿。' : '创建空白内容版本，保留模板版式。') }}
       </p>
       <p
         v-if="error"
+        id="version-name-error"
         class="error"
+        role="alert"
         data-testid="version-error"
       >
         {{ error }}
@@ -97,7 +111,8 @@ useModalEsc(() => emit('close'))
         <button
           type="button"
           class="ghost"
-          @click="emit('close')"
+          :disabled="submitting"
+          @click="close"
         >
           取消
         </button>

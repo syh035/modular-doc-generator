@@ -3,6 +3,7 @@ import { createPinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 import { LIBRARY_MAX_WIDTH, LIBRARY_MIN_WIDTH, useBlocksStore } from './stores/blocks'
+import { useAppStore } from './stores/app'
 
 vi.mock('./pdf/viewer', () => ({ openDocument: vi.fn(), preparePage: vi.fn() }))
 
@@ -15,10 +16,39 @@ afterEach(() => {
   document.body.style.userSelect = ''
 })
 
+function editingPinia() {
+  const pinia = createPinia()
+  useAppStore(pinia).setTab('workbench')
+  return pinia
+}
+
+it('首页展示文稿列表，返回列表保留编辑器，窄屏抽屉不会覆盖列表', async () => {
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })))
+  const wrapper = shallowMount(App, { global: { plugins: [createPinia()] }, attachTo: document.body })
+  await wrapper.vm.$nextTick()
+  expect(wrapper.findComponent({ name: 'DocumentList' }).exists()).toBe(true)
+  expect(wrapper.findComponent({ name: 'TemplatePreview' }).exists()).toBe(false)
+  const app = useAppStore()
+  app.setTab('workbench')
+  await wrapper.vm.$nextTick()
+  const editor = wrapper.getComponent({ name: 'TemplatePreview' }).element
+  expect(wrapper.findComponent({ name: 'BlockDrawer' }).exists()).toBe(true)
+  app.setTab('documents')
+  await wrapper.vm.$nextTick()
+  expect(wrapper.getComponent({ name: 'TemplatePreview' }).element).toBe(editor)
+  expect(wrapper.get('.main-columns').isVisible()).toBe(false)
+  expect(wrapper.findComponent({ name: 'BlockDrawer' }).exists()).toBe(false)
+  app.setTab('workbench')
+  await wrapper.vm.$nextTick()
+  expect(wrapper.getComponent({ name: 'TemplatePreview' }).element).toBe(editor)
+  expect(wrapper.get('.main-columns').isVisible()).toBe(true)
+  wrapper.unmount()
+})
+
 describe('M12 块库分隔条', () => {
   it('窄屏使用模态抽屉，选块或关闭后归还完整预览宽度', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })))
-    const wrapper = shallowMount(App, { global: { plugins: [createPinia()] } })
+    const wrapper = shallowMount(App, { global: { plugins: [editingPinia()] } })
     await wrapper.vm.$nextTick()
     expect(wrapper.findComponent({ name: 'BlockDrawer' }).exists()).toBe(true)
     expect(wrapper.findComponent({ name: 'BlockLibrary' }).exists()).toBe(false)
@@ -29,7 +59,7 @@ describe('M12 块库分隔条', () => {
     wrapper.unmount()
   })
   it('可 Tab 聚焦，左右键以 16px 调整并持久化，边界与 ARIA 同步', async () => {
-    const wrapper = shallowMount(App, { global: { plugins: [createPinia()] } })
+    const wrapper = shallowMount(App, { global: { plugins: [editingPinia()] } })
     const store = useBlocksStore()
     const separator = wrapper.get('[role="separator"]')
     expect(separator.attributes('tabindex')).toBe('0')
@@ -53,7 +83,7 @@ describe('M12 块库分隔条', () => {
   })
 
   it('鼠标拖拽保留原行为，卸载时释放监听并还原原有 body 样式', async () => {
-    const wrapper = shallowMount(App, { global: { plugins: [createPinia()] }, attachTo: document.body })
+    const wrapper = shallowMount(App, { global: { plugins: [editingPinia()] }, attachTo: document.body })
     const store = useBlocksStore()
     store.setLibraryWidth(300)
     document.body.style.cursor = 'default'

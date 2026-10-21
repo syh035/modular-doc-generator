@@ -76,9 +76,11 @@ beforeEach(() => {
 })
 
 function mountPreview() {
-  return mount(TemplatePreview, {
+  const wrapper = mount(TemplatePreview, {
     global: { plugins: [createPinia()] },
   })
+  useAppStore().setTab('workbench')
+  return wrapper
 }
 
 /** 置 ready 态并渲染一页（含区域覆盖层）。 */

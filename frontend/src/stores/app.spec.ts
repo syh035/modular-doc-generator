@@ -33,12 +33,14 @@ describe('app store（冒烟）', () => {
     vi.unstubAllGlobals()
   })
 
-  it('tab 切换：默认工作台，setTab 切到指南再切回（UI 调整①）', () => {
+  it('默认进入文稿列表，编辑和指南状态可切回列表', () => {
     const store = useAppStore()
-    expect(store.activeTab).toBe('workbench')
+    expect(store.activeTab).toBe('documents')
     store.setTab('guide')
     expect(store.activeTab).toBe('guide')
     store.setTab('workbench')
     expect(store.activeTab).toBe('workbench')
+    store.setTab('documents')
+    expect(store.activeTab).toBe('documents')
   })
 })

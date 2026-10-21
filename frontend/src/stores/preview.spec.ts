@@ -2,6 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Region } from '../api/templates'
+import { registerHistoryHooks } from '../api/historyHooks'
 import { usePreviewStore } from './preview'
 
 /** 造一个区域（bbox 可空）。 */
@@ -50,6 +51,103 @@ function stubFetch(routes: Record<string, () => unknown>, delays: Record<string,
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.unstubAllGlobals()
+})
+
+describe('从文稿列表显式打开', () => {
+  function routes() {
+    return {
+      '/api/templates/2': () => ({ default_version_id: 20 }),
+      '/api/templates/2/versions': () => ({ versions: [
+        { id: 20, template_id: 2, name: '默认版本', binding_count: 0 },
+        { id: 21, template_id: 2, name: '投递稿', binding_count: 1 },
+      ] }),
+      '/api/versions/21/preview': () => new ArrayBuffer(8),
+      '/api/versions/21/overlay': () => ({ regions: [] }),
+    }
+  }
+
+  it.each([false, true])('直接渲染指定文稿一次，退出检查且不提示迁移（原检查=%s）', async reviewing => {
+    const fetcher = stubFetch(routes())
+    const store = usePreviewStore()
+    store.currentTemplateId = 1; store.currentVersionId = 10; store.status = 'ready'
+    store.proofreadMode = reviewing
+    store.regions = [{ ...region(1, null), binding: { block_id: 7, block_name: '已填写', status: 'active' } }]
+    await store.selectTemplate(2, { versionId: 21 })
+    expect(store.status).toBe('ready')
+    expect(store.currentVersionId).toBe(21)
+    expect(store.proofreadMode).toBe(false)
+    expect(store.migrationSource).toBeNull()
+    expect(fetcher.mock.calls.map(call => String(call[0])).filter(url => url.endsWith('/preview'))).toEqual(['/api/versions/21/preview'])
+  })
+
+  it('列表读取失败或文稿不属于所选模板时停止打开，不渲染其他模板内容', async () => {
+    const fetcher = stubFetch(routes())
+    const store = usePreviewStore()
+    await store.selectTemplate(2, { versionId: 99 })
+    expect(store.status).toBe('error')
+    expect(store.error).toContain('已不存在或不属于此模板')
+    expect(fetcher.mock.calls.some(call => String(call[0]).includes('/preview'))).toBe(false)
+    fetcher.mockImplementation(async input => String(input) === '/api/templates/2/versions'
+      ? Response.json({ error: { code: 'OFFLINE', message: '列表读取失败' } }, { status: 500 })
+      : Response.json({ default_version_id: 20 }))
+    await store.selectTemplate(2, { versionId: 21 })
+    expect(store.status).toBe('error')
+    expect(store.error).toBe('列表读取失败')
+  })
+
+  it('显式打开另一模板的空白默认稿也不触发迁移，不写入原稿内容', async () => {
+    const fetcher = stubFetch({ ...routes(),
+      '/api/versions/20/preview': () => new ArrayBuffer(8),
+      '/api/versions/20/overlay': () => ({ regions: [] }),
+    })
+    const store = usePreviewStore()
+    store.currentTemplateId = 1; store.currentVersionId = 10; store.status = 'ready'
+    store.templates = [{ id: 2, filename: '目标.docx', status: 'ready', storage_name: '2.docx', sha256: 'test', regions_count: 0, created_at: '', updated_at: '' }]
+    store.regions = [{ ...region(1, null), binding: { block_id: 7, block_name: '原稿内容', status: 'active' } }]
+    await store.selectTemplate(2, { versionId: 20 })
+    expect(store.status).toBe('ready')
+    expect(store.currentVersionId).toBe(20)
+    expect(store.migrationSource).toBeNull()
+    expect(fetcher.mock.calls.map(call => String(call[0]))).toEqual([
+      '/api/templates/2', '/api/templates/2/versions', '/api/versions/20/preview', '/api/versions/20/overlay',
+    ])
+  })
+
+  it('会话边界清理延迟时，后发打开仍优先，旧请求不再开始取数', async () => {
+    let release!: () => void
+    const pending = new Promise<void>(resolve => { release = resolve })
+    registerHistoryHooks({ before: () => {}, after: async () => {}, clear: vi.fn().mockReturnValueOnce(pending).mockResolvedValue(undefined) })
+    try {
+      const fetcher = stubFetch(routes())
+      const store = usePreviewStore()
+      const first = store.selectTemplate(1, { versionId: 10 })
+      await store.selectTemplate(2, { versionId: 21 })
+      release()
+      await first
+      expect(store.currentTemplateId).toBe(2)
+      expect(store.currentVersionId).toBe(21)
+      expect(store.status).toBe('ready')
+      expect(fetcher.mock.calls.some(call => String(call[0]).startsWith('/api/templates/1'))).toBe(false)
+    } finally { registerHistoryHooks(null) }
+  })
+
+  it('较早的打开请求在文稿列表返回后也不能启动过期 PDF 或覆盖新稿', async () => {
+    const fetcher = stubFetch({ ...routes(),
+      '/api/templates/3': () => ({ default_version_id: 30 }),
+      '/api/templates/3/versions': () => ({ versions: [{ id: 30, template_id: 3 }] }),
+      '/api/versions/30/preview': () => new ArrayBuffer(3),
+      '/api/versions/30/overlay': () => ({ regions: [] }),
+    }, { '/api/templates/2/versions': 30 })
+    const store = usePreviewStore()
+    const first = store.selectTemplate(2, { versionId: 21 })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    await store.selectTemplate(3, { versionId: 30 })
+    await first
+    expect(store.currentTemplateId).toBe(3)
+    expect(store.currentVersionId).toBe(30)
+    expect(store.status).toBe('ready')
+    expect(fetcher.mock.calls.some(call => String(call[0]) === '/api/versions/21/preview')).toBe(false)
+  })
 })
 
 describe('区域检查的异步上下文保护', () => {

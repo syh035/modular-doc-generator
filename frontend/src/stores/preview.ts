@@ -299,10 +299,13 @@ export const usePreviewStore = defineStore('preview', () => {
     }
   }
 
-  async function selectTemplate(id: number | null): Promise<void> {
+  /** 指定 versionId 时直接打开该文稿，退出检查且不触发跨模板迁移。 */
+  async function selectTemplate(id: number | null, options: { versionId?: number } = {}): Promise<void> {
+    const seq = sequencer.next()
     exportWarnings.value = []
     exportError.value = null
     await clearHistoryBoundary()
+    if (!sequencer.isCurrent(seq)) return
     // M10 迁移触发：捕获切换前上下文（会话内、版本模式、active 绑定 ≥1 才有可迁移源）
     const prevTemplateId = currentTemplateId.value
     const prevVersionId = currentVersionId.value
@@ -312,7 +315,6 @@ export const usePreviewStore = defineStore('preview', () => {
       prevVersionId !== null && !proofreadMode.value
         ? regions.value.filter(r => r.binding?.status === 'active').length
         : 0
-    const seq = sequencer.next()
     viewRevision++
     versionListRequest++
     refreshing.value = false
@@ -323,6 +325,7 @@ export const usePreviewStore = defineStore('preview', () => {
     pdfData.value = null
     error.value = null
     _clearMigration()
+    if (options.versionId !== undefined) proofreadMode.value = false
     if (id === null) {
       status.value = 'idle'
       return
@@ -334,9 +337,13 @@ export const usePreviewStore = defineStore('preview', () => {
       if (!sequencer.isCurrent(seq)) {
         throw new CancelledError()
       }
-      const versionId = detail.default_version_id ?? null
+      const versionId = options.versionId ?? detail.default_version_id ?? null
       currentVersionId.value = versionId
-      await loadVersionList() // 版本下拉数据源；迁移触发判定依赖 binding_count，须先就绪
+      await loadVersionList(options.versionId !== undefined)
+      if (!sequencer.isCurrent(seq)) throw new CancelledError()
+      if (options.versionId !== undefined && !versions.value.some(version => version.id === options.versionId && version.template_id === id)) {
+        throw new Error('这份文稿已不存在或不属于此模板，请刷新文稿列表')
+      }
       if (proofreadMode.value || versionId === null) {
         // 校对模式：看模板本体（原始区域 + 落库 bbox），不看替换成品
         await _fetchTemplateRender(seq, id)
@@ -344,7 +351,7 @@ export const usePreviewStore = defineStore('preview', () => {
         await _fetchVersionRender(seq, versionId)
       }
       status.value = 'ready'
-      _maybeOfferMigration(
+      if (options.versionId === undefined) _maybeOfferMigration(
         prevTemplateId,
         prevVersionId,
         prevTemplateName,
@@ -505,7 +512,7 @@ export const usePreviewStore = defineStore('preview', () => {
   }
 
   /** 版本下拉数据源（当前模板）。失败静默置空，不阻断预览。 */
-  async function loadVersionList(): Promise<void> {
+  async function loadVersionList(strict = false): Promise<void> {
     const request = ++versionListRequest
     const templateId = currentTemplateId.value
     if (templateId === null) {
@@ -515,8 +522,11 @@ export const usePreviewStore = defineStore('preview', () => {
     try {
       const result = await listVersions(templateId)
       if (request === versionListRequest && currentTemplateId.value === templateId) versions.value = result
-    } catch {
-      if (request === versionListRequest && currentTemplateId.value === templateId) versions.value = []
+    } catch (err) {
+      if (request === versionListRequest && currentTemplateId.value === templateId) {
+        if (strict) throw err
+        versions.value = []
+      }
     }
   }
 

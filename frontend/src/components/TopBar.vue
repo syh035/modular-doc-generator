@@ -4,12 +4,14 @@ import { useAppStore } from '../stores/app'
 import { useHistoryStore } from '../stores/history'
 import { useBlocksStore } from '../stores/blocks'
 import { usePreviewStore } from '../stores/preview'
+import { useDocumentsStore } from '../stores/documents'
 const LibraryDialog = defineAsyncComponent(() => import('./LibraryDialog.vue'))
 
 const appStore = useAppStore()
 const previewStore = usePreviewStore()
 const history = useHistoryStore()
 const blocks = useBlocksStore()
+const documents = useDocumentsStore()
 const libraryOpen = ref(false)
 const initialArchiveId = ref<number | null>(null)
 const moreOpen = ref(false)
@@ -45,7 +47,7 @@ function moreKeydown(event: KeyboardEvent): void {
     buttons[next]?.focus()
   }
 }
-function selectTab(tab: 'workbench' | 'guide'): void {
+function selectTab(tab: 'documents' | 'guide'): void {
   closeMore(true); appStore.setTab(tab)
 }
 function openArchives(archiveId: number | null = null): void {
@@ -58,6 +60,7 @@ async function moveHistory(redo: boolean): Promise<void> {
   await history.move(redo, async () => {
     await Promise.all([blocks.loadBlocks(), blocks.loadTags()])
     await previewStore.reloadAfterHistory()
+    if (appStore.activeTab === 'documents') await documents.load()
   })
 }
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -100,6 +103,7 @@ async function onFileChange(event: Event): Promise<void> {
   if (file === null) {
     return
   }
+  appStore.setTab('workbench')
   const result = await previewStore.uploadTemplate(file)
   if (!result.ok) {
     alert(result.error ?? '导入失败')
@@ -117,10 +121,10 @@ defineExpose({ pickFile, openArchives })
     >
       <button
         class="tab"
-        :class="{ active: appStore.activeTab === 'workbench' && !libraryOpen }"
-        @click="selectTab('workbench')"
+        :class="{ active: appStore.activeTab !== 'guide' && !libraryOpen }"
+        @click="selectTab('documents')"
       >
-        工作台
+        文稿
       </button>
       <button
         class="tab"

@@ -47,25 +47,25 @@ function mountTopBar(attach = false) {
 }
 
 describe('TopBar 紧凑导航', () => {
-  it('默认仅展示工作台、归档库和更多，折叠操作不出现在 DOM', () => {
+  it('默认仅展示文稿、归档库和更多，折叠操作不出现在 DOM', () => {
     stubHealth(true)
     const wrapper = mountTopBar()
     const tabs = wrapper.findAll('.tab')
     expect(tabs).toHaveLength(2)
-    expect(tabs[0].text()).toBe('工作台')
+    expect(tabs[0].text()).toBe('文稿')
     expect(tabs[1].text()).toBe('归档库')
     expect(tabs[0].classes()).toContain('active')
     expect(tabs[1].classes()).not.toContain('active')
-    expect(wrapper.findAll('button').map(button => button.text())).toEqual(['工作台', '归档库', '更多 ⌄'])
+    expect(wrapper.findAll('button').map(button => button.text())).toEqual(['文稿', '归档库', '更多 ⌄'])
     expect(wrapper.find('[role=menu]').exists()).toBe(false)
     expect(wrapper.find('[data-testid=import-template]').exists()).toBe(false)
   })
 
-  it('模板制作指南收进更多，操作后收起并可回到工作台', async () => {
+  it('模板制作指南收进更多，操作后收起并可回到文稿列表', async () => {
     stubHealth(true)
     const wrapper = mountTopBar()
     const appStore = useAppStore()
-    expect(appStore.activeTab).toBe('workbench')
+    expect(appStore.activeTab).toBe('documents')
 
     await wrapper.get('[aria-haspopup=menu]').trigger('click')
     await wrapper.findAll('[role=menuitem]').find(button => button.text() === '模板制作指南')!.trigger('click')
@@ -73,7 +73,7 @@ describe('TopBar 紧凑导航', () => {
     expect(wrapper.find('[role=menu]').exists()).toBe(false)
 
     await wrapper.findAll('.tab')[0].trigger('click')
-    expect(appStore.activeTab).toBe('workbench')
+    expect(appStore.activeTab).toBe('documents')
   })
 
   it('展开后导入模板可用，点击选择文件后收起菜单', async () => {
