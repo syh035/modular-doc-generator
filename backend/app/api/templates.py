@@ -4,7 +4,7 @@ import json
 import sqlite3
 from typing import Annotated
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from app.core.errors import TEMPLATE_NOT_FOUND, AppError
@@ -70,14 +70,19 @@ def _get_or_404(conn: sqlite3.Connection, template_id: int) -> Template:
 
 
 @router.post("/templates")
-def upload_template(file: Annotated[UploadFile, File()]) -> JSONResponse:
-    """上传 DOCX 模板：校验 → 候选解析（M3b 三层识别）→ 默认版本。
+def upload_template(
+    file: Annotated[UploadFile, File()],
+    create_default_version: Annotated[bool, Form()] = True,
+) -> JSONResponse:
+    """上传 DOCX 模板；create_default_version=false 仅保存模板，旧调用默认建稿。
 
     201 = 新建；200 = 同 sha256 内容重传关联已有模板（D10，reused=true，
     区域与版本均为已有模板的解析结果）。同步完成（D12）。
     """
     data = file.file.read()
-    tpl, regions, reused = template_service.upload_template(file.filename or "", data)
+    tpl, regions, reused = template_service.upload_template(
+        file.filename or "", data, create_default_version=create_default_version
+    )
     out = _template_dict(tpl, regions=regions)
     out["default_version_id"] = _default_version_id(tpl.id)
     out["reused"] = reused
@@ -85,7 +90,7 @@ def upload_template(file: Annotated[UploadFile, File()]) -> JSONResponse:
 
 
 def _default_version_id(template_id: int) -> int | None:
-    """模板默认版本 id（最早创建即默认；无版本=历史数据，前端走模板预览兜底）。"""
+    """最早创建的版本 id；零文稿模板合法，返回 None，不自动补建。"""
     with get_conn() as conn:
         versions = versions_repo.list_versions(conn, template_id)
     return versions[0].id if versions else None
@@ -133,6 +138,4 @@ def get_preview(template_id: int) -> Response:
     with cache_access():
         pdf_data = render_service.ensure_template_preview(template_id).read_bytes()
     # no-store：同 P25（URL 不随内容变化，禁止浏览器启发式缓存复用旧 PDF）
-    return Response(
-        pdf_data, media_type="application/pdf", headers={"Cache-Control": "no-store"}
-    )
+    return Response(pdf_data, media_type="application/pdf", headers={"Cache-Control": "no-store"})

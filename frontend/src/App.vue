@@ -167,6 +167,7 @@ onBeforeUnmount(stopResize)
     <TemplateManager
       v-if="appStore.activeTab === 'templates'"
       embedded
+      :initial-template-id="appStore.browsedTemplateId"
       :inert="openingDocument || undefined"
       @import="topBarRef?.pickFile()"
       @use="openManagedDocument"

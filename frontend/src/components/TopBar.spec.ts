@@ -221,7 +221,7 @@ describe('导入模板上传（占位按钮转正）', () => {
     expect(clickSpy).toHaveBeenCalledOnce()
   })
 
-  it('选择文件 → POST 上传 → 刷新列表并自动选中新模板', async () => {
+  it('选择文件只保存模板并进入模板页，不渲染默认稿或改变当前文稿', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       const method = init?.method ?? 'GET'
@@ -303,11 +303,15 @@ describe('导入模板上传（占位按钮转正）', () => {
       c => String(c[0]) === '/api/templates' && c[1]?.method === 'POST',
     )
     expect(post?.[1]?.body).toBeInstanceOf(FormData)
+    expect((post?.[1]?.body as FormData).get('create_default_version')).toBe('false')
     // 列表刷新 + 新模板选中且版本渲染就绪
     const store = usePreviewStore()
     expect(store.templates.map(t => t.id)).toEqual([7])
-    expect(store.currentTemplateId).toBe(7)
-    expect(store.status).toBe('ready')
+    expect(store.currentTemplateId).toBeNull()
+    expect(store.status).toBe('idle')
+    expect(useAppStore().activeTab).toBe('templates')
+    expect(useAppStore().browsedTemplateId).toBe(7)
+    expect(fetchMock.mock.calls.some(c => String(c[0]).includes('/preview'))).toBe(false)
     await wrapper.get('[aria-haspopup=menu]').trigger('click')
     expect(wrapper.get('[data-testid="import-template"]').text()).toBe('导入模板') // uploading 复位
   })

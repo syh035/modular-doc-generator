@@ -51,6 +51,29 @@ def test_archive_survives_source_deletion_and_restart(
         assert restarted.get(f"/api/archives/{archive['id']}/pdf").status_code == 404
 
 
+def test_delete_last_document_keeps_template_material_and_archive(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vid, docx, pdf = frozen_scene(client, tmp_path, monkeypatch)
+    archive = client.post(f"/api/versions/{vid}/archives", json={"name": "独立定稿"}).json()
+    template = client.get("/api/templates").json()["templates"][0]
+    tid = template["id"]
+    region = client.get(f"/api/templates/{tid}/regions").json()["regions"][0]
+    block = client.post("/api/blocks", json={"name": "复用文字", "content": "保留素材"}).json()
+    assert (
+        client.post(
+            f"/api/versions/{vid}/bindings",
+            json={"region_id": region["id"], "block_id": block["id"]},
+        ).status_code
+        == 200
+    )
+    assert client.delete(f"/api/versions/{vid}?allow_empty_template=true").status_code == 204
+    assert client.get(f"/api/templates/{tid}").json()["default_version_id"] is None
+    assert client.get(f"/api/blocks/{block['id']}").json()["content"] == "保留素材"
+    assert client.get(f"/api/archives/{archive['id']}/docx").content == docx
+    assert client.get(f"/api/archives/{archive['id']}/pdf").content == pdf
+
+
 def test_archive_overflow_confirmation_and_integrity(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -270,7 +270,7 @@ onBeforeUnmount(() => { disposed = true })
             <DocumentActions
               compact
               :document="document"
-              :can-delete="group.documents.length > 1"
+              :can-delete="true"
               :disabled="busy || !!group.error"
               @open="open(group, $event)"
             />

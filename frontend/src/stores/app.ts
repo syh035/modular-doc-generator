@@ -28,15 +28,22 @@ export const useAppStore = defineStore('app', () => {
   const activeTab = ref<AppTab>('documents')
   const archiveId = ref<number | null>(null)
   const documentTemplateId = ref<number | null>(null)
+  const browsedTemplateId = ref<number | null>(null)
 
   function setTab(tab: AppTab): void {
     if (tab === 'documents') documentTemplateId.value = null
+    if (tab === 'templates') browsedTemplateId.value = null
     activeTab.value = tab
   }
 
   function openArchives(id: number | null = null): void {
     archiveId.value = id
     activeTab.value = 'archives'
+  }
+
+  function openTemplates(id: number | null = null): void {
+    browsedTemplateId.value = id
+    activeTab.value = 'templates'
   }
 
   function openTemplateDocuments(templateId: number | null): void {
@@ -54,5 +61,5 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  return { health, healthError, activeTab, archiveId, documentTemplateId, setTab, openArchives, openTemplateDocuments, refreshHealth }
+  return { health, healthError, activeTab, archiveId, documentTemplateId, browsedTemplateId, setTab, openTemplates, openArchives, openTemplateDocuments, refreshHealth }
 })

@@ -65,7 +65,7 @@ async function remove(): Promise<void> {
   const source = props.document
   busy.value = true; error.value = null
   try {
-    await deleteVersion(source.id)
+    await deleteVersion(source.id, true)
     documents.removeDocument(source.template_id, source.id)
     if (preview.currentTemplateId === source.template_id) preview.versions = preview.versions.filter(document => document.id !== source.id)
     editor.value = null

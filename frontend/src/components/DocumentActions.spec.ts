@@ -89,7 +89,7 @@ describe('文稿操作与原稿保护', () => {
     await choose(wrapper, '删除文稿')
     await wrapper.findAll('dialog button')[1]!.trigger('click')
     await flushPromises()
-    expect(deleteVersion).toHaveBeenCalledExactlyOnceWith(11)
+    expect(deleteVersion).toHaveBeenCalledExactlyOnceWith(11, true)
     expect(useDocumentsStore().groups[0]?.documents.map(document => document.id)).toEqual([12])
     expect(clear).toHaveBeenCalledExactlyOnceWith(null)
     expect(useAppStore().activeTab).toBe('documents')
@@ -112,7 +112,7 @@ describe('文稿操作与原稿保护', () => {
     expect(useDocumentsStore().documentCount).toBe(1)
   })
 
-  it('最后文稿删除保护保留，菜单 Escape 关闭后归还焦点', async () => {
+  it('操作不可用时禁止删除，菜单 Escape 关闭后归还焦点', async () => {
     const wrapper = actions(false)
     const menu = wrapper.get<HTMLDetailsElement>('details')
     menu.element.open = true

@@ -1045,7 +1045,7 @@ defineExpose({ jumpToRegion })
               class="template-context"
               :disabled="regionWriteBusy"
               title="浏览所用模板，不更改当前文稿"
-              @click="app.setTab('templates')"
+              @click="app.openTemplates(store.currentTemplateId)"
             >
               模板：{{ store.currentTemplate?.filename ?? '尚未选择' }}
             </button>
@@ -1059,7 +1059,7 @@ defineExpose({ jumpToRegion })
         <DocumentActions
           v-if="currentDocument"
           :document="currentDocument"
-          :can-delete="store.versions.length > 1"
+          :can-delete="true"
           :disabled="store.proofreadMode || store.exportBusy || regionWriteBusy || store.refreshing || store.status !== 'ready'"
           @open="openCopiedDocument"
         >

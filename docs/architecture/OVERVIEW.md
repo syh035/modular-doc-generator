@@ -40,7 +40,7 @@ flowchart LR
 
 溢出清单在 StatusBar 展示，通过 locate 事件经 App 转发至 TemplatePreview 暴露的 jumpToRegion，保留滚页和 1.8 秒闪烁。状态栏固定高度，清单横向滚动。顶栏为「文稿／模板／素材／归档库」，指南与撤销／重做收纳到「更多」，快捷键保留；首页和模板页可导入模板。TemplateManager 与 LibraryDialog 复用非模态页面模式，分别承载模板浏览和独立归档；浏览模板不选择预览，明确点击“编辑文稿”才直接打开指定 ID，当前稿就地返回而不重转。页面切换保留编辑器，请求结果不抢回已经离开的页面。
 
-文档工具条显示当前文稿名、所用模板及保存状态，“文稿操作”集中另存、重命名与删除，列表行复用 DocumentActions。另存复制指定源 ID 并打开新稿，重命名仅更新元数据，删除当前稿后返回列表并清空预览，不自动打开其他稿；失败保留名称或删除确认。最后一稿保护仍沿用旧接口。原模板迁移选择器收在文稿操作，M38d 的可视套用／新建稿尚未实施。“归档”“导出”直接可见，普通导出不自动归档；缩放与图例仍在底部“预览工具”按需展开。
+文档工具条显示当前文稿名、所用模板及保存状态，“文稿操作”集中另存、重命名与删除，列表行复用 DocumentActions。另存复制指定源 ID 并打开新稿，重命名仅更新元数据，删除当前稿后返回列表并清空预览，不自动打开其他稿；失败保留名称或删除确认。新界面显式允许删除最后一稿，模板、素材及归档保留；旧调用仍保留末稿保护。原模板迁移选择器收在文稿操作，M38d 的可视套用／新建稿尚未实施。“归档”“导出”直接可见，普通导出不自动归档；缩放与图例仍在底部“预览工具”按需展开。
 
 BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜索。块库保留块编辑标签与已有数据，统一通过搜索查找；块库只按统一查询过滤，不叠加不可见的 activeTagId。兼容的标签 API 和 store 能力保留。BlockEditor 宽版弹窗处理新建／编辑，App 在 ≤900px 使用 BlockDrawer。整页／宽度缩放由 previewScale 计算，PDF 与覆盖层共用同一 scale 和 viewport，不改变单渲染管线。
 
@@ -66,7 +66,7 @@ BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜�
 
 ## 模板、替换与渲染
 
-1. [模板服务](../../backend/app/services/template_service.py) 校验、指纹关联、保存原件，编排候选解析和默认版本创建。
+1. [模板服务](../../backend/app/services/template_service.py) 校验、指纹关联、保存原件与识别区域。新界面导入传 multipart create_default_version=false，仅保存模板并定位模板页，保留当前预览；旧调用默认 true。重传只关联已有模板，不清理旧稿也不补建默认稿。组内明确创建后才获得文稿 ID；DELETE /api/versions/{id}?allow_empty_template=true 可删除末稿，旧调用仍返回 LAST_VERSION。零稿状态不改变模板／区域／素材／归档身份，也不在读取或重启时补稿。
 2. [解析器](../../backend/app/services/docx_parser.py) 遍历正文和表格内段落，按占位符、词表、成段正文产生候选；页眉页脚和文本框不是 v1 可替换范围。
 3. [校对服务](../../backend/app/services/proofread_service.py) 处理候选、框选、微调和区域状态，逐操作落库。
 4. [替换引擎](../../backend/app/services/replacement.py) 定位文档流元素，替换占位符片段或整段内容；跨 run 占位符、多行克隆、样式继承和路径重算已有处理。

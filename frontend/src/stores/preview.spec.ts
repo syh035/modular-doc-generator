@@ -1407,6 +1407,21 @@ describe('导出（M9，PRD 4.8 / D5）', () => {
 })
 
 describe('uploadTemplate（顶栏「导入模板」）', () => {
+  it.each([false, true])('仅保存模板不打开或清空当前文稿，重传也不切稿（重传=%s）', async reused => {
+    const fn = uploadRoutes(reused)
+    const store = usePreviewStore()
+    store.currentTemplateId = 1; store.currentVersionId = 5; store.status = 'ready'
+    const pdf = new ArrayBuffer(6)
+    store.pdfData = pdf
+    const result = await store.uploadTemplate(new File(['docx'], 'new.docx'), { templateOnly: true })
+    expect(result).toEqual({ ok: true, error: null, templateId: 7, reused })
+    expect(store.currentTemplateId).toBe(1)
+    expect(store.currentVersionId).toBe(5)
+    expect(store.pdfData).toBe(pdf)
+    expect(store.status).toBe('ready')
+    expect(fn.mock.calls.map(call => String(call[0]))).toEqual(['/api/templates', '/api/templates'])
+    expect((fn.mock.calls[0]?.[1]?.body as FormData).get('create_default_version')).toBe('false')
+  })
   /** 方法+URL 双键路由 stub（上传链路 POST/GET 同路径不同义，stubFetch 按 URL 单键不够用）。 */
   function stubMethodFetch(routes: Record<string, () => unknown>) {
     const fn = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {

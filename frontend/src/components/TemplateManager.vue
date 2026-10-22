@@ -5,11 +5,12 @@ import { usePreviewStore } from '../stores/preview'
 import { useModalEsc } from '../composables/useModalEsc'
 import VersionDialog from './VersionDialog.vue'
 
-const props = defineProps<{ embedded?: boolean }>()
+const props = defineProps<{ embedded?: boolean; initialTemplateId?: number | null }>()
 const emit = defineEmits<{ close: []; use: [templateId: number, versionId: number | null]; import: []; documents: [templateId: number] }>()
 const store = usePreviewStore()
 const query = ref('')
-const selectedId = ref(store.currentTemplateId ?? store.templates[0]?.id ?? null)
+const selectedId = ref(props.initialTemplateId ?? store.currentTemplateId ?? store.templates[0]?.id ?? null)
+watch(() => props.initialTemplateId, id => { if (id != null) selectedId.value = id })
 const versions = ref<VersionInfo[]>([])
 const loading = ref(false)
 const busy = ref(false)

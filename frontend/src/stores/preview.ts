@@ -221,15 +221,17 @@ export const usePreviewStore = defineStore('preview', () => {
   }
 
   /** 上传模板（顶栏「导入模板」）：成功后刷新列表并选中新模板（新模板进待校对流程）。 */
-  async function uploadTemplate(file: File): Promise<UploadResult> {
+  async function uploadTemplate(file: File, options: { templateOnly?: boolean } = {}): Promise<UploadResult> {
     if (uploadPhase.value !== 'idle') return { ok: false, error: '已有模板正在导入' }
     uploadPhase.value = 'request'
     uploadStartedAt.value = Date.now()
     try {
-      const { template, reused } = await uploadTemplateApi(file)
+      const { template, reused } = await uploadTemplateApi(file, !options.templateOnly)
       await loadTemplates()
-      uploadPhase.value = 'render'
-      await selectTemplate(template.id)
+      if (!options.templateOnly) {
+        uploadPhase.value = 'render'
+        await selectTemplate(template.id)
+      }
       return { ok: true, error: null, templateId: template.id, reused }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }

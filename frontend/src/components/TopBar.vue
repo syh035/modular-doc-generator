@@ -91,7 +91,7 @@ function pickFile(): void {
   fileInput.value?.click()
 }
 
-/** 选中文件 → 上传解析 → 成功自动选中新模板；失败 alert 可读错误（同 M8 删除失败口径）。 */
+/** 导入仅保存模板并定位模板页；保留当前文稿，失败给出可读错误。 */
 async function onFileChange(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0] ?? null
@@ -99,10 +99,11 @@ async function onFileChange(event: Event): Promise<void> {
   if (file === null) {
     return
   }
-  appStore.setTab('workbench')
-  const result = await previewStore.uploadTemplate(file)
+  const result = await previewStore.uploadTemplate(file, { templateOnly: true })
   if (!result.ok) {
     alert(result.error ?? '导入失败')
+  } else {
+    appStore.openTemplates(result.templateId ?? null)
   }
 }
 defineExpose({ pickFile, openArchives })

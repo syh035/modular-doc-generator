@@ -344,8 +344,8 @@ def rename_version(version_id: int, payload: VersionRename) -> dict[str, object]
 
 
 @router.delete("/versions/{version_id}", status_code=204)
-def delete_version(version_id: int) -> Response:
-    """删除版本（绑定级联删）；模板至少保留一个版本（LAST_VERSION 400）。"""
+def delete_version(version_id: int, allow_empty_template: bool = False) -> Response:
+    """删除版本；默认保护最后一稿，allow_empty_template=true 显式允许零稿。"""
     with get_conn() as conn:
-        version_service.delete_version(conn, version_id)
+        version_service.delete_version(conn, version_id, allow_empty_template=allow_empty_template)
     return Response(status_code=204)
