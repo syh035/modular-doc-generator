@@ -2,11 +2,61 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import LibraryDialog from './LibraryDialog.vue'
+import { useDocumentsStore } from '../stores/documents'
 
 vi.mock('./ArchivePreview.vue', () => ({ default: { template: '<div>只读 PDF</div>' } }))
 beforeEach(() => { setActivePinia(createPinia()) })
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 describe('独立归档库', () => {
+  function sourceFixture() {
+    const documents = useDocumentsStore()
+    vi.spyOn(documents, 'load').mockImplementation(async () => {
+      documents.error = null
+      documents.groups = [{
+        template: { id: 2, filename: '当前模板', storage_name: '', sha256: '', status: 'ready', created_at: '', updated_at: '', regions_count: 0 },
+        documents: [{ id: 10, template_id: 2, name: '已改名的来源', created_at: '', updated_at: '', binding_count: 0 }],
+        loading: false, loaded: true, error: null,
+      }]
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ archives: [
+      { id: 1, source_version_id: 10, name: '原稿定稿', template_name: '旧模板名', version_name: '旧文稿名', created_at: '' },
+      { id: 2, source_version_id: 999, name: '来源已删定稿', template_name: '旧模板名', version_name: '旧文稿名', created_at: '' },
+    ] })))
+    return documents
+  }
+  it('按来源 ID 筛选，改名不丢关联，返回全部时清除范围和预览', async () => {
+    sourceFixture()
+    const wrapper = mount(LibraryDialog, { props: { embedded: true, sourceDocument: { id: 10, name: '已改名的来源' } } })
+    await flushPromises()
+    expect(wrapper.findAll('article')).toHaveLength(1)
+    expect(wrapper.text()).toContain('当前来源：已改名的来源')
+    await wrapper.findAll('article button').find(button => button.text() === '打开来源文稿')!.trigger('click')
+    expect(wrapper.emitted('open-source')).toEqual([[2, 10]])
+    await wrapper.findAll('article button').find(button => button.text() === '查看')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '查看全部归档')!.trigger('click')
+    expect(wrapper.emitted('all')).toHaveLength(1)
+    await wrapper.setProps({ sourceDocument: null })
+    expect(wrapper.findAll('article')).toHaveLength(2)
+    expect(wrapper.find('[aria-label=所选归档]').exists()).toBe(false)
+    const orphan = wrapper.findAll('article')[1]!
+    expect(orphan.text()).toContain('来源文稿已不存在')
+    expect(orphan.findAll('a')).toHaveLength(2)
+    expect(orphan.text()).not.toContain('打开来源文稿')
+    wrapper.unmount()
+  })
+  it('来源读取失败不误判已删除，重试后恢复链接且不影响归档预览下载', async () => {
+    const documents = sourceFixture()
+    vi.mocked(documents.load).mockImplementationOnce(async () => { documents.error = '读取失败' })
+    const wrapper = mount(LibraryDialog, { props: { embedded: true } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('来源暂无法核对')
+    expect(wrapper.text()).not.toContain('来源文稿已不存在')
+    expect(wrapper.findAll('a')).toHaveLength(4)
+    await wrapper.findAll('button').find(button => button.text() === '重试核对来源')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('打开来源文稿')
+    wrapper.unmount()
+  })
   it('页面删除归档后回到搜索输入', async () => {
     const archive = { id: 7, name: '定稿', template_name: '模板', version_name: '文稿', created_at: '2026-10-17T00:00:00Z' }
     let deleted = false

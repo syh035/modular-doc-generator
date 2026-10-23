@@ -104,6 +104,8 @@ POST /api/templates/{id}/migrate/preview 接受 source_version_id、plan_token�
 
 [config.py](../../backend/app/core/config.py) 通过 `MODUDOC_DATA_DIR` 指定数据目录；源码开发默认项目 `data/`，下载 App 使用 `~/Library/Application Support/ModularDocGenerator/Data`。该目录包含 SQLite、模板、缓存、导出、字体配置和 LO profile；手工复制数据需先退出应用并保留整个目录。应用内不提供备份与恢复，已有备份文件不主动删除。`MODUDOC_STATIC_DIR` 指向 App 内的生产前端，应用资源只读。运行说明见 [应用指南](../../desktop/README.md)和[开发规范](../development/WORKFLOW.md)。
 
+归档来源快捷关联沿用 archives.source_version_id，前端 Archive 类型声明该字段。DocumentActions 由 app.archiveSource 传递文稿 ID 与展示名，LibraryDialog 按 ID 筛选，可清除范围回到全部归档。来源存在性通过 documents store 的有界列表读取核对；改名只改变当前来源展示，不修改归档保存时的名称。读取失败与已删除分开提示，部分失败时只开放已核对来源，归档预览和下载不依赖来源请求。打开来源复用 App 的指定稿导航，失败停留归档页并恢复发起按钮焦点，来源删除不触发按名称回填或重建稿件。该关联不增加 API 或改变归档字节、删除、普通导出契约。
+
 ## 平台与后续边界
 
 下载 App 支持 macOS 14+ 的 Apple Silicon 和 Intel。LibreOffice 字体配置在 macOS 使用本机字体目录，在 Linux 保留系统配置；后端 CI 在 Ubuntu 执行真实转换。Node 仅用于源码开发与构建，CI 使用 Node 22；用户端只需 Python 3.12 和 LibreOffice。Windows 外壳尚未实现。

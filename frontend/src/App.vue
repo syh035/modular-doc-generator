@@ -55,7 +55,13 @@ async function openManagedDocument(templateId: number, versionId: number | null)
     if (preview.currentTemplateId !== templateId || preview.currentVersionId !== versionId
       || preview.proofreadMode || preview.status !== 'ready') await preview.selectTemplate(templateId, { versionId })
     if (request !== navigationRequest || sourcePage !== appStore.activeTab) return
-    if (preview.status === 'ready' && preview.currentTemplateId === templateId && preview.currentVersionId === versionId) appStore.setTab('workbench')
+    if (preview.status === 'ready' && preview.currentTemplateId === templateId && preview.currentVersionId === versionId) {
+      appStore.setTab('workbench')
+      if (sourcePage === 'archives') {
+        await nextTick()
+        document.querySelector<HTMLElement>('[data-testid="current-document-name"]')?.focus({ preventScroll: true })
+      }
+    }
     else navigationError.value = preview.error ?? '文稿未能打开，请重试'
   } catch (err) {
     if (request === navigationRequest && sourcePage === appStore.activeTab) navigationError.value = err instanceof Error ? err.message : String(err)
@@ -184,6 +190,10 @@ onBeforeUnmount(stopResize)
       v-if="appStore.activeTab === 'archives'"
       embedded
       :initial-archive-id="appStore.archiveId"
+      :source-document="appStore.archiveSource"
+      :inert="openingDocument || undefined"
+      @all="appStore.openArchives()"
+      @open-source="openManagedDocument"
     />
     <div
       v-if="workbenchMounted"

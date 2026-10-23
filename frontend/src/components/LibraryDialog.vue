@@ -3,8 +3,15 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { deleteArchive, listArchives, type Archive } from '../api/archives'
 import { useModalEsc } from '../composables/useModalEsc'
 import ArchivePreview from './ArchivePreview.vue'
-const props = defineProps<{ initialArchiveId?: number | null; embedded?: boolean }>()
-const emit = defineEmits<{ close: [] }>()
+import { useDocumentsStore } from '../stores/documents'
+const props = defineProps<{ initialArchiveId?: number | null; embedded?: boolean; sourceDocument?: { id: number; name: string } | null }>()
+const emit = defineEmits<{ close: []; all: []; 'open-source': [templateId: number, versionId: number] }>()
+const documents = useDocumentsStore()
+const sourceLoading = ref(false)
+const sourceError = ref(false)
+const sources = computed(() => new Map(documents.error ? [] : documents.groups.flatMap(group =>
+  group.loaded && !group.error && !group.loading ? group.documents.map(document => [document.id, document] as const) : [],
+)))
 const archives = ref<Archive[]>([])
 const busy = ref(false)
 const loading = ref(true)
@@ -15,10 +22,18 @@ const card = ref<HTMLElement | null>(null)
 const query = ref('')
 let disposed = false
 let request = 0
+let sourceRequest = 0
 watch(() => props.initialArchiveId, id => { selected.value = id ?? null })
+watch(() => props.sourceDocument?.id, async () => {
+  selected.value = null; query.value = ''
+  await nextTick()
+  if (document.activeElement === document.body) focusSearch()
+})
+function focusSearch(): void { card.value?.querySelector<HTMLInputElement>('.archive-search input')?.focus({ preventScroll: true }) }
+const scopedArchives = computed(() => archives.value.filter(archive => !props.sourceDocument || archive.source_version_id === props.sourceDocument.id))
 const visibleArchives = computed(() => {
   const term = query.value.trim().toLocaleLowerCase()
-  return archives.value.filter(archive =>
+  return scopedArchives.value.filter(archive =>
     `${archive.name} ${archive.template_name} ${archive.version_name}`.toLocaleLowerCase().includes(term),
   )
 })
@@ -31,15 +46,33 @@ async function selectArchive(id: number): Promise<void> {
 if (!props.embedded) useModalEsc(close)
 async function load(): Promise<void> {
   const seq = ++request
+  sourceRequest++; sourceLoading.value = false; sourceError.value = false
   loading.value = true; error.value = ''
   try {
     const result = await listArchives()
-    if (!disposed && seq === request) archives.value = result
+    if (!disposed && seq === request) {
+      archives.value = result
+      if (result.some(archive => archive.source_version_id)) void loadSources(seq)
+    }
   } catch (err) {
     if (!disposed && seq === request) error.value = err instanceof Error ? err.message : String(err)
   } finally { if (!disposed && seq === request) loading.value = false }
 }
-onMounted(() => { void load() })
+async function loadSources(seq = request): Promise<void> {
+  const sourceSeq = ++sourceRequest
+  sourceLoading.value = true; sourceError.value = false
+  await documents.load()
+  if (!disposed && seq === request && sourceSeq === sourceRequest) {
+    sourceLoading.value = false
+    sourceError.value = documents.incomplete || documents.loading
+  }
+}
+function openSource(archive: Archive): void {
+  if (sourceLoading.value || busy.value) return
+  const source = sources.value.get(archive.source_version_id)
+  if (source) emit('open-source', source.template_id, source.id)
+}
+onMounted(() => { void load(); if (props.embedded && props.sourceDocument) focusSearch() })
 onBeforeUnmount(() => { disposed = true; request++ })
 async function remove(archive: Archive): Promise<void> {
   if (!confirm(`永久删除归档「${archive.name}」？此操作无法撤销，原内容版本不受影响。`)) return
@@ -87,8 +120,33 @@ async function remove(archive: Archive): Promise<void> {
         placeholder="搜索归档名称或来源"
         aria-label="搜索归档"
       ></label>
+      <div
+        v-if="sourceDocument"
+        class="source-filter"
+      >
+        <span>此文稿的归档：{{ sourceDocument.name }}</span>
+        <button
+          :disabled="busy"
+          @click="emit('all')"
+        >
+          查看全部归档
+        </button>
+      </div>
       <p class="description">
-        {{ query.trim() ? `找到 ${visibleArchives.length} / ${archives.length}` : `共 ${archives.length}` }} 份归档
+        {{ query.trim() ? `找到 ${visibleArchives.length} / ${scopedArchives.length}` : `共 ${scopedArchives.length}` }} 份归档
+      </p>
+      <p
+        v-if="sourceError"
+        class="description"
+        role="status"
+      >
+        暂时无法核对部分来源，归档仍可查看和下载。
+        <button
+          :disabled="sourceLoading || busy"
+          @click="loadSources()"
+        >
+          重试核对来源
+        </button>
       </p>
       <p
         v-if="loading"
@@ -131,10 +189,10 @@ async function remove(archive: Archive): Promise<void> {
           />
         </section>
         <div class="archive-list">
-          <p v-if="!loading && !error && !archives.length">
-            暂无归档。在文稿编辑页点击“归档”，即可把当前稿件保存到这里。
+          <p v-if="!loading && !error && !scopedArchives.length">
+            {{ sourceDocument ? '此文稿暂无归档。可在编辑页点击“归档”保存当前稿件。' : '暂无归档。在文稿编辑页点击“归档”，即可把当前稿件保存到这里。' }}
           </p>
-          <p v-else-if="!loading && archives.length && !visibleArchives.length">
+          <p v-else-if="!loading && scopedArchives.length && !visibleArchives.length">
             没有找到匹配的归档。
           </p>
           <article
@@ -145,7 +203,26 @@ async function remove(archive: Archive): Promise<void> {
             <strong>{{ archive.name }}</strong>
             <p>{{ archive.template_name }} · {{ archive.version_name }}</p>
             <p>{{ new Date(archive.created_at).toLocaleString() }}</p>
+            <p v-if="sourceLoading">
+              正在核对来源…
+            </p>
+            <p v-else-if="!archive.source_version_id">
+              未记录来源文稿，归档独立保留。
+            </p>
+            <p v-else-if="!sources.has(archive.source_version_id)">
+              {{ sourceError ? '来源暂无法核对' : '来源文稿已不存在，归档独立保留。' }}
+            </p>
+            <p v-else>
+              当前来源：{{ sources.get(archive.source_version_id)?.name }}（归档仍是保存时的内容）
+            </p>
             <div class="row-actions">
+              <button
+                v-if="!sourceLoading && sources.has(archive.source_version_id)"
+                :disabled="busy"
+                @click="openSource(archive)"
+              >
+                打开来源文稿
+              </button>
               <button
                 :disabled="busy"
                 @click="selectArchive(archive.id)"
@@ -193,6 +270,7 @@ button, a { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6
 .archive-result :deep(.archive-preview) { max-height: calc(100dvh - 290px); }
 article.selected { border-color: var(--primary); } article strong { display: block; margin-bottom: 8px; }
 .row-actions { gap: 8px; font-size: 12px; } .error { color: var(--danger); }
+.source-filter { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px; margin-bottom: 12px; background: var(--primary-bg-subtle); border-radius: 6px; font-size: 13px; overflow-wrap: anywhere; }
 @media (max-width: 760px) { .archive-layout.has-preview { grid-template-columns: 1fr; } .archive-result, .archive-list { grid-area: auto; } .archive-result :deep(.archive-preview) { max-height: 46dvh; } .library-card { padding: 16px; } }
 @media (max-width: 600px) { .library-dialog.embedded { padding: 16px 12px; } }
 </style>

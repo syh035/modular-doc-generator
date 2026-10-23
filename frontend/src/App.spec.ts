@@ -86,6 +86,28 @@ it('模板页再次编辑当前稿直接返回现有编辑器，不重复转换�
   wrapper.unmount()
 })
 
+it('归档打开当前来源复用编辑器，来源预览失败留在归档页供重试', async () => {
+  const wrapper = shallowMount(App, { global: { plugins: [editingPinia()] } })
+  const app = useAppStore(), preview = usePreviewStore()
+  preview.currentTemplateId = 2; preview.currentVersionId = 23; preview.status = 'ready'
+  const select = vi.spyOn(preview, 'selectTemplate')
+  app.openArchives()
+  await wrapper.vm.$nextTick()
+  wrapper.getComponent({ name: 'LibraryDialog' }).vm.$emit('open-source', 2, 23)
+  await flushPromises()
+  expect(select).not.toHaveBeenCalled()
+  expect(app.activeTab).toBe('workbench')
+  app.openArchives()
+  await wrapper.vm.$nextTick()
+  select.mockImplementation(async () => { preview.status = 'error'; preview.error = '来源未能打开' })
+  wrapper.getComponent({ name: 'LibraryDialog' }).vm.$emit('open-source', 3, 30)
+  await flushPromises()
+  expect(select).toHaveBeenCalledWith(3, { versionId: 30 })
+  expect(app.activeTab).toBe('archives')
+  expect(wrapper.get('[role=alert]').text()).toBe('来源未能打开')
+  wrapper.unmount()
+})
+
 it('模板页打开失败显示错误并归还发起按钮焦点，允许原位重试', async () => {
   const wrapper = shallowMount(App, {
     attachTo: document.body,

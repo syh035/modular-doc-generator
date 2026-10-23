@@ -2,6 +2,7 @@ import { apiFetch } from './client'
 
 export interface Archive {
   id: number
+  source_version_id: number
   name: string
   version_name: string
   template_name: string

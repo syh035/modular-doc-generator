@@ -122,6 +122,12 @@ onBeforeUnmount(() => {
         </button>
         <slot :close="closeMenu" />
         <button
+          :disabled="disabled || busy"
+          @click="closeMenu(true); app.openDocumentArchives(document)"
+        >
+          此文稿的归档
+        </button>
+        <button
           class="danger"
           :disabled="disabled || busy || !canDelete"
           :title="canDelete ? undefined : '该模板至少保留一份文稿'"
