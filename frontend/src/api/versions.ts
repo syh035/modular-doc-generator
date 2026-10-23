@@ -68,9 +68,9 @@ export function versionPreviewUrl(versionId: number): string {
 /** 版本 overlay：区域 × 替换后 bbox × 绑定态（随渲染现算）。 */
 export interface PdfPageMetadata { pdf_sha256?: string; page_fingerprints?: string[] }
 export async function fetchVersionOverlay(versionId: number,
-  metadata?: (value: PdfPageMetadata) => void): Promise<OverlayRegion[]> {
+  metadata?: (value: PdfPageMetadata) => void, renderToken?: string): Promise<OverlayRegion[]> {
   const body = await apiFetch<PdfPageMetadata & { regions: OverlayRegion[] }>(
-    `/api/versions/${versionId}/overlay`,
+    `/api/versions/${versionId}/overlay${renderToken ? `?render_token=${encodeURIComponent(renderToken)}` : ''}`,
   )
   metadata?.(body)
   return body.regions
@@ -116,9 +116,9 @@ export function renameVersion(versionId: number, name: string): Promise<VersionI
   })
 }
 
-/** 删除版本（模板至少保留一个；绑定随级联删）。 */
-export function deleteVersion(versionId: number): Promise<void> {
-  return apiFetch<void>(`/api/versions/${versionId}`, { method: 'DELETE' })
+/** 删除文稿及绑定；默认保留末稿，显式允许空模板不删除模板、素材或归档。 */
+export function deleteVersion(versionId: number, allowEmptyTemplate = false): Promise<void> {
+  return apiFetch<void>(`/api/versions/${versionId}${allowEmptyTemplate ? '?allow_empty_template=true' : ''}`, { method: 'DELETE' })
 }
 
 /** 当前版本物理删除／恢复区域所属段落，原模板不变。 */

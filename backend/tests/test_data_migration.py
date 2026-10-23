@@ -44,6 +44,23 @@ def test_copy_preserves_source_and_accepts_initialized_empty_target(tmp_path: Pa
     assert run(source, target).returncode != 0
 
 
+def test_archive_only_destination_is_not_empty(tmp_path: Path) -> None:
+    source = source_library(tmp_path / "old")
+    target = tmp_path / "Data"
+    target.mkdir()
+    with sqlite3.connect(target / "app.db") as conn:
+        conn.execute("CREATE TABLE archives(id INTEGER,docx BLOB)")
+        conn.execute("INSERT INTO archives VALUES (1,?)", (b"frozen document",))
+    before = (target / "app.db").read_bytes()
+
+    result = run(source, target)
+
+    assert result.returncode != 0
+    assert "Destination already contains library data" in result.stderr
+    assert (target / "app.db").read_bytes() == before
+    assert not list(tmp_path.glob("Data-before-import-*"))
+
+
 @pytest.mark.parametrize("kind", ["missing", "fingerprint", "traversal", "occupied"])
 def test_invalid_migration_never_changes_destination(tmp_path: Path, kind: str) -> None:
     source = source_library(tmp_path / "old")

@@ -11,6 +11,8 @@ import type { DisplayRegion } from '../stores/preview'
 
 const props = defineProps<{
   region: DisplayRegion
+  busy?: boolean
+  error?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -23,7 +25,7 @@ const emit = defineEmits<{
 }>()
 
 const status = computed(() => props.region.review_status)
-useModalEsc(() => emit('close'))
+useModalEsc(() => { if (!props.busy) emit('close') })
 </script>
 
 <template>
@@ -31,11 +33,11 @@ useModalEsc(() => emit('close'))
   <dialog
     ref="modal"
     class="dialog-mask"
-    aria-label="区域校对"
+    aria-label="检查可编辑区域"
     aria-modal="true"
     tabindex="-1"
     data-testid="proofread-popover"
-    @click.self="emit('close')"
+    @click.self="!busy && emit('close')"
   >
     <div class="dialog-card">
       <div class="dialog-head">
@@ -43,6 +45,7 @@ useModalEsc(() => emit('close'))
         <button
           class="icon-btn"
           aria-label="关闭"
+          :disabled="busy"
           @click="emit('close')"
         >
           ×
@@ -55,45 +58,67 @@ useModalEsc(() => emit('close'))
           class="placeholder"
         >占位符 {{ region.placeholder }}</span>
       </p>
+      <p class="meta scope-hint">
+        只调整可编辑区域，Word 原文保留。
+      </p>
+      <p
+        v-if="error"
+        role="alert"
+        class="meta"
+      >
+        {{ error }}
+      </p>
+      <p
+        v-if="busy"
+        role="status"
+        class="meta"
+      >
+        正在保存校对结果…
+      </p>
       <div class="actions">
         <template v-if="status === 'pending'">
           <button
             class="primary"
+            :disabled="busy"
             data-testid="proofread-confirm"
             @click="emit('confirm')"
           >
-            确认
+            保留此区域
           </button>
           <button
             class="ghost"
+            :disabled="busy"
             data-testid="proofread-exclude"
             @click="emit('exclude')"
           >
-            排除
+            忽略此处
           </button>
         </template>
         <button
           v-else
           class="ghost"
+          :disabled="busy"
           data-testid="proofread-reopen"
           @click="emit('reopen')"
         >
-          重新校对
+          重新检查
         </button>
         <button
           v-if="status !== 'excluded'"
           class="ghost"
+          :disabled="busy"
           data-testid="proofread-adjust"
           @click="emit('adjust')"
         >
-          微调边界
+          调整范围
         </button>
         <button
           class="danger"
+          :disabled="busy"
           data-testid="proofread-remove"
           @click="emit('remove')"
         >
-          删除
+          删除区域
         </button>
       </div>
     </div>
@@ -153,6 +178,8 @@ useModalEsc(() => emit('close'))
 .meta strong {
   color: var(--text-1);
 }
+
+.scope-hint { padding-top: 0; color: var(--text-3); }
 
 .placeholder {
   margin-left: 8px;

@@ -17,14 +17,42 @@ def migrate(source: Path, destination: Path) -> None:
     if not database.is_file():
         raise ValueError("Source app.db missing")
     if destination.exists():
-        allowed = {"app.db", "app.db-wal", "app.db-shm", "templates", "exports", "render_cache", "lo_profile", "fontconfig"}
+        allowed = {
+            "app.db",
+            "app.db-wal",
+            "app.db-shm",
+            "templates",
+            "exports",
+            "render_cache",
+            "lo_profile",
+            "fontconfig",
+        }
         if any(p.name not in allowed for p in destination.iterdir()):
             raise ValueError("Destination contains unrecognized files")
         if (destination / "app.db").exists():
-            with sqlite3.connect(f"{(destination / 'app.db').as_uri()}?mode=ro", uri=True) as conn:
-                tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                for table in ("blocks", "tags", "templates", "versions", "regions"):
-                    if table in tables and conn.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]:
+            with sqlite3.connect(
+                f"{(destination / 'app.db').as_uri()}?mode=ro", uri=True
+            ) as conn:
+                tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                for table in (
+                    "blocks",
+                    "tags",
+                    "templates",
+                    "versions",
+                    "regions",
+                    "archives",
+                ):
+                    if (
+                        table in tables
+                        and conn.execute(f'SELECT count(*) FROM "{table}"').fetchone()[
+                            0
+                        ]
+                    ):
                         raise ValueError("Destination already contains library data")
         for name in ("templates", "exports"):
             if (destination / name).exists() and any((destination / name).iterdir()):

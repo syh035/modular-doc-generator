@@ -1,5 +1,5 @@
-import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DisplayRegion } from '../stores/preview'
 import RegionTextEditor from './RegionTextEditor.vue'
 const region: DisplayRegion = {
@@ -13,6 +13,7 @@ function editor(bound = false) {
     submitting: false, error: null } })
 }
 describe('版本文字编辑', () => {
+  afterEach(() => vi.unstubAllGlobals())
   it('显示已有文字，空白和未修改无法提交；默认只改当前版本', async () => {
     const w = editor()
     expect(w.get('textarea').element.value).toBe('原文字')
@@ -26,10 +27,13 @@ describe('版本文字编辑', () => {
     w.unmount()
   })
   it('同步共享块必须主动选择，并显示所有版本影响', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ versions: [{ id: 1, name: '投递版', template_name: '模板', region_count: 1 }], templates: [{ id: 1, filename: '模板' }] })))
     const w = editor(true)
     expect(w.get('input').element.checked).toBe(false)
     await w.get('input').setValue(true)
+    await flushPromises()
     expect(w.text()).toContain('所有引用该字符块的版本')
+    expect(w.text()).toContain('投递版')
     await w.get('textarea').setValue('共享新文字')
     await w.get('form').trigger('submit')
     expect(w.emitted('save')).toEqual([['共享新文字', true]])

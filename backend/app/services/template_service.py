@@ -235,7 +235,9 @@ def _validate(filename: str, data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def upload_template(filename: str, data: bytes) -> tuple[Template, list[Region], bool]:
+def upload_template(
+    filename: str, data: bytes, *, create_default_version: bool = True
+) -> tuple[Template, list[Region], bool]:
     """上传模板：校验 → 指纹关联 → 建档 → 落盘 → 候选解析 → 默认版本。
 
     返回 (模板, 区域列表, reused)。D10：同 sha256 内容重传 → 关联已有
@@ -290,7 +292,8 @@ def upload_template(filename: str, data: bytes) -> tuple[Template, list[Region],
             )
             # Q3 空集豁免：无任何候选区域 → 校对无事可做，直接 ready
             next_status = "ready" if not outcome.candidates else "pending_review"
-            versions_repo.create_version(conn, tpl.id, DEFAULT_VERSION_NAME)
+            if create_default_version:
+                versions_repo.create_version(conn, tpl.id, DEFAULT_VERSION_NAME)
             updated = templates_repo.update_template(
                 conn, tpl.id, status=next_status, storage_name=storage_name
             )

@@ -15,7 +15,7 @@ import type { PdfPageMetadata } from '../api/versions'
 import { clearHistoryBoundary } from '../api/historyHooks'
 import { useBlocksStore } from './blocks'
 import { computed, ref } from 'vue'
-import { CancelledError, RequestSequencer, fetchBlob } from '../api/client'
+import { ApiRequestError, CancelledError, RequestSequencer, fetchBlob } from '../api/client'
 import {
   deleteTemplate as deleteTemplateApi,
   fetchTemplate,
@@ -196,26 +196,42 @@ export const usePreviewStore = defineStore('preview', () => {
   }
 
   const sequencer = new RequestSequencer()
+  let viewRevision = 0
+  let versionListRequest = 0
+  let proofreadSwitch: { templateId: number; on: boolean; revision: number; promise: Promise<void> } | null = null
 
+  function regionContext(): () => boolean {
+    const templateId = currentTemplateId.value
+    const versionId = currentVersionId.value
+    const reviewing = proofreadMode.value
+    const revision = viewRevision
+    return () => revision === viewRevision && currentTemplateId.value === templateId
+      && currentVersionId.value === versionId && proofreadMode.value === reviewing
+  }
+
+  let templatesRequest = 0
   async function loadTemplates(): Promise<void> {
+    const request = ++templatesRequest
     try {
-      templates.value = await listTemplates()
-      templatesError.value = null
+      const result = await listTemplates()
+      if (request === templatesRequest) { templates.value = result; templatesError.value = null }
     } catch (err) {
-      templatesError.value = err instanceof Error ? err.message : String(err)
+      if (request === templatesRequest) templatesError.value = err instanceof Error ? err.message : String(err)
     }
   }
 
   /** 上传模板（顶栏「导入模板」）：成功后刷新列表并选中新模板（新模板进待校对流程）。 */
-  async function uploadTemplate(file: File): Promise<UploadResult> {
+  async function uploadTemplate(file: File, options: { templateOnly?: boolean } = {}): Promise<UploadResult> {
     if (uploadPhase.value !== 'idle') return { ok: false, error: '已有模板正在导入' }
     uploadPhase.value = 'request'
     uploadStartedAt.value = Date.now()
     try {
-      const { template, reused } = await uploadTemplateApi(file)
+      const { template, reused } = await uploadTemplateApi(file, !options.templateOnly)
       await loadTemplates()
-      uploadPhase.value = 'render'
-      await selectTemplate(template.id)
+      if (!options.templateOnly) {
+        uploadPhase.value = 'render'
+        await selectTemplate(template.id)
+      }
       return { ok: true, error: null, templateId: template.id, reused }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -227,19 +243,31 @@ export const usePreviewStore = defineStore('preview', () => {
 
   /** 拉取版本渲染产物（PDF + overlay），两段共用序号。 */
   async function _fetchVersionRender(seq: number, versionId: number): Promise<void> {
-    const blob = await fetchBlob(versionPreviewUrl(versionId))
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+    let token: string | undefined
+    const blob = await fetchBlob(versionPreviewUrl(versionId), response => {
+      token = response.headers.get('X-Render-Token') ?? undefined
+    })
     if (!sequencer.isCurrent(seq)) {
       throw new CancelledError()
     }
     const data = await blob.arrayBuffer()
     let metadata: PdfPageMetadata = {}
-    const overlay = await fetchVersionOverlay(versionId, value => { metadata = value })
+    const overlay = await fetchVersionOverlay(versionId, value => { metadata = value }, token)
     const hashes = await verifiedPageFingerprints(data, metadata)
     if (!sequencer.isCurrent(seq)) throw new CancelledError()
     // Publish one coherent PDF + geometry + fingerprint batch (P7/P21).
     pageFingerprints.value = hashes
     regions.value = overlay
     pdfData.value = data
+    return
+      } catch (err) {
+        if (!sequencer.isCurrent(seq)) throw new CancelledError()
+        if (attempt === 0 && err instanceof ApiRequestError && err.code === 'RENDER_BATCH_EXPIRED') continue
+        throw err
+      }
+    }
   }
 
   /** 无版本历史模板：模板预览 PDF + 详情区域（bbox 落库版，binding 恒 null）。 */
@@ -248,8 +276,7 @@ export const usePreviewStore = defineStore('preview', () => {
     if (!sequencer.isCurrent(seq)) {
       throw new CancelledError()
     }
-    pageFingerprints.value = []
-    pdfData.value = await blob.arrayBuffer()
+    const data = await blob.arrayBuffer()
     if (!sequencer.isCurrent(seq)) {
       throw new CancelledError()
     }
@@ -257,12 +284,15 @@ export const usePreviewStore = defineStore('preview', () => {
     if (!sequencer.isCurrent(seq)) {
       throw new CancelledError()
     }
+    pageFingerprints.value = []
     regions.value = detail.regions.map(r => ({ ...r, binding: null }))
+    pdfData.value = data
   }
 
   async function removeTemplate(id: number): Promise<ProofreadResult> {
     try {
       await deleteTemplateApi(id)
+      templatesRequest++
       templates.value = templates.value.filter(t => t.id !== id)
       if (currentTemplateId.value === id) {
         dismissExportWarnings()
@@ -274,10 +304,13 @@ export const usePreviewStore = defineStore('preview', () => {
     }
   }
 
-  async function selectTemplate(id: number | null): Promise<void> {
+  /** 指定 versionId 时直接打开该文稿，退出检查且不触发跨模板迁移。 */
+  async function selectTemplate(id: number | null, options: { versionId?: number } = {}): Promise<void> {
+    const seq = sequencer.next()
     exportWarnings.value = []
     exportError.value = null
     await clearHistoryBoundary()
+    if (!sequencer.isCurrent(seq)) return
     // M10 迁移触发：捕获切换前上下文（会话内、版本模式、active 绑定 ≥1 才有可迁移源）
     const prevTemplateId = currentTemplateId.value
     const prevVersionId = currentVersionId.value
@@ -287,7 +320,9 @@ export const usePreviewStore = defineStore('preview', () => {
       prevVersionId !== null && !proofreadMode.value
         ? regions.value.filter(r => r.binding?.status === 'active').length
         : 0
-    const seq = sequencer.next()
+    viewRevision++
+    versionListRequest++
+    refreshing.value = false
     currentTemplateId.value = id
     currentVersionId.value = null
     versions.value = []
@@ -295,6 +330,7 @@ export const usePreviewStore = defineStore('preview', () => {
     pdfData.value = null
     error.value = null
     _clearMigration()
+    if (options.versionId !== undefined) proofreadMode.value = false
     if (id === null) {
       status.value = 'idle'
       return
@@ -306,9 +342,13 @@ export const usePreviewStore = defineStore('preview', () => {
       if (!sequencer.isCurrent(seq)) {
         throw new CancelledError()
       }
-      const versionId = detail.default_version_id ?? null
+      const versionId = options.versionId ?? detail.default_version_id ?? null
       currentVersionId.value = versionId
-      await loadVersionList() // 版本下拉数据源；迁移触发判定依赖 binding_count，须先就绪
+      await loadVersionList(options.versionId !== undefined)
+      if (!sequencer.isCurrent(seq)) throw new CancelledError()
+      if (options.versionId !== undefined && !versions.value.some(version => version.id === options.versionId && version.template_id === id)) {
+        throw new Error('这份文稿已不存在或不属于此模板，请刷新文稿列表')
+      }
       if (proofreadMode.value || versionId === null) {
         // 校对模式：看模板本体（原始区域 + 落库 bbox），不看替换成品
         await _fetchTemplateRender(seq, id)
@@ -316,7 +356,7 @@ export const usePreviewStore = defineStore('preview', () => {
         await _fetchVersionRender(seq, versionId)
       }
       status.value = 'ready'
-      _maybeOfferMigration(
+      if (options.versionId === undefined) _maybeOfferMigration(
         prevTemplateId,
         prevVersionId,
         prevTemplateName,
@@ -324,7 +364,7 @@ export const usePreviewStore = defineStore('preview', () => {
         prevBindingCount,
       )
     } catch (err) {
-      if (err instanceof CancelledError) {
+      if (err instanceof CancelledError || !sequencer.isCurrent(seq)) {
         return // 过期响应静默丢弃（P7）
       }
       status.value = 'error'
@@ -433,45 +473,65 @@ export const usePreviewStore = defineStore('preview', () => {
    */
   async function toggleProofreadMode(on: boolean): Promise<void> {
     if (proofreadMode.value === on) {
+      const pending = proofreadSwitch
+      if (pending?.templateId === currentTemplateId.value && pending.on === on
+        && pending.revision === viewRevision) await pending.promise
       return
     }
+    // 加载分支已按当前模式取数，完成前不能仅翻旗标让产物与视图含义不一致。
+    if (status.value !== 'ready' && status.value !== 'idle') return
+    const previousMode = proofreadMode.value
+    const revision = ++viewRevision
     proofreadMode.value = on
     error.value = null
     const templateId = currentTemplateId.value
     if (templateId === null || status.value !== 'ready') {
-      return // idle/加载中：仅翻旗标，selectTemplate 按模式取数
+      return // 尚未开始加载：selectTemplate 随后按模式取数
     }
     const seq = sequencer.next()
     refreshing.value = true
+    const switching = (async () => {
+      try {
+        if (on || currentVersionId.value === null) {
+          await _fetchTemplateRender(seq, templateId)
+        } else {
+          await _fetchVersionRender(seq, currentVersionId.value)
+        }
+      } catch (err) {
+        if (err instanceof CancelledError || !sequencer.isCurrent(seq) || revision !== viewRevision
+          || currentTemplateId.value !== templateId) return
+        // 失败时仍展示上一批产物，模式也需恢复；修订号继续前进，旧写入不能复活。
+        viewRevision++
+        proofreadMode.value = previousMode
+        error.value = err instanceof Error ? err.message : String(err)
+      } finally {
+        if (sequencer.isCurrent(seq)) refreshing.value = false
+      }
+    })()
+    proofreadSwitch = { templateId, on, revision, promise: switching }
     try {
-      if (on || currentVersionId.value === null) {
-        await _fetchTemplateRender(seq, templateId)
-      } else {
-        await _fetchVersionRender(seq, currentVersionId.value)
-      }
-    } catch (err) {
-      if (err instanceof CancelledError) {
-        return
-      }
-      error.value = err instanceof Error ? err.message : String(err)
+      await switching
     } finally {
-      if (sequencer.isCurrent(seq)) {
-        refreshing.value = false
-      }
+      if (proofreadSwitch?.promise === switching) proofreadSwitch = null
     }
   }
 
   /** 版本下拉数据源（当前模板）。失败静默置空，不阻断预览。 */
-  async function loadVersionList(): Promise<void> {
+  async function loadVersionList(strict = false): Promise<void> {
+    const request = ++versionListRequest
     const templateId = currentTemplateId.value
     if (templateId === null) {
       versions.value = []
       return
     }
     try {
-      versions.value = await listVersions(templateId)
-    } catch {
-      versions.value = []
+      const result = await listVersions(templateId)
+      if (request === versionListRequest && currentTemplateId.value === templateId) versions.value = result
+    } catch (err) {
+      if (request === versionListRequest && currentTemplateId.value === templateId) {
+        if (strict) throw err
+        versions.value = []
+      }
     }
   }
 
@@ -482,6 +542,8 @@ export const usePreviewStore = defineStore('preview', () => {
     }
     await clearHistoryBoundary()
     const seq = sequencer.next()
+    viewRevision++
+    refreshing.value = false
     currentVersionId.value = id
     regions.value = []
     pdfData.value = null
@@ -491,7 +553,7 @@ export const usePreviewStore = defineStore('preview', () => {
       await _fetchVersionRender(seq, id)
       status.value = 'ready'
     } catch (err) {
-      if (err instanceof CancelledError) {
+      if (err instanceof CancelledError || !sequencer.isCurrent(seq)) {
         return
       }
       status.value = 'error'
@@ -567,13 +629,18 @@ export const usePreviewStore = defineStore('preview', () => {
   /** 绑定/解绑后的局部刷新：重拉版本渲染（P7 序号；refreshing 供 UI 指示）。 */
   async function refreshVersionRender(): Promise<void> {
     const versionId = currentVersionId.value
-    if (versionId === null || status.value !== 'ready') {
+    const templateId = currentTemplateId.value
+    if ((versionId === null && templateId === null) || status.value !== 'ready') {
       return
     }
     const seq = sequencer.next()
     refreshing.value = true
     try {
-      await _fetchVersionRender(seq, versionId)
+      if ((proofreadMode.value || versionId === null) && templateId !== null) {
+        await _fetchTemplateRender(seq, templateId)
+      } else if (versionId !== null) {
+        await _fetchVersionRender(seq, versionId)
+      }
       error.value = null // 刷新成功清除绑定期错误
     } catch (err) {
       if (err instanceof CancelledError) {
@@ -625,10 +692,11 @@ export const usePreviewStore = defineStore('preview', () => {
 
   /** 校对 PATCH 通用路径：成功同步本地 regions + 模板 ready 态（自动 ready 可能触发）。 */
   async function _patchRegion(regionId: number, patch: RegionPatchPayload): Promise<ProofreadResult> {
+    const isCurrent = regionContext()
     try {
       const updated = await updateRegionApi(regionId, patch)
       const idx = regions.value.findIndex(r => r.id === regionId)
-      if (idx >= 0) {
+      if (isCurrent() && idx >= 0) {
         regions.value[idx] = { ...regions.value[idx], ...updated }
       }
       void loadTemplates()
@@ -660,9 +728,10 @@ export const usePreviewStore = defineStore('preview', () => {
 
   /** 删除区域（后端级联删绑定）→ 本地移除。 */
   async function removeRegion(regionId: number): Promise<ProofreadResult> {
+    const isCurrent = regionContext()
     try {
       await deleteRegionApi(regionId)
-      regions.value = regions.value.filter(r => r.id !== regionId)
+      if (isCurrent()) regions.value = regions.value.filter(r => r.id !== regionId)
       void loadTemplates()
       return { ok: true, error: null }
     } catch (err) {
@@ -680,13 +749,16 @@ export const usePreviewStore = defineStore('preview', () => {
     if (templateId === null) {
       return { ok: false, error: '未选择模板，无法新建区域' }
     }
+    const isCurrent = regionContext()
     try {
       const region = await createRegionApi(templateId, { label, type, bbox: frame })
-      const previous = regions.value.find(r => r.id === region.id)
-      const updated = { ...region, binding: previous?.binding ?? null }
-      regions.value = previous
-        ? regions.value.map(r => r.id === region.id ? updated : r)
-        : [...regions.value, updated]
+      if (isCurrent()) {
+        const previous = regions.value.find(r => r.id === region.id)
+        const updated = { ...region, binding: previous?.binding ?? null }
+        regions.value = previous
+          ? regions.value.map(r => r.id === region.id ? updated : r)
+          : [...regions.value, updated]
+      }
       void loadTemplates()
       return { ok: true, error: null }
     } catch (err) {

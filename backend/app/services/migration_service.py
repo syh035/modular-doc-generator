@@ -16,6 +16,7 @@
 - excluded 目标区域不可作候选也不可自动匹配（与绑定规则 REGION_EXCLUDED 同口径）
 """
 
+import json
 import sqlite3
 
 from app.core.errors import (
@@ -45,7 +46,13 @@ def _default_version_or_none(conn: sqlite3.Connection, template_id: int) -> Vers
     return versions[0] if versions else None
 
 
-def _guard_pair(conn: sqlite3.Connection, source_version_id: int, target_template_id: int) -> tuple:
+def _guard_pair(
+    conn: sqlite3.Connection,
+    source_version_id: int,
+    target_template_id: int,
+    *,
+    new_document: bool = False,
+) -> tuple:
     """公共前置校验：源版本存在、目标模板存在、不同模板；返回 (源版本, 目标默认版本)。"""
     source = versions_repo.get_version(conn, source_version_id)
     if source is None:
@@ -62,6 +69,8 @@ def _guard_pair(conn: sqlite3.Connection, source_version_id: int, target_templat
             "源版本与目标模板属于同一模板，无需迁移",
             status_code=400,
         )
+    if new_document:
+        return source, None
     target_version = _default_version_or_none(conn, target_template_id)
     if target_version is None:
         raise AppError(
@@ -141,10 +150,16 @@ def _layout_fields(item: dict[str, object]) -> dict[str, object]:
 
 
 def build_plan(
-    conn: sqlite3.Connection, source_version_id: int, target_template_id: int
+    conn: sqlite3.Connection,
+    source_version_id: int,
+    target_template_id: int,
+    *,
+    new_document: bool = False,
 ) -> dict[str, object]:
     """计算迁移方案（纯计算不落库）：三清单 + 目标版本信息。"""
-    source, target_version = _guard_pair(conn, source_version_id, target_template_id)
+    source, target_version = _guard_pair(
+        conn, source_version_id, target_template_id, new_document=new_document
+    )
 
     auto: list[dict[str, object]] = []
     candidates: list[dict[str, object]] = []
@@ -157,7 +172,7 @@ def build_plan(
 
     # 源绑定按类型分组（dict 保序：按文档流首次出现序）
     groups: dict[str, list[dict[str, object]]] = {}
-    for it in _source_items(conn, source.id):
+    for it in new_source_items(conn, source.id) if new_document else _source_items(conn, source.id):
         groups.setdefault(str(it["type"]), []).append(it)
 
     for type_key, items in groups.items():
@@ -255,11 +270,32 @@ def build_plan(
         "source_version_name": source.name,
         "source_template_id": source.template_id,
         "target_template_id": target_template_id,
-        "target_version_id": target_version.id,
+        "target_version_id": target_version.id if target_version else None,
         "auto": auto,
         "candidates": candidates,
         "unmatched": unmatched,
     }
+
+
+def new_source_items(conn: sqlite3.Connection, source_version_id: int) -> list[dict[str, object]]:
+    """新稿只带入实际可见且存活的填写内容；文字供后续可视放置使用。"""
+    tid = _template_of_version(conn, source_version_id)
+    regions = regions_repo.list_regions(conn, tid)
+    removed = {
+        int(row[0])
+        for row in conn.execute(
+            "SELECT region_id FROM version_region_actions WHERE version_id = ?",
+            (source_version_id,),
+        )
+    }
+    removed_paths = {tuple(json.loads(r.anchor)["path"]) for r in regions if r.id in removed}
+    visible = {r.id for r in regions if tuple(json.loads(r.anchor)["path"]) not in removed_paths}
+    result: list[dict[str, object]] = []
+    for item in _source_items(conn, source_version_id):
+        block = blocks_repo.get_block(conn, int(str(item["block_id"])))
+        if item["source_region_id"] in visible and block is not None:
+            result.append({**item, "content": block.content, "kind": block.kind})
+    return result
 
 
 def apply_migration(

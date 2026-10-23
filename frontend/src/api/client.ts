@@ -57,7 +57,7 @@ async function rawApiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /** 获取二进制响应（如预览 PDF）；错误结构与 apiFetch 同源。 */
-export async function fetchBlob(path: string): Promise<Blob> {
+export async function fetchBlob(path: string, onResponse?: (response: Response) => void): Promise<Blob> {
   let resp: Response
   try {
     resp = await fetch(path)
@@ -78,6 +78,7 @@ export async function fetchBlob(path: string): Promise<Blob> {
     }
     throw new ApiRequestError(code, message)
   }
+  onResponse?.(resp)
   return resp.blob()
 }
 

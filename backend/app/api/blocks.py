@@ -22,6 +22,7 @@ from app.core.errors import (
 )
 from app.models.db import get_conn
 from app.models.entities import Block, Tag
+from app.models.repositories import bindings as bindings_repo
 from app.models.repositories import blocks as blocks_repo
 from app.models.repositories import tags as tags_repo
 from app.models.repositories import templates as templates_repo
@@ -180,6 +181,72 @@ def get_block(block_id: int) -> dict[str, object]:
     if body is None:
         raise AppError(BLOCK_NOT_FOUND, f"字符块不存在或已删除（id={block_id}）", status_code=404)
     return body
+
+
+@router.get("/blocks/{block_id}/usage")
+def block_usage(block_id: int) -> dict[str, object]:
+    with get_conn() as conn:
+        if blocks_repo.get_block(conn, block_id) is None:
+            raise AppError(BLOCK_NOT_FOUND, "字符块不存在或已删除", 404)
+        versions = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT v.id,v.name,t.filename AS template_name,COUNT(*) AS region_count "
+                "FROM bindings b JOIN versions v ON v.id=b.version_id "
+                "JOIN templates t ON t.id=v.template_id "
+                "WHERE b.block_id=? AND b.status='active' GROUP BY v.id ORDER BY v.id",
+                (block_id,),
+            )
+        ]
+        templates = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT t.id,t.filename FROM template_blocks tb "
+                "JOIN templates t ON t.id=tb.template_id "
+                "WHERE tb.block_id=? ORDER BY t.id",
+                (block_id,),
+            )
+        ]
+    return {"versions": versions, "templates": templates}
+
+
+@router.post("/blocks/{block_id}/versions/{version_id}/copy", status_code=201)
+def edit_version_copy(block_id: int, version_id: int, payload: BlockUpdate) -> dict[str, object]:
+    """Copy one shared asset and atomically rebind only the chosen version's references."""
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        block = blocks_repo.get_block(conn, block_id)
+        if block is None:
+            raise AppError(BLOCK_NOT_FOUND, "字符块不存在或已删除", 404)
+        bindings = [
+            b
+            for b in bindings_repo.list_bindings(conn, version_id)
+            if b.block_id == block_id and b.status == "active"
+        ]
+        if not bindings:
+            raise AppError("BLOCK_NOT_BOUND", "当前版本未使用此块，请重新选择编辑范围", 409)
+        name, content = _validate(
+            payload.name if payload.name is not None else block.name,
+            payload.content if payload.content is not None else block.content,
+            payload.kind or block.kind,
+        )
+        created = blocks_repo.create_block(conn, name, content, kind=payload.kind or block.kind)
+        tag_names = (
+            payload.tags
+            if payload.tags is not None
+            else [tag.name for tag in tags_repo.tags_of_block(conn, block_id)]
+        )
+        tags = _replace_tags(conn, created.id, _validate_tags(tag_names))
+        for binding in bindings:
+            bindings_repo.upsert_binding(
+                conn,
+                version_id,
+                binding.region_id,
+                created.id,
+                line_break_mode=binding.line_break_mode,
+                position=binding.position,
+            )
+    return _block_dict(created, tags)
 
 
 @router.put("/blocks/{block_id}")

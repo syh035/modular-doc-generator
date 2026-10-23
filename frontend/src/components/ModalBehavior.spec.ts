@@ -1,5 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { defineComponent } from 'vue'
+import { useModalEsc } from '../composables/useModalEsc'
 import type { DisplayRegion } from '../stores/preview'
 import BindingDialog from './BindingDialog.vue'
 import ExportDialog from './ExportDialog.vue'
@@ -19,6 +21,16 @@ const migrationProps = {
   sourceBindingCount: 1, targetTemplateName: '新模板', plan: null,
   error: null, submitting: false,
 }
+const menuFixture = defineComponent({
+  props: { hideActions: Boolean },
+  setup() { useModalEsc(() => {}) },
+  template: `<dialog ref="modal"><button class="first">新建</button>
+    <div class="card" tabindex="0">内容块</div>
+    <details><summary>管理内容块</summary>
+      <button :style="hideActions ? { display: 'none' } : undefined">编辑</button>
+      <button :style="hideActions ? { display: 'none' } : undefined">删除</button>
+    </details></dialog>`,
+})
 let opener: HTMLButtonElement
 const cleanup: (() => void)[] = []
 
@@ -107,6 +119,39 @@ describe('M12 弹层键盘与焦点', () => {
     } })
     await flushPromises()
     expect(wrapper.element.contains(document.activeElement)).toBe(true)
+  })
+
+  it('最后卡片后的菜单入口仍可继续 Tab，并作为模态循环边界', () => {
+    const wrapper = mount(menuFixture, { props: { hideActions: true }, attachTo: document.body })
+    cleanup.push(() => wrapper.unmount())
+    const first = wrapper.get('.first').element as HTMLButtonElement
+    const card = wrapper.get('.card').element as HTMLElement
+    const summary = wrapper.get('summary').element as HTMLElement
+    card.focus()
+    expect(key('Tab').defaultPrevented).toBe(false)
+    summary.focus()
+    expect(key('Tab').defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(first)
+    expect(key('Tab', true).defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(summary)
+  })
+
+  it('关闭的 details 动作不进入循环，展开后才纳入焦点边界', () => {
+    const wrapper = mount(menuFixture, { attachTo: document.body })
+    cleanup.push(() => wrapper.unmount())
+    const first = wrapper.get('.first').element as HTMLButtonElement
+    const summary = wrapper.get('summary').element as HTMLElement
+    const details = wrapper.get('details').element as HTMLDetailsElement
+    expect(key('Tab', true).defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(summary)
+    details.open = true
+    first.focus()
+    expect(key('Tab', true).defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(wrapper.findAll('button').at(-1)!.element)
+    details.open = false
+    first.focus()
+    key('Tab', true)
+    expect(document.activeElement).toBe(summary)
   })
 
   it('叠加弹层只关闭最上层，关闭后回到前一层；IME Escape 不关闭', () => {

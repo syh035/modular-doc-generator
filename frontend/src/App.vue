@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAppStore } from './stores/app'
 import { useHistoryStore } from './stores/history'
 import { usePreviewStore } from './stores/preview'
@@ -14,9 +14,19 @@ import GuidePage from './components/GuidePage.vue'
 import StatusBar from './components/StatusBar.vue'
 import TemplatePreview from './components/TemplatePreview.vue'
 import TopBar from './components/TopBar.vue'
+import ArchiveDialog from './components/ArchiveDialog.vue'
+import DocumentList from './components/DocumentList.vue'
+import { useDocumentsStore } from './stores/documents'
+import TemplateManager from './components/TemplateManager.vue'
+import LibraryDialog from './components/LibraryDialog.vue'
 
 const previewRef = ref<InstanceType<typeof TemplatePreview> | null>(null)
 const topBarRef = ref<InstanceType<typeof TopBar> | null>(null)
+const archiveOpen = ref(false)
+function archived(archiveId: number): void {
+  archiveOpen.value = false
+  topBarRef.value?.openArchives(archiveId)
+}
 const narrow = ref(false)
 const narrowQuery = window.matchMedia('(max-width: 900px)')
 function updateNarrow(): void { narrow.value = narrowQuery.matches }
@@ -27,6 +37,47 @@ const appStore = useAppStore()
 const blocksStore = useBlocksStore()
 const history = useHistoryStore()
 const preview = usePreviewStore()
+const documents = useDocumentsStore()
+const openingDocument = ref(false)
+const navigationError = ref<string | null>(null)
+let navigationRequest = 0
+watch(() => appStore.activeTab, () => { navigationRequest++; openingDocument.value = false; navigationError.value = null }, { flush: 'sync' })
+async function openManagedDocument(templateId: number, versionId: number | null): Promise<void> {
+  if (versionId === null) { appStore.openTemplateDocuments(templateId); return }
+  if (openingDocument.value) return
+  const request = ++navigationRequest
+  const sourcePage = appStore.activeTab
+  const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  openingDocument.value = true
+  navigationError.value = null
+  try {
+    preview.dismissMigration()
+    if (preview.currentTemplateId !== templateId || preview.currentVersionId !== versionId
+      || preview.proofreadMode || preview.status !== 'ready') await preview.selectTemplate(templateId, { versionId })
+    if (request !== navigationRequest || sourcePage !== appStore.activeTab) return
+    if (preview.status === 'ready' && preview.currentTemplateId === templateId && preview.currentVersionId === versionId) {
+      appStore.setTab('workbench')
+      if (sourcePage === 'archives') {
+        await nextTick()
+        document.querySelector<HTMLElement>('[data-testid="current-document-name"]')?.focus({ preventScroll: true })
+      }
+    }
+    else navigationError.value = preview.error ?? '文稿未能打开，请重试'
+  } catch (err) {
+    if (request === navigationRequest && sourcePage === appStore.activeTab) navigationError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    if (request === navigationRequest) {
+      openingDocument.value = false
+      if (navigationError.value) {
+        await nextTick()
+        if (request === navigationRequest && sourcePage === appStore.activeTab && opener?.isConnected) opener.focus({ preventScroll: true })
+      }
+    }
+  }
+}
+// 返回列表或指南时保留编辑器；再次打开当前稿不丢失尚未提交的编辑文字。
+const workbenchMounted = ref(false)
+watch(() => appStore.activeTab, tab => { if (tab === 'workbench') workbenchMounted.value = true }, { immediate: true })
 watch([() => preview.currentTemplateId, () => preview.regions, () => preview.versions],
   () => { void blocksStore.loadTemplateBlocks(preview.currentTemplateId) }, { immediate: true })
 function onHistoryKey(event: KeyboardEvent): void {
@@ -39,6 +90,7 @@ function onHistoryKey(event: KeyboardEvent): void {
     void history.move(event.shiftKey, async () => {
       await Promise.all([blocksStore.loadBlocks(), blocksStore.loadTags()])
       await preview.reloadAfterHistory()
+      if (appStore.activeTab === 'documents') await documents.load()
     })
   }
 }
@@ -100,8 +152,52 @@ onBeforeUnmount(stopResize)
   <div class="app-shell">
     <TopBar ref="topBarRef" />
     <GuidePage v-if="appStore.activeTab === 'guide'" />
+    <DocumentList
+      v-if="appStore.activeTab === 'documents'"
+      @import="topBarRef?.pickFile()"
+    />
+    <p
+      v-if="openingDocument"
+      role="status"
+      class="navigation-message"
+    >
+      正在打开文稿…
+    </p>
+    <p
+      v-if="navigationError"
+      role="alert"
+      class="navigation-message error"
+    >
+      {{ navigationError }}
+    </p>
+    <TemplateManager
+      v-if="appStore.activeTab === 'templates'"
+      embedded
+      :initial-template-id="appStore.browsedTemplateId"
+      :inert="openingDocument || undefined"
+      @import="topBarRef?.pickFile()"
+      @use="openManagedDocument"
+      @documents="appStore.openTemplateDocuments"
+    />
+    <main
+      v-if="appStore.activeTab === 'materials'"
+      class="materials-page"
+      aria-label="素材库"
+    >
+      <BlockLibrary standalone />
+    </main>
+    <LibraryDialog
+      v-if="appStore.activeTab === 'archives'"
+      embedded
+      :initial-archive-id="appStore.archiveId"
+      :source-document="appStore.archiveSource"
+      :inert="openingDocument || undefined"
+      @all="appStore.openArchives()"
+      @open-source="openManagedDocument"
+    />
     <div
-      v-else
+      v-if="workbenchMounted"
+      v-show="appStore.activeTab === 'workbench'"
       class="main-columns"
     >
       <BlockLibrary
@@ -109,7 +205,7 @@ onBeforeUnmount(stopResize)
         v-show="blocksStore.libraryOpen"
       />
       <BlockDrawer
-        v-if="narrow && blocksStore.libraryOpen"
+        v-if="narrow && blocksStore.libraryOpen && appStore.activeTab === 'workbench'"
         @close="blocksStore.toggleLibrary()"
       />
       <!-- UI 质量调整②批：分割线拖拽热区（骑缝覆盖分割线，hover 高亮） -->
@@ -130,9 +226,15 @@ onBeforeUnmount(stopResize)
       <TemplatePreview
         ref="previewRef"
         @import="topBarRef?.pickFile()"
+        @archive="archiveOpen = true"
       />
     </div>
     <StatusBar @locate="previewRef?.jumpToRegion($event)" />
+    <ArchiveDialog
+      v-if="archiveOpen"
+      @close="archiveOpen = false"
+      @saved="archived"
+    />
   </div>
 </template>
 
@@ -148,6 +250,10 @@ onBeforeUnmount(stopResize)
   display: flex;
   min-height: 0;
 }
+.materials-page { flex: 1; min-height: 0; padding: 24px; display: flex; width: min(1150px, 100%); margin: 0 auto; }
+.navigation-message { padding: 10px 24px; color: var(--text-2); background: var(--bg-surface); }
+.navigation-message.error { color: var(--danger); }
+@media (max-width: 600px) { .materials-page { padding: 16px 12px; } }
 
 .drawer-resizer {
   width: 12px;

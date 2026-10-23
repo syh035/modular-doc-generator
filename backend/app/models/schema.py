@@ -11,6 +11,27 @@
 """
 
 DDL_STATEMENTS: tuple[str, ...] = (
+    # Operational receipts survive undo/deletion to prevent retries creating a second document.
+    """CREATE TABLE IF NOT EXISTS migration_receipts (
+        idempotency_key TEXT PRIMARY KEY,
+        request_sha256 TEXT NOT NULL,
+        response_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )""",
+    # Frozen artifacts deliberately have no source foreign keys: source deletion is harmless.
+    """CREATE TABLE IF NOT EXISTS archives (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        source_version_id INTEGER NOT NULL,
+        version_name TEXT NOT NULL,
+        template_name TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        docx BLOB NOT NULL,
+        pdf BLOB NOT NULL,
+        docx_sha256 TEXT NOT NULL,
+        pdf_sha256 TEXT NOT NULL,
+        source_json TEXT NOT NULL
+    )""",
     """CREATE TABLE IF NOT EXISTS version_region_actions (
         version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
         region_id INTEGER NOT NULL REFERENCES regions(id) ON DELETE CASCADE,

@@ -59,9 +59,10 @@ export interface UploadTemplateResult {
 }
 
 /** 上传 DOCX 模板（multipart，字段名 file）。同步解析完成（D12）。 */
-export async function uploadTemplate(file: File): Promise<UploadTemplateResult> {
+export async function uploadTemplate(file: File, createDefaultVersion = true): Promise<UploadTemplateResult> {
   const form = new FormData()
   form.append('file', file, file.name)
+  form.append('create_default_version', String(createDefaultVersion))
   const body = await apiFetch<TemplateDetail & { reused: boolean }>('/api/templates', {
     method: 'POST',
     body: form,

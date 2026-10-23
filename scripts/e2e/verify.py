@@ -52,10 +52,10 @@ def _assert_text(text: str, expects: list[str], absents: list[str]) -> list[str]
 
 
 def cmd_preview(args: argparse.Namespace) -> dict:
-    from app.services.pdf_geometry import extract_pdf_lines  # noqa: E402
+    from app.services.pdf_geometry import extract_pdf_lines
 
     detail = httpx.get(f"{BASE}/api/templates/{args.template_id}", timeout=30).json()
-    version_id = detail.get("default_version_id")
+    version_id = args.version_id if args.version_id is not None else detail.get("default_version_id")
     if version_id is None:
         raise SystemExit(json.dumps({"ok": False, "error": "模板无默认版本"}, ensure_ascii=False))
     resp = httpx.get(f"{BASE}/api/versions/{version_id}/preview", timeout=180)
@@ -102,6 +102,7 @@ def main() -> None:
 
     p_preview = sub.add_parser("preview", help="校验版本预览 PDF 文本")
     p_preview.add_argument("--template-id", type=int, required=True)
+    p_preview.add_argument("--version-id", type=int, help="指定新稿，省略时仍检查默认稿")
     _add_text_args(p_preview)
 
     p_export = sub.add_parser("export-file", help="校验导出 DOCX 文件")

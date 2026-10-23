@@ -73,8 +73,14 @@ describe('VersionDialog（M8）', () => {
     expect(err.text()).toBe('同模板下已存在同名版本「投递A岗」')
   })
 
-  it('submitting：提交按钮禁用', () => {
+  it('submitting：提交、关闭和取消都禁用，程序化重复提交也不发出事件', async () => {
     const wrapper = mountDialog({ submitting: true })
     expect((wrapper.find('.primary').element as HTMLButtonElement).disabled).toBe(true)
+    expect(wrapper.get('[aria-label=关闭]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('.ghost').attributes('disabled')).toBeDefined()
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('dialog').trigger('click')
+    expect(wrapper.emitted('submit')).toBeUndefined()
+    expect(wrapper.emitted('close')).toBeUndefined()
   })
 })
