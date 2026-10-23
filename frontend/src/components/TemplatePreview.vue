@@ -18,6 +18,9 @@ import BindingDialog from './BindingDialog.vue'
 import RegionTextEditor from './RegionTextEditor.vue'
 import ExportDialog from './ExportDialog.vue'
 import MigrationDialog from './MigrationDialog.vue'
+import NewDocumentDialog from './NewDocumentDialog.vue'
+import type { CreatedDocument } from '../api/migrations'
+import { useDocumentsStore } from '../stores/documents'
 import ProofreadPopover from './ProofreadPopover.vue'
 import RegionNameDialog from './RegionNameDialog.vue'
 import DocumentActions from './DocumentActions.vue'
@@ -372,15 +375,6 @@ function jumpToRegion(region: DisplayRegion): void {
   }, 1800)
 }
 
-/** 模板下拉（UI 调整③：从顶栏挪到本工具条，idle 态也要可选）。 */
-function onTemplateChange(event: Event): void {
-  const select = event.target as HTMLSelectElement
-  const value = select.value
-  const menu = select.closest('details')
-  if (menu) { menu.open = false; menu.querySelector('summary')?.focus() }
-  void store.selectTemplate(value === '' ? null : Number(value))
-}
-
 // ---- 版本管理（M8）：下拉切换 + 新建/重命名/删除 ----
 
 /** 当前版本名用于工具条上下文。 */
@@ -388,6 +382,25 @@ const currentVersionName = computed(
   () => store.versions.find(v => v.id === store.currentVersionId)?.name ?? '',
 )
 const currentDocument = computed(() => store.versions.find(version => version.id === store.currentVersionId))
+const newDocumentSource = ref<VersionInfo | null>(null)
+const documents = useDocumentsStore()
+async function openMigratedDocument(result: CreatedDocument): Promise<void> {
+  await documents.loadGroup(result.template_id)
+  await store.selectTemplate(result.template_id, { versionId: result.version_id })
+  const document = store.versions.find(item => item.id === result.version_id)
+  if (document) documents.acceptDocument(document)
+  if (store.status !== 'ready' || store.currentVersionId !== result.version_id) {
+    throw new Error(store.error ?? '预览尚未就绪')
+  }
+}
+async function closeNewDocument(result: CreatedDocument | null): Promise<void> {
+  newDocumentSource.value = null
+  if (result) {
+    if (store.status !== 'ready') app.setTab('documents')
+    await nextTick()
+    document.querySelector<HTMLElement>('[data-testid="current-document-name"]')?.focus({ preventScroll: true })
+  }
+}
 const documentState = computed(() => {
   if (store.status === 'loading') return '正在打开文稿…'
   if (store.error) return '预览未更新'
@@ -1037,7 +1050,10 @@ defineExpose({ jumpToRegion })
           块库
         </button>
         <div class="document-context">
-          <h1 data-testid="current-document-name">
+          <h1
+            data-testid="current-document-name"
+            tabindex="-1"
+          >
             {{ currentVersionName || (store.currentVersionId === null ? '模板原文' : '文稿') }}
           </h1>
           <div class="context-meta">
@@ -1063,21 +1079,14 @@ defineExpose({ jumpToRegion })
           :disabled="store.proofreadMode || store.exportBusy || regionWriteBusy || store.refreshing || store.status !== 'ready'"
           @open="openCopiedDocument"
         >
-          <label class="template-change">更换模板
-            <select
-              class="template-select"
-              aria-label="更换模板"
-              :value="store.currentTemplateId ?? ''"
+          <template #default="{ close }">
+            <button
               :disabled="store.proofreadMode || store.refreshing || regionWriteBusy || store.status !== 'ready'"
-              @change="onTemplateChange"
+              @click="close(true); newDocumentSource = currentDocument ?? null"
             >
-              <option
-                v-for="template in store.templates"
-                :key="template.id"
-                :value="template.id"
-              >{{ template.filename }}</option>
-            </select>
-          </label>
+              更换模板
+            </button>
+          </template>
         </DocumentActions>
         <template v-if="store.currentVersionId !== null">
           <button
@@ -1507,6 +1516,13 @@ defineExpose({ jumpToRegion })
         />
       </template>
     </div>
+    <NewDocumentDialog
+      v-if="newDocumentSource"
+      :source="newDocumentSource"
+      :templates="store.templates"
+      :open-document="openMigratedDocument"
+      @close="closeNewDocument"
+    />
   </section>
 </template>
 

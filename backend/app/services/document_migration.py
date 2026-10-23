@@ -13,8 +13,9 @@ from app.core.errors import (
     AppError,
 )
 from app.models.db import utcnow
-from app.models.repositories import bindings, regions, versions
-from app.services import migration_service, version_service
+from app.models.entities import Binding
+from app.models.repositories import bindings, blocks, regions, templates, versions
+from app.services import migration_service, render_service, version_service
 
 
 def _hash(value: object) -> str:
@@ -68,6 +69,87 @@ def _invalid(message: str) -> None:
     raise AppError(MIGRATION_INVALID, message, status_code=400)
 
 
+def checked_plan(
+    conn: sqlite3.Connection, source_id: int, target_id: int, plan_token: str
+) -> dict[str, Any]:
+    plan = build_plan(conn, source_id, target_id)
+    if not plan_token or plan["plan_token"] != plan_token:
+        raise AppError(
+            MIGRATION_PLAN_STALE, "原稿文字或模板已变化，请重新查看套用效果", status_code=409
+        )
+    return plan
+
+
+def validate_decisions(
+    conn: sqlite3.Connection,
+    target_id: int,
+    plan: dict[str, Any],
+    placements: list[tuple[int, int]],
+    omitted: list[int],
+    *,
+    complete: bool = True,
+) -> dict[int, Any]:
+    source = {int(item["source_region_id"]): item for item in plan["source_items"]}
+    target = {r.id for r in regions.list_regions(conn, target_id) if r.review_status != "excluded"}
+    placed_sources = [s for s, _ in placements]
+    placed_targets = [t for _, t in placements]
+    if len(set(placed_sources)) != len(placed_sources) or len(set(placed_targets)) != len(
+        placed_targets
+    ):
+        _invalid("每段文字只能放置一次，每个位置也只能使用一次")
+    if len(set(omitted)) != len(omitted) or set(placed_sources) & set(omitted):
+        _invalid("同一段文字不能同时放置和不带入")
+    decided = set(placed_sources) | set(omitted)
+    if not decided <= set(source) or (complete and decided != set(source)):
+        _invalid("请为每段文字选择位置，或明确选择本次不带入")
+    if not set(placed_targets) <= target:
+        _invalid("所选位置已不存在、已排除或不属于新模板")
+    return source
+
+
+def preview_document(
+    conn: sqlite3.Connection,
+    source_id: int,
+    target_id: int,
+    *,
+    plan_token: str,
+    placements: list[tuple[int, int]],
+    omitted: list[int],
+) -> render_service.VersionRender:
+    plan = checked_plan(conn, source_id, target_id, plan_token)
+    source = validate_decisions(conn, target_id, plan, placements, omitted, complete=False)
+    tpl = templates.get_template(conn, target_id)
+    assert tpl is not None  # checked_plan 已校验
+    trial_bindings = [
+        Binding(
+            id=0,
+            version_id=0,
+            region_id=target,
+            block_id=int(source[s]["block_id"]),
+            status="active",
+            created_at="",
+            updated_at="",
+            line_break_mode=str(source[s]["line_break_mode"]),
+            position=str(source[s]["position"]),
+        )
+        for s, target in placements
+    ]
+    trial_blocks = {}
+    for binding in trial_bindings:
+        block = blocks.get_block(conn, binding.block_id)
+        assert block is not None
+        trial_blocks[block.id] = block
+    return render_service.render_document(
+        tpl,
+        regions.list_regions(conn, target_id),
+        trial_bindings,
+        trial_blocks,
+        set(),
+        identity="migration",
+        transient=True,
+    )
+
+
 def apply_new_document(
     conn: sqlite3.Connection,
     source_id: int,
@@ -113,25 +195,8 @@ def apply_new_document(
                 VERSION_NOT_FOUND, "此前生成的文稿已删除，重试不会再次创建", status_code=410
             )
         return dict(result)
-    plan = build_plan(conn, source_id, target_id)
-    if plan["plan_token"] != plan_token:
-        raise AppError(
-            MIGRATION_PLAN_STALE, "原稿文字或模板已变化，请重新查看套用效果", status_code=409
-        )
-    source = {int(item["source_region_id"]): item for item in plan["source_items"]}
-    target = {r.id for r in regions.list_regions(conn, target_id) if r.review_status != "excluded"}
-    placed_sources = [s for s, _ in placements]
-    placed_targets = [t for _, t in placements]
-    if len(set(placed_sources)) != len(placed_sources) or len(set(placed_targets)) != len(
-        placed_targets
-    ):
-        _invalid("每段文字只能放置一次，每个位置也只能使用一次")
-    if len(set(omitted)) != len(omitted) or set(placed_sources) & set(omitted):
-        _invalid("同一段文字不能同时放置和不带入")
-    if set(placed_sources) | set(omitted) != set(source):
-        _invalid("请为每段文字选择位置，或明确选择本次不带入")
-    if not set(placed_targets) <= target:
-        _invalid("所选位置已不存在、已排除或不属于新模板")
+    plan = checked_plan(conn, source_id, target_id, plan_token)
+    source = validate_decisions(conn, target_id, plan, placements, omitted)
     document = version_service.create_version(conn, target_id, name)
     for source_region_id, target_region_id in placements:
         item = source[source_region_id]

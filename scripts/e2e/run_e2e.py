@@ -163,8 +163,12 @@ def seed(scenario: int) -> list[dict]:
     return json.loads(out.strip().splitlines()[-1])["templates"]
 
 
-def verify_preview(template_id: int, expect: list[str], absent: list[str]) -> dict:
+def verify_preview(
+    template_id: int, expect: list[str], absent: list[str], version_id: int | None = None
+) -> dict:
     args = ["preview", "--template-id", str(template_id)]
+    if version_id is not None:
+        args += ["--version-id", str(version_id)]
     args += _text_args(expect, absent)
     return json.loads(_run_venv(VERIFY, *args).strip().splitlines()[-1])
 
@@ -412,7 +416,7 @@ def scenario_2(browser) -> list[str]:
 
 
 def scenario_3(browser) -> list[str]:
-    """模板换装：源版本绑定 → 切 ready 新模板 → 迁移确认 → 绑定零重录。"""
+    """模板换装：原稿保留 → 只读套用预览 → 明确生成新稿 → 验证指定新稿。"""
     errors: list[str] = []
     context, page = new_page(browser, errors)
     try:
@@ -434,26 +438,34 @@ def scenario_3(browser) -> list[str]:
         create_block(page, "工作块S", work_content)
         bind_selected_block(page, "工作经历", bound_count=2)
 
-        # 切目标模板 → 迁移弹层（prompt）→ 方案（自动匹配 2）→ 确认
+        # 选择模板只做试排，不切走或覆盖原稿。
         page.locator('.template-preview .document-actions summary').click()
-        page.get_by_role("combobox", name="更换模板", exact=True).select_option(value=str(target_id))
-        migration = page.locator('[data-testid="migration-dialog"]')
+        page.get_by_role("button", name="更换模板", exact=True).click()
+        migration = page.get_by_role("dialog", name="更换模板生成新稿", exact=True)
         migration.wait_for(state="visible")
-        expect(migration).to_contain_text("2 个绑定")
-        migration.locator('[data-testid="migration-proceed"]').click()
-        auto_list = migration.locator('[data-testid="migration-auto-list"]')
-        auto_list.wait_for(state="visible")
-        assert auto_list.locator("li.row").count() == 2, "自动匹配清单应含 2 行"
-        expect(page.locator('[data-testid="migration-count"]')).to_have_text("将迁移 2 个绑定")
-        migration.locator('[data-testid="migration-apply"]').click()
-        migration.wait_for(state="hidden")
+        migration.get_by_role("combobox", name="选择新模板").select_option(value=str(target_id))
+        migration.get_by_role("textbox", name="新文稿名称").fill("换装新稿")
+        expect(migration).to_contain_text(work_content, timeout=RENDER_TIMEOUT)
+        generate = migration.get_by_role("button", name="生成新文稿", exact=True)
+        expect(generate).to_be_enabled(timeout=RENDER_TIMEOUT)
+        with page.expect_response(
+            lambda response: response.url.endswith(f"/templates/{target_id}/migrate/apply")
+            and response.request.method == "POST", timeout=RENDER_TIMEOUT
+        ) as submitted:
+            generate.click()
+        result_document = submitted.value.json()
+        assert submitted.value.status == 201, result_document
+        migration.wait_for(state="hidden", timeout=RENDER_TIMEOUT)
 
-        # 绑定零重录：目标默认版本 2 项绑定 + 预览替换生效（迁移后首次替换渲染，放宽超时）
+        # 校验新稿 ID，不能误把目标默认空稿当成迁移结果。
         expect(page.locator(".legend-wide")).to_contain_text("已绑定 2", timeout=RENDER_TIMEOUT)
         expect(page.get_by_test_id("current-document-name")).to_have_text(
-            "默认版本", timeout=RENDER_TIMEOUT
+            "换装新稿", timeout=RENDER_TIMEOUT
         )
-        result = verify_preview(target_id, expect=["李四", work_content], absent=["{{"])
+        result = verify_preview(
+            target_id, expect=["李四", work_content], absent=["{{"],
+            version_id=result_document["version_id"],
+        )
         assert result["ok"], f"迁移后预览 PDF 校验失败: {result}"
     except Exception:
         page.screenshot(path="/tmp/e2e_fail_s3.png")

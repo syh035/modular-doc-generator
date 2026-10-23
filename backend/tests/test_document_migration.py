@@ -97,6 +97,21 @@ def test_explicit_omission_required(scene: dict) -> None:
     assert count(scene) == 2
 
 
+def test_removed_paragraph_filters_siblings_by_path_not_anchor_json(scene: dict) -> None:
+    s, _, b = prepare(scene)
+    sibling = add_region(scene["src"]["id"], "同段字段", "work", 1)
+    bind(scene["client"], scene["src_vid"], sibling, b)
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE regions SET anchor = ? WHERE id = ?",
+            ('{"path":[0],"kind":"p","extra":"metadata"}', sibling),
+        )
+        conn.execute(
+            "INSERT INTO version_region_actions VALUES (?, ?, 'remove')", (scene["src_vid"], s)
+        )
+    assert plan(scene)["source_items"] == []
+
+
 @pytest.mark.parametrize("change", ["content", "target", "layout"])
 def test_stale_plan_does_not_create(scene: dict, change: str) -> None:
     s, t, b = prepare(scene)

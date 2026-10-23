@@ -62,7 +62,7 @@ def create_app() -> FastAPI:
                     and re.fullmatch(r"/api/versions/\d+", path) is not None
                 )
             )
-            and not path.endswith("/migrate/plan")
+            and not path.endswith(("/migrate/plan", "/migrate/preview"))
         )
         if not tracked and not boundary:
             return await call_next(request)

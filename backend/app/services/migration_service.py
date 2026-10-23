@@ -16,6 +16,7 @@
 - excluded 目标区域不可作候选也不可自动匹配（与绑定规则 REGION_EXCLUDED 同口径）
 """
 
+import json
 import sqlite3
 
 from app.core.errors import (
@@ -287,8 +288,8 @@ def new_source_items(conn: sqlite3.Connection, source_version_id: int) -> list[d
             (source_version_id,),
         )
     }
-    removed_anchors = {r.anchor for r in regions if r.id in removed}
-    visible = {r.id for r in regions if r.anchor not in removed_anchors}
+    removed_paths = {tuple(json.loads(r.anchor)["path"]) for r in regions if r.id in removed}
+    visible = {r.id for r in regions if tuple(json.loads(r.anchor)["path"]) not in removed_paths}
     result: list[dict[str, object]] = []
     for item in _source_items(conn, source_version_id):
         block = blocks_repo.get_block(conn, int(str(item["block_id"])))

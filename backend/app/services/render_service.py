@@ -21,7 +21,7 @@ import threading
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from functools import wraps
 from pathlib import Path
 from typing import ParamSpec, TypeVar, cast
@@ -34,7 +34,7 @@ from app.core.errors import (
     AppError,
 )
 from app.models.db import get_conn
-from app.models.entities import Block, Region, Template
+from app.models.entities import Binding, Block, Region, Template
 from app.models.repositories import bindings as bindings_repo
 from app.models.repositories import blocks as blocks_repo
 from app.models.repositories import regions as regions_repo
@@ -227,15 +227,11 @@ def render_version(version_id: int) -> VersionRender:
         bindings = bindings_repo.list_bindings(conn, version.id)
         # 有效绑定（active 且块存活）→ 替换内容；missing 态保留原文
         block_by_id: dict[int, Block] = {}
-        block_contents: dict[int, str] = {}
         for b in bindings:
             block = blocks_repo.get_block(conn, b.block_id)
             if block is None:
                 continue  # 块已物理删除（RESTRICT 兜底，理论不可达）
             block_by_id[b.block_id] = block
-            if b.status == "active":
-                block_contents[b.region_id] = block.content
-        binding_by_region = {b.region_id: b for b in bindings}
         removed_ids = {
             int(row[0])
             for row in conn.execute(
@@ -243,6 +239,29 @@ def render_version(version_id: int) -> VersionRender:
             )
         }
 
+    return render_document(
+        tpl, regions, bindings, block_by_id, removed_ids, identity=f"v_{version_id}"
+    )
+
+
+@protected_render
+def render_document(
+    tpl: Template,
+    regions: list[Region],
+    bindings: list[Binding],
+    block_by_id: dict[int, Block],
+    removed_ids: set[int],
+    *,
+    identity: str,
+    transient: bool = False,
+) -> VersionRender:
+    """同源文稿渲染；transient 只使用传入快照，几何在内存测量，不写业务库。"""
+    block_contents = {
+        b.region_id: block_by_id[b.block_id].content
+        for b in bindings
+        if b.status == "active" and b.block_id in block_by_id
+    }
+    binding_by_region = {b.region_id: b for b in bindings}
     docx_path = settings.templates_dir / tpl.storage_name
     if not docx_path.is_file():
         raise AppError(
@@ -258,7 +277,8 @@ def render_version(version_id: int) -> VersionRender:
         json.dumps(
             {
                 "database": str(settings.db_path),
-                "version": version_id,
+                "identity": identity,
+                "transient": transient,
                 "source": hashlib.sha256(source_data).hexdigest(),
                 "environment": environment,
                 "regions": [asdict(r) for r in regions],
@@ -305,16 +325,28 @@ def render_version(version_id: int) -> VersionRender:
     # 成品 DOCX 走 LO 缓存：临时文件（uuid 防并发碰撞）→ convert → 即删
     tmp_dir = settings.render_cache_dir / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_docx = tmp_dir / f"v_{version_id}_{uuid.uuid4().hex}.docx"
+    tmp_docx = tmp_dir / f"{identity}_{uuid.uuid4().hex}.docx"
     try:
         tmp_docx.write_bytes(outcome.data)
         if needs_template_preview:
             template_pdf, pdf_path = manager.convert_many([docx_path, tmp_docx])
             template_sha = pdf_sha256(template_pdf)
-            if any(_auto_bbox_stale(region, template_sha) for region in regions):
-                _persist_region_bboxes(tpl, regions, template_pdf, template_sha)
-            with get_conn() as conn:
-                regions = regions_repo.list_regions(conn, tpl.id)
+            if transient:
+                original_geometry = align_flow_to_lines(
+                    list(iter_flow_paragraphs(source_data)), extract_pdf_lines(template_pdf)
+                )
+                regions = [
+                    replace(r, bbox_json=json.dumps(_geometry_bbox(original_geo)))
+                    if r.bbox_source != "manual"
+                    and (original_geo := original_geometry.get(tuple(json.loads(r.anchor)["path"])))
+                    else r
+                    for r in regions
+                ]
+            else:
+                if any(_auto_bbox_stale(region, template_sha) for region in regions):
+                    _persist_region_bboxes(tpl, regions, template_pdf, template_sha)
+                with get_conn() as conn:
+                    regions = regions_repo.list_regions(conn, tpl.id)
         else:
             pdf_path = manager.convert(tmp_docx)
     finally:

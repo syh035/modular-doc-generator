@@ -40,7 +40,7 @@ flowchart LR
 
 溢出清单在 StatusBar 展示，通过 locate 事件经 App 转发至 TemplatePreview 暴露的 jumpToRegion，保留滚页和 1.8 秒闪烁。状态栏固定高度，清单横向滚动。顶栏为「文稿／模板／素材／归档库」，指南与撤销／重做收纳到「更多」，快捷键保留；首页和模板页可导入模板。TemplateManager 与 LibraryDialog 复用非模态页面模式，分别承载模板浏览和独立归档；浏览模板不选择预览，明确点击“编辑文稿”才直接打开指定 ID，当前稿就地返回而不重转。页面切换保留编辑器，请求结果不抢回已经离开的页面。
 
-文档工具条显示当前文稿名、所用模板及保存状态，“文稿操作”集中另存、重命名与删除，列表行复用 DocumentActions。另存复制指定源 ID 并打开新稿，重命名仅更新元数据，删除当前稿后返回列表并清空预览，不自动打开其他稿；失败保留名称或删除确认。新界面显式允许删除最后一稿，模板、素材及归档保留；旧调用仍保留末稿保护。原模板迁移选择器收在文稿操作，M38d 的可视套用／新建稿尚未实施。“归档”“导出”直接可见，普通导出不自动归档；缩放与图例仍在底部“预览工具”按需展开。
+文档工具条显示当前文稿名、所用模板及保存状态，“文稿操作”集中另存、重命名与删除，列表行复用 DocumentActions。另存复制指定源 ID 并打开新稿，重命名仅更新元数据，删除当前稿后返回列表并清空预览，不自动打开其他稿；失败保留名称或删除确认。新界面显式允许删除最后一稿，模板、素材及归档保留；旧调用仍保留末稿保护。更换模板从文稿操作进入可视套用，确认后创建并打开新稿，取消保留原稿与编辑器。“归档”“导出”直接可见，普通导出不自动归档；缩放与图例仍在底部“预览工具”按需展开。
 
 BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜索。块库保留块编辑标签与已有数据，统一通过搜索查找；块库只按统一查询过滤，不叠加不可见的 activeTagId。兼容的标签 API 和 store 能力保留。BlockEditor 宽版弹窗处理新建／编辑，App 在 ≤900px 使用 BlockDrawer。整页／宽度缩放由 previewScale 计算，PDF 与覆盖层共用同一 scale 和 viewport，不改变单渲染管线。
 
@@ -90,13 +90,17 @@ BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜�
 - 版本文字编辑：`POST /api/versions/{version_id}/regions/{region_id}/text`，请求 `{content, sync_block=false, expected_content?}`，返回绑定信息。`expected_content` 不一致返回 409 `REGION_TEXT_CONFLICT`；空白或超过 5000 字返回 400 `BLOCK_INVALID`，排除区域拒绝编辑。默认新建块并换绑当前版本，显式同步才更新共享原块，标签保留；写入在单个 `BEGIN IMMEDIATE` 事务内完成。版本 overlay 增加 `current_text`（占位符区域仅包含可替换部分），前端保存后刷新块库、标签与版本预览。
 - 识别升级：非空正文／表格都生成候选，占位符优先、一个占位符段落不额外创建整段候选。`template_candidate_scans.revision=2`（全文补齐）／`3`（词表升级） 标记新上传或已升级模板，启动只补齐旧规则忽略的短句；不恢复旧长段落／占位符的人工删除，不覆盖人工状态／框／绑定。扫描只读原件；不可解析原件跳过并记录模板 id，不输出文档内容或阻断应用启动。
 - 渲染与导出：模板/版本 preview、版本 overlay 和 export。
-- 跨模板迁移：模板 migrate/plan 与 migrate/apply；默认 mode=legacy，保留按类型及顺序匹配和目标默认空稿的旧契约。显式 mode=new_document 由 [document_migration](../../backend/app/services/document_migration.py) 承接，尚未接入前端可视套用。
+- 跨模板迁移：模板 migrate/plan 与 migrate/apply；默认 mode=legacy，保留按类型及顺序匹配和目标默认空稿的旧契约。显式 mode=new_document 由 [document_migration](../../backend/app/services/document_migration.py) 承接，NewDocumentDialog 展示实际文字及同源 PDF，内部保留 D7 匹配数据，使用者只需安排位置或明确不带入。
 
-新稿模式的 plan 在只读事务中返回 source_items（实际存活填写文字及排版设置）、plan_token 和 target_version_id=null；不要求目标已有稿为空，也不创建版本。missing、已软删除素材及原稿删除段落中的绑定不带入；校对排除旗标不能使仍在原稿显示的有效绑定文字被静默丢弃。内部保留 D7 三清单，供后续可视放置使用。
+新稿模式的 plan 在只读事务中返回 source_items（实际存活填写文字及排版设置）、plan_token 和 target_version_id=null；不要求目标已有稿为空，也不创建版本。missing、已软删除素材及原稿删除段落中的绑定不带入；校对排除旗标不能使仍在原稿显示的有效绑定文字被静默丢弃。内部保留 D7 三清单，为可视放置提供初始安排。
 
 新稿 apply 请求包含 name、plan_token、idempotency_key、placements（source_region_id／target_region_id）和 omitted_source_region_ids。每段源文字必须恰好放置一次或明确不带入，每个目标位置只能占用一次；块身份及排版由服务端源快照取得。BEGIN IMMEDIATE 内重新核对计划、创建文稿、绑定和持久回执，任一步失败全部回滚。原稿和目标已有稿保留。语义变化返回 409 MIGRATION_PLAN_STALE；派生自动坐标不触发失效，人工框变动会触发。无效安排返回 400 MIGRATION_INVALID。
 
-migration_receipts 保存请求摘要及首次结果，同一键重试返回同一 version_id，不同请求复用键返回 409 MIGRATION_REQUEST_CONFLICT。回执不进入工作稿撤销快照，也不级联删除；结果稿删除或撤销后重试返回 410 VERSION_NOT_FOUND，不重新建稿，重做恢复同一稿后可再次返回原结果。计划接口尚不生成试排 PDF，同源试排与前端操作分别由 M38d2—d3 承接。
+migration_receipts 保存请求摘要及首次结果，同一键重试返回同一 version_id，不同请求复用键返回 409 MIGRATION_REQUEST_CONFLICT。回执不进入工作稿撤销快照，也不级联删除；结果稿删除或撤销后重试返回 410 VERSION_NOT_FOUND，不重新建稿，重做恢复同一稿后可再次返回原结果。
+
+POST /api/templates/{id}/migrate/preview 接受 source_version_id、plan_token、placements 和 omitted_source_region_ids，允许尚未安排完毕的合法子集。只读事务校验计划，调用 render_document(transient=true) 复用版本替换、转换、几何与溢出管线；原高度需要测量时仅在内存补齐，不创建临时版本或写入区域。返回同批 pdf_base64、pdf_sha256、items 和 plan_token，前端用 PDF.js 展示并在画布就绪后开放位置点击。试排只生成可清理的转换缓存，前后端均排除历史写入钩子。
+
+前端按请求序号隔离旧计划与试排，位置不可重复占用；改变安排后重新试排，保留缩放比例。生成请求结果不明时冻结原请求和幂等键供重试，新稿成功后记录真实 ID，打开失败仅重试打开。取消试排恢复原稿操作焦点，生成成功聚焦新稿标题。未定位区域保留按名称选择入口并提示生成后检查。
 
 [config.py](../../backend/app/core/config.py) 通过 `MODUDOC_DATA_DIR` 指定数据目录；源码开发默认项目 `data/`，下载 App 使用 `~/Library/Application Support/ModularDocGenerator/Data`。该目录包含 SQLite、模板、缓存、导出、字体配置和 LO profile；手工复制数据需先退出应用并保留整个目录。应用内不提供备份与恢复，已有备份文件不主动删除。`MODUDOC_STATIC_DIR` 指向 App 内的生产前端，应用资源只读。运行说明见 [应用指南](../../desktop/README.md)和[开发规范](../development/WORKFLOW.md)。
 

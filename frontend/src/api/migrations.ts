@@ -1,6 +1,7 @@
 /** 迁移域 API 与类型（对应后端 /api/templates/{id}/migrate/*，M10，PRD 4.7 / D7）。 */
 
 import { apiFetch } from './client'
+import type { BBox } from './templates'
 
 /** 目标区域候选选项（②同类型候选 / ③手动指定候选通用）。 */
 export interface MigrationOption {
@@ -81,4 +82,57 @@ export function applyMigration(
       body: JSON.stringify({ source_version_id: sourceVersionId, bindings }),
     },
   )
+}
+
+export interface DocumentSource {
+  source_region_id: number
+  source_label: string
+  content: string
+  kind: string
+}
+export interface DocumentPlan extends Omit<MigrationPlan, 'target_version_id'> {
+  target_version_id: null
+  mode: 'new_document'
+  plan_token: string
+  source_items: DocumentSource[]
+}
+export interface DocumentPlacement { source_region_id: number; target_region_id: number }
+export interface DocumentDecisions {
+  source_version_id: number
+  plan_token: string
+  placements: DocumentPlacement[]
+  omitted_source_region_ids: number[]
+}
+export interface TrialRegion {
+  id: number
+  label: string
+  bbox: BBox | null
+  review_status: string
+  overflow: { level: string } | null
+}
+export interface DocumentTrial {
+  pdf_base64: string
+  pdf_sha256: string
+  plan_token: string
+  items: TrialRegion[]
+}
+export interface CreatedDocument { version_id: number; template_id: number; name: string; created: number }
+export function planNewDocument(templateId: number, sourceVersionId: number): Promise<DocumentPlan> {
+  return apiFetch(`/api/templates/${templateId}/migrate/plan`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_version_id: sourceVersionId, mode: 'new_document' }),
+  })
+}
+export function previewNewDocument(templateId: number, decisions: DocumentDecisions): Promise<DocumentTrial> {
+  return apiFetch(`/api/templates/${templateId}/migrate/preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(decisions),
+  })
+}
+export function createMigratedDocument(
+  templateId: number, decisions: DocumentDecisions, name: string, idempotencyKey: string,
+): Promise<CreatedDocument> {
+  return apiFetch(`/api/templates/${templateId}/migrate/apply`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...decisions, mode: 'new_document', name, idempotency_key: idempotencyKey }),
+  })
 }

@@ -4,6 +4,8 @@
 匹配规则见 migration_service，新稿的快照与重试契约见 document_migration。
 """
 
+import base64
+import hashlib
 from typing import Literal
 
 from fastapi import APIRouter
@@ -41,6 +43,34 @@ class MigrationApplyRequest(BaseModel):
     idempotency_key: str = ""
     placements: list[DocumentPlacement] = Field(default_factory=list)
     omitted_source_region_ids: list[int] = Field(default_factory=list)
+
+
+class MigrationPreviewRequest(BaseModel):
+    source_version_id: int
+    plan_token: str
+    placements: list[DocumentPlacement] = Field(default_factory=list)
+    omitted_source_region_ids: list[int] = Field(default_factory=list)
+
+
+@router.post("/templates/{template_id}/migrate/preview")
+def preview_migration(template_id: int, payload: MigrationPreviewRequest) -> dict[str, object]:
+    """只读试排；PDF 字节与覆盖层同一响应，取消不留稿，不写自动几何。"""
+    with get_conn() as conn:
+        conn.execute("BEGIN")
+        rendered = document_migration.preview_document(
+            conn,
+            payload.source_version_id,
+            template_id,
+            plan_token=payload.plan_token,
+            placements=[(p.source_region_id, p.target_region_id) for p in payload.placements],
+            omitted=payload.omitted_source_region_ids,
+        )
+    return {
+        "plan_token": payload.plan_token,
+        "pdf_base64": base64.b64encode(rendered.pdf_data).decode("ascii"),
+        "pdf_sha256": hashlib.sha256(rendered.pdf_data).hexdigest(),
+        "items": rendered.items,
+    }
 
 
 @router.post("/templates/{template_id}/migrate/plan")
