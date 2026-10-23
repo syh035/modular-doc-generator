@@ -52,7 +52,7 @@ BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜�
 
 ## 内容资产和持久化
 
-[schema.py](../../backend/app/models/schema.py) 定义 `blocks / tags / block_tags / templates / regions / versions / bindings / template_blocks / template_candidate_scans / version_region_actions / archives`。
+[schema.py](../../backend/app/models/schema.py) 定义 `blocks / tags / block_tags / templates / regions / versions / bindings / template_blocks / template_candidate_scans / version_region_actions / archives / migration_receipts`。
 
 - 块是独立于模板的多行纯文本资产，通过标签组织；删除采用软删除。
 - 模板保存原文件路径、SHA-256 指纹和解析/校对状态；同内容重传关联已有模板。
@@ -90,7 +90,13 @@ BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜�
 - 版本文字编辑：`POST /api/versions/{version_id}/regions/{region_id}/text`，请求 `{content, sync_block=false, expected_content?}`，返回绑定信息。`expected_content` 不一致返回 409 `REGION_TEXT_CONFLICT`；空白或超过 5000 字返回 400 `BLOCK_INVALID`，排除区域拒绝编辑。默认新建块并换绑当前版本，显式同步才更新共享原块，标签保留；写入在单个 `BEGIN IMMEDIATE` 事务内完成。版本 overlay 增加 `current_text`（占位符区域仅包含可替换部分），前端保存后刷新块库、标签与版本预览。
 - 识别升级：非空正文／表格都生成候选，占位符优先、一个占位符段落不额外创建整段候选。`template_candidate_scans.revision=2`（全文补齐）／`3`（词表升级） 标记新上传或已升级模板，启动只补齐旧规则忽略的短句；不恢复旧长段落／占位符的人工删除，不覆盖人工状态／框／绑定。扫描只读原件；不可解析原件跳过并记录模板 id，不输出文档内容或阻断应用启动。
 - 渲染与导出：模板/版本 preview、版本 overlay 和 export。
-- 跨模板迁移：模板 migrate/plan 与 migrate/apply；按类型及顺序匹配，custom 需人工选择。
+- 跨模板迁移：模板 migrate/plan 与 migrate/apply；默认 mode=legacy，保留按类型及顺序匹配和目标默认空稿的旧契约。显式 mode=new_document 由 [document_migration](../../backend/app/services/document_migration.py) 承接，尚未接入前端可视套用。
+
+新稿模式的 plan 在只读事务中返回 source_items（实际存活填写文字及排版设置）、plan_token 和 target_version_id=null；不要求目标已有稿为空，也不创建版本。missing、已软删除素材及原稿删除段落中的绑定不带入；校对排除旗标不能使仍在原稿显示的有效绑定文字被静默丢弃。内部保留 D7 三清单，供后续可视放置使用。
+
+新稿 apply 请求包含 name、plan_token、idempotency_key、placements（source_region_id／target_region_id）和 omitted_source_region_ids。每段源文字必须恰好放置一次或明确不带入，每个目标位置只能占用一次；块身份及排版由服务端源快照取得。BEGIN IMMEDIATE 内重新核对计划、创建文稿、绑定和持久回执，任一步失败全部回滚。原稿和目标已有稿保留。语义变化返回 409 MIGRATION_PLAN_STALE；派生自动坐标不触发失效，人工框变动会触发。无效安排返回 400 MIGRATION_INVALID。
+
+migration_receipts 保存请求摘要及首次结果，同一键重试返回同一 version_id，不同请求复用键返回 409 MIGRATION_REQUEST_CONFLICT。回执不进入工作稿撤销快照，也不级联删除；结果稿删除或撤销后重试返回 410 VERSION_NOT_FOUND，不重新建稿，重做恢复同一稿后可再次返回原结果。计划接口尚不生成试排 PDF，同源试排与前端操作分别由 M38d2—d3 承接。
 
 [config.py](../../backend/app/core/config.py) 通过 `MODUDOC_DATA_DIR` 指定数据目录；源码开发默认项目 `data/`，下载 App 使用 `~/Library/Application Support/ModularDocGenerator/Data`。该目录包含 SQLite、模板、缓存、导出、字体配置和 LO profile；手工复制数据需先退出应用并保留整个目录。应用内不提供备份与恢复，已有备份文件不主动删除。`MODUDOC_STATIC_DIR` 指向 App 内的生产前端，应用资源只读。运行说明见 [应用指南](../../desktop/README.md)和[开发规范](../development/WORKFLOW.md)。
 
