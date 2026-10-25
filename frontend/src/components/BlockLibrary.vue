@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 左栏：字符块库（M2 完整实现）。
+ * 左栏：素材库（M2 完整实现）。
  *
  * - 平铺列表（更新时间倒序）+ 统一搜索（名称／正文／标签）+ 新建/编辑/删除（二次确认，软删 D11）
  * - 抽屉本体：宽度拖拽可调 + 展开/收起（libraryOpen，头部折叠按钮）
@@ -8,13 +8,13 @@
  */
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { Block } from '../api/blocks'
+import type { Block, MaterialSelection } from '../api/blocks'
 import { useBlocksStore } from '../stores/blocks'
 import { usePreviewStore } from '../stores/preview'
 import { matchesBlock } from '../utils/blockSearch'
 import BlockEditor from './BlockEditor.vue'
 import SharedBlockDialog from './SharedBlockDialog.vue'
-import BlockImpact from './BlockImpact.vue'
+import MaterialScope from './MaterialScope.vue'
 import { apiFetch } from '../api/client'
 
 const props = defineProps<{ drawer?: boolean; standalone?: boolean }>()
@@ -134,7 +134,7 @@ function chooseBlock(id: number): void {
   emit('select')
 }
 
-async function submit(scope: 'shared' | 'version' = 'shared'): Promise<void> {
+async function submit(scope: 'shared' | 'version' = 'shared', selection?: MaterialSelection): Promise<void> {
   if (copying.value) return
   formError.value = null
   const tagNames = parseTags(tagsInput.value)
@@ -158,6 +158,7 @@ async function submit(scope: 'shared' | 'version' = 'shared'): Promise<void> {
       content: kind.value === 'blank' ? '' : content.value,
       kind: kind.value,
       tags: tagNames, // 表单即整组替换语义
+      reference_scope: selection,
     })
     if (ok) {
       resetForm()
@@ -184,12 +185,28 @@ const batchMode = ref(false)
 const checkedIds = ref<number[]>([])
 const batchConfirm = ref(false)
 const batchResult = ref('')
+const batchTags = ref('')
+const batchTagMode = ref<'add' | 'replace' | 'remove'>('add')
+async function applyBatchTags(): Promise<void> {
+  if (deleting.value) return
+  const ids = checkedIds.value.filter(id => visibleBlocks.value.some(b => b.id === id))
+  if (!ids.length) return
+  deleting.value = true
+  try {
+    const result = await store.retagBlocks(ids, parseTags(batchTags.value), batchTagMode.value)
+    checkedIds.value = result.failedIds
+    batchConfirm.value = false
+    batchResult.value = `已更新 ${result.updated} 项标签${result.failures.length ? `；未更新：${result.failures.join('；')}` : ''}`
+  } finally { deleting.value = false }
+}
 const impactReady = ref(false)
+const deleteScope = ref<MaterialSelection | null>(null)
+const batchScopes = ref<Record<number, MaterialSelection | null>>({})
 const batchImpactReady = ref<number[]>([])
 async function beginDelete(id: number): Promise<void> {
   if (deleting.value) return
   closeMenus(true)
-  impactReady.value = false; deletingId.value = id
+  impactReady.value = false; deleteScope.value = null; deletingId.value = id
   await nextTick()
   libraryRoot.value?.querySelector<HTMLButtonElement>(`[data-delete-block="${id}"] .cancel-delete`)?.focus()
 }
@@ -201,10 +218,10 @@ function cancelDelete(): void {
 async function confirmDelete(id: number): Promise<void> {
   if (deleting.value) return
   deleting.value = true
-  const ok = await store.removeBlock(id)
+  const ok = await store.removeBlock(id, deleteScope.value ?? undefined)
   deleting.value = false
-  deletingId.value = null
   if (ok) {
+    deletingId.value = null
     checkedIds.value = checkedIds.value.filter(n => n !== id)
     batchConfirm.value = false
     // 被引用删除 → 绑定已置 missing：刷新版本预览让覆盖层回落黄框（D11）
@@ -236,14 +253,14 @@ async function removeChecked(): Promise<void> {
   const failures: string[] = []
   const failedIds: number[] = []
   for (const block of targets) {
-    if (!await store.removeBlock(block.id)) {
+    if (!await store.removeBlock(block.id, batchScopes.value[block.id] ?? undefined)) {
       failedIds.push(block.id)
       failures.push(`${block.name}：${store.mutationError ?? '删除失败'}`)
     }
   }
   checkedIds.value = failedIds
   batchConfirm.value = false
-  batchResult.value = `已删除 ${targets.length - failedIds.length} 个字符块${failures.length ? `；未删除：${failures.join('；')}` : ''}`
+  batchResult.value = `已删除 ${targets.length - failedIds.length} 个素材${failures.length ? `；未删除：${failures.join('；')}` : ''}`
   deleting.value = false
   if (targets.length > failedIds.length) void previewStore.refreshVersionRender()
   await nextTick()
@@ -302,7 +319,7 @@ function openShared(): void {
         <span
           :role="standalone ? 'heading' : undefined"
           :aria-level="standalone ? 1 : undefined"
-        >{{ standalone ? '素材' : '字符块库' }} <span
+        >{{ standalone ? '素材' : '素材库' }} <span
           v-if="standalone || previewStore.currentTemplateId !== null"
           class="library-count"
         >{{ query.trim() ? `${visibleBlocks.length}/${scopeBlocks.length}` : scopeBlocks.length }}</span></span><small v-if="standalone || previewStore.currentTemplateId !== null">{{ standalone ? '保存可在不同文稿中反复使用的文字' : '当前模板' }}</small>
@@ -310,7 +327,7 @@ function openShared(): void {
       <div class="header-ops">
         <button
           class="primary"
-          :aria-label="standalone ? '新建素材' : '+ 新建字符块'"
+          :aria-label="standalone ? '新建素材' : '+ 新建素材'"
           :disabled="deleting || scopeLoading || (!standalone && previewStore.currentTemplateId === null)"
           @click="onNewClick"
         >
@@ -322,7 +339,7 @@ function openShared(): void {
           name="block-library-actions"
         >
           <summary
-            :aria-label="standalone ? '素材库操作' : '字符块库操作'"
+            :aria-label="standalone ? '素材库操作' : '素材库操作'"
             :aria-disabled="deleting"
             @click="deleting && $event.preventDefault()"
           >
@@ -359,7 +376,7 @@ function openShared(): void {
       v-if="!standalone && previewStore.currentTemplateId === null"
       class="empty"
     >
-      请先选择模板，再查看模板字符块库
+      请先选择模板，再查看模板素材库
     </div>
     <template v-else>
       <label class="block-search"><span class="visually-hidden">搜索内容块</span><input
@@ -374,7 +391,7 @@ function openShared(): void {
       >
         <label><input
           type="checkbox"
-          aria-label="全选当前字符块列表"
+          aria-label="全选当前素材列表"
           :checked="allChecked"
           :indeterminate="checkedIds.length > 0 && !allChecked"
           :disabled="deleting || visibleBlocks.length === 0"
@@ -391,20 +408,41 @@ function openShared(): void {
         <button
           class="ui-btn ui-danger"
           :disabled="deleting || checkedIds.length === 0"
-          @click="batchImpactReady = []; batchConfirm = true"
+          @click="batchImpactReady = []; batchScopes = {}; batchConfirm = true"
         >
           批量删除
         </button>
+        <details class="batch-tags">
+          <summary>批量编辑标签</summary>
+          <label>操作<select
+            v-model="batchTagMode"
+            :disabled="deleting"
+          ><option value="add">添加标签</option><option value="replace">替换全部标签</option><option value="remove">移除标签</option></select></label>
+          <label>标签<input
+            v-model="batchTags"
+            :disabled="deleting"
+            placeholder="逗号分隔，留空可清空标签"
+          ></label>
+          <button
+            class="ui-btn"
+            :disabled="deleting || !checkedIds.length"
+            @click="applyBatchTags"
+          >
+            应用到所选素材
+          </button>
+        </details>
         <div
           v-if="batchConfirm"
           class="batch-confirm"
         >
-          <span>删除所选 {{ checkedIds.length }} 个字符块？相关绑定将标记为缺失。</span>
-          <BlockImpact
+          <span>删除所选 {{ checkedIds.length }} 个素材？可逐项选择同步范围，默认保留所有文稿文字。</span>
+          <MaterialScope
             v-for="id in checkedIds"
             :key="id"
             :block-id="id"
-            @loaded="batchImpactReady = $event ? [...new Set([...batchImpactReady, id])] : batchImpactReady.filter(n => n !== id)"
+            deleting
+            :disabled="deleting"
+            @change="batchScopes[id] = $event; batchImpactReady = $event ? [...new Set([...batchImpactReady, id])] : batchImpactReady.filter(n => n !== id)"
           />
           <button
             class="ui-btn"
@@ -436,7 +474,7 @@ function openShared(): void {
         v-model:kind="kind"
         v-model:tags="tagsInput"
         :editing="editingId !== null"
-        :material="standalone"
+        material
         :block-id="editingId ?? undefined"
         :version-id="standalone ? null : previewStore.currentVersionId"
         :busy="store.creating || store.updating || copying"
@@ -472,7 +510,7 @@ function openShared(): void {
           v-if="scopeLoading"
           class="empty"
         >
-          {{ standalone ? '正在读取素材…' : '正在加载当前模板字符块…' }}
+          {{ standalone ? '正在读取素材…' : '正在加载当前模板素材…' }}
         </div>
         <div
           v-else-if="scopeError"
@@ -492,7 +530,7 @@ function openShared(): void {
           v-else-if="scopeBlocks.length === 0"
           class="empty"
         >
-          {{ standalone ? '还没有素材，点击“新建”保存可复用的文字。' : '当前模板暂无字符块。可新建，或从“共享块”加入已有内容' }}
+          {{ standalone ? '还没有素材，点击“新建”保存可复用的文字。' : '当前模板暂无素材。可新建，或从“共享块”加入已有内容' }}
         </div>
         <div
           v-else-if="visibleBlocks.length === 0"
@@ -514,7 +552,7 @@ function openShared(): void {
             <input
               v-if="batchMode"
               type="checkbox"
-              :aria-label="`选择字符块：${block.name}`"
+              :aria-label="`选择素材：${block.name}`"
               :checked="checkedIds.includes(block.id)"
               :disabled="deleting"
               @click.stop="chooseBlock(block.id)"
@@ -553,10 +591,12 @@ function openShared(): void {
             :data-delete-block="block.id"
             @click.stop
           >
-            <p>删除此字符块？相关绑定将标记为缺失。</p>
-            <BlockImpact
+            <p>删除此素材？请选择需要同步留空的字段，默认保留文稿文字。</p>
+            <MaterialScope
               :block-id="block.id"
-              @loaded="impactReady = $event !== null"
+              deleting
+              :disabled="deleting"
+              @change="deleteScope = $event; impactReady = $event !== null"
             />
             <div class="delete-actions">
               <button

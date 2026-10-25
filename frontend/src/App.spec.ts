@@ -70,6 +70,44 @@ it('模板页显式打开指定稿，离开页面后旧结果不抢回编辑器'
   wrapper.unmount()
 })
 
+it('独立模板检查离页后迟到结果不抢回页面', async () => {
+  const wrapper = shallowMount(App, { global: { plugins: [createPinia()] } })
+  const app = useAppStore(), preview = usePreviewStore()
+  app.setTab('templates'); await wrapper.vm.$nextTick()
+  let complete!: () => void
+  const select = vi.spyOn(preview, 'selectTemplate').mockImplementation(async id => {
+    await new Promise<void>(resolve => { complete = resolve })
+    preview.currentTemplateId = id; preview.currentVersionId = null; preview.status = 'ready'; preview.proofreadMode = true
+  })
+  wrapper.getComponent({ name: 'TemplateManager' }).vm.$emit('check', 2)
+  app.setTab('guide'); complete(); await flushPromises()
+  expect(select).toHaveBeenCalledWith(2, { review: true })
+  expect(app.activeTab).toBe('guide')
+  wrapper.unmount()
+})
+
+it('从独立模板检查明确打开文稿后清除返回模板标记', async () => {
+  const wrapper = shallowMount(App, { global: { plugins: [createPinia()] } })
+  const app = useAppStore(), preview = usePreviewStore()
+  app.setTab('templates'); await wrapper.vm.$nextTick()
+  vi.spyOn(preview, 'selectTemplate').mockImplementation(async (id, options) => {
+    preview.currentTemplateId = id; preview.currentVersionId = options?.versionId ?? null
+    preview.proofreadMode = options?.review === true; preview.status = 'ready'
+  })
+  wrapper.getComponent({ name: 'TemplateManager' }).vm.$emit('check', 2); await flushPromises()
+  expect(wrapper.getComponent({ name: 'TemplatePreview' }).props('templateReview')).toBe(true)
+  expect(preview.currentVersionId).toBeNull()
+  app.setTab('documents'); await wrapper.vm.$nextTick()
+  // DocumentList opens the requested version through the store before changing pages.
+  await preview.selectTemplate(2, { versionId: 23 })
+  app.setTab('workbench')
+  await flushPromises()
+  expect(app.activeTab).toBe('workbench')
+  expect(preview.currentVersionId).toBe(23)
+  expect(wrapper.getComponent({ name: 'TemplatePreview' }).props('templateReview')).toBe(false)
+  wrapper.unmount()
+})
+
 it('模板页再次编辑当前稿直接返回现有编辑器，不重复转换或清空编辑状态', async () => {
   const wrapper = shallowMount(App, { global: { plugins: [editingPinia()] } })
   const app = useAppStore(), preview = usePreviewStore()

@@ -1,3 +1,4 @@
+import { apiFetch } from '../api/client'
 /**
  * 预览状态：模板列表 + 当前预览（版本渲染 PDF / 区域 overlay / 绑定操作）。
  *
@@ -136,6 +137,7 @@ export const usePreviewStore = defineStore('preview', () => {
   const exportError = ref<string | null>(null)
   /** 大超出警示清单（非空 = 弹确认弹层；本地即时判定与 409 兜底共用）。 */
   const exportWarnings = ref<ExportWarning[]>([])
+  let exportWarningToken: string | undefined
 
   /** 本地大超出清单（overlay 现有 overflow 数据，零往返预判）。 */
   function _localLargeWarnings(): ExportWarning[] {
@@ -164,7 +166,9 @@ export const usePreviewStore = defineStore('preview', () => {
     if (versionId === null) {
       return { ok: false, needConfirm: false }
     }
-    if (!confirm) {
+    // Missing-content confirmation needs the server's token for the same document batch.
+    const hasMissing = regions.value.some(r => !r.removed && r.binding?.status === 'missing' && r.binding.missing_policy === 'blank')
+    if (!confirm && !hasMissing) {
       const local = _localLargeWarnings()
       if (local.length > 0) {
         exportWarnings.value = local
@@ -174,13 +178,14 @@ export const usePreviewStore = defineStore('preview', () => {
     exportBusy.value = true
     exportError.value = null
     try {
-      const { blob, fileName } = await exportVersion(versionId, confirm)
+      const { blob, fileName } = await exportVersion(versionId, confirm, confirm ? exportWarningToken : undefined)
       await clearHistoryBoundary()
       return { ok: true, needConfirm: false, blob, fileName }
     } catch (err) {
       if (err instanceof ExportBlockedError) {
         // 本地判定过期（绑定刚变更）：以服务端现算清单为准，再走确认弹层
         exportWarnings.value = err.warnings
+        exportWarningToken = err.warningToken
         return { ok: false, needConfirm: true }
       }
       exportError.value = err instanceof Error ? err.message : String(err)
@@ -193,6 +198,7 @@ export const usePreviewStore = defineStore('preview', () => {
   /** 关闭大超出警示弹层（返回修改）。 */
   function dismissExportWarnings(): void {
     exportWarnings.value = []
+    exportWarningToken = undefined
   }
 
   const sequencer = new RequestSequencer()
@@ -305,9 +311,10 @@ export const usePreviewStore = defineStore('preview', () => {
   }
 
   /** 指定 versionId 时直接打开该文稿，退出检查且不触发跨模板迁移。 */
-  async function selectTemplate(id: number | null, options: { versionId?: number } = {}): Promise<void> {
+  async function selectTemplate(id: number | null, options: { versionId?: number; review?: boolean } = {}): Promise<void> {
     const seq = sequencer.next()
     exportWarnings.value = []
+    exportWarningToken = undefined
     exportError.value = null
     await clearHistoryBoundary()
     if (!sequencer.isCurrent(seq)) return
@@ -330,7 +337,8 @@ export const usePreviewStore = defineStore('preview', () => {
     pdfData.value = null
     error.value = null
     _clearMigration()
-    if (options.versionId !== undefined) proofreadMode.value = false
+    if (options.review) proofreadMode.value = true
+    else if (options.versionId !== undefined) proofreadMode.value = false
     if (id === null) {
       status.value = 'idle'
       return
@@ -342,7 +350,7 @@ export const usePreviewStore = defineStore('preview', () => {
       if (!sequencer.isCurrent(seq)) {
         throw new CancelledError()
       }
-      const versionId = options.versionId ?? detail.default_version_id ?? null
+      const versionId = options.review ? null : options.versionId ?? detail.default_version_id ?? null
       currentVersionId.value = versionId
       await loadVersionList(options.versionId !== undefined)
       if (!sequencer.isCurrent(seq)) throw new CancelledError()
@@ -356,7 +364,7 @@ export const usePreviewStore = defineStore('preview', () => {
         await _fetchVersionRender(seq, versionId)
       }
       status.value = 'ready'
-      if (options.versionId === undefined) _maybeOfferMigration(
+      if (options.versionId === undefined && !options.review) _maybeOfferMigration(
         prevTemplateId,
         prevVersionId,
         prevTemplateName,
@@ -662,7 +670,10 @@ export const usePreviewStore = defineStore('preview', () => {
       return false
     }
     try {
-      await bindRegion(versionId, regionId, blockId, lineBreakMode, position)
+      if (regionId < 0) await apiFetch(`/api/versions/${versionId}/insertions/${-regionId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ block_id: blockId, line_break_mode: lineBreakMode }),
+      })
+      else await bindRegion(versionId, regionId, blockId, lineBreakMode, position)
       await refreshVersionRender()
       void loadVersionList()
       return true

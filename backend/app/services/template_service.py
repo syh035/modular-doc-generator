@@ -177,6 +177,11 @@ def delete_template(template_id: int) -> None:
                 "WHERE v.template_id = ? AND b.status = 'active'",
                 (template_id,),
             ).fetchone()[0]
+            count += conn.execute(
+                "SELECT COUNT(*) FROM document_insertions i JOIN versions v ON "
+                "v.id=i.version_id WHERE v.template_id=?",
+                (template_id,),
+            ).fetchone()[0]
             if count:
                 raise AppError(
                     TEMPLATE_IN_USE,

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { createArchive } from '../api/archives'
+import type { ExportWarning } from '../api/exports'
 import { ApiRequestError } from '../api/client'
 import { useModalEsc } from '../composables/useModalEsc'
 import { usePreviewStore } from '../stores/preview'
 
-const emit = defineEmits<{ close: []; saved: [archiveId: number] }>()
+const emit = defineEmits<{ close: []; saved: [archiveId: number]; locate: [id: number] }>()
 const preview = usePreviewStore()
 const versionId = preview.currentVersionId
 const versionName = preview.versions.find(v => v.id === versionId)?.name ?? '文档定稿'
@@ -13,6 +14,8 @@ const name = ref(versionName)
 const busy = ref(false)
 const error = ref('')
 const warning = ref(false)
+const warnings = ref<ExportWarning[]>([])
+let warningToken: string | undefined
 const confirmOverflow = ref(false)
 function close(): void { if (!busy.value) emit('close') }
 useModalEsc(close)
@@ -21,10 +24,11 @@ async function save(): Promise<void> {
   if (busy.value || versionId === null || !name.value.trim()) return
   busy.value = true; error.value = ''
   try {
-    const archive = await createArchive(versionId, name.value.trim(), confirmOverflow.value)
+    const archive = await createArchive(versionId, name.value.trim(), confirmOverflow.value, confirmOverflow.value ? warningToken : undefined)
     emit('saved', archive.id)
   } catch (err) {
-    warning.value = err instanceof ApiRequestError && err.code === 'EXPORT_LARGE_OVERFLOW'
+    warning.value = err instanceof ApiRequestError && ['EXPORT_LARGE_OVERFLOW', 'DOCUMENT_WARNINGS'].includes(err.code)
+    if (warning.value && err instanceof ApiRequestError) { warnings.value = err.details?.warnings ?? []; warningToken = err.details?.warning_token; confirmOverflow.value = false }
     error.value = err instanceof Error ? err.message : String(err)
   } finally { busy.value = false }
 }
@@ -61,6 +65,23 @@ async function save(): Promise<void> {
         :disabled="busy"
         aria-label="归档名称"
       ></label>
+      <ul
+        v-if="warnings.length"
+        class="warning-list"
+      >
+        <li
+          v-for="item in warnings"
+          :key="item.region_id"
+        >
+          {{ item.label }} · {{ item.kind === 'missing' ? '素材已删除，待补内容' : '排版超出' }} <button
+            type="button"
+            :disabled="busy"
+            @click="emit('locate', item.region_id)"
+          >
+            定位补全
+          </button>
+        </li>
+      </ul>
       <label
         v-if="warning"
         class="warning"
@@ -68,7 +89,7 @@ async function save(): Promise<void> {
         v-model="confirmOverflow"
         type="checkbox"
         :disabled="busy"
-      >已了解当前稿件存在大超出，仍按当前排版归档</label>
+      >已核对待补内容及排版问题，仍按当前状态归档</label>
       <p
         v-if="error"
         role="alert"

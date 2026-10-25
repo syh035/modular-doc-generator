@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from app.core.errors import AppError
 from app.models.db import get_conn, utcnow
 from app.services import render_service
-from app.services.export_service import extract_large_overflow_warnings, sanitize_filename_part
+from app.services.export_service import document_warnings, sanitize_filename_part, warnings_token
 
 router = APIRouter(prefix="/api")
 _FIELDS = "id,name,source_version_id,version_name,template_name,created_at,docx_sha256,pdf_sha256"
@@ -21,6 +21,7 @@ DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 class ArchiveCreate(BaseModel):
     name: str = Field(min_length=1, max_length=30)
     confirm_large_overflow: bool = False
+    confirm_warnings_token: str | None = None
 
 
 @router.get("/archives")
@@ -48,16 +49,23 @@ def create_archive(version_id: int, payload: ArchiveCreate) -> JSONResponse:
         if source is None:
             raise AppError("VERSION_NOT_FOUND", "内容版本不存在", status_code=404)
     rendered = render_service.render_version(version_id)
-    warnings = extract_large_overflow_warnings(rendered.items)
-    if warnings and not payload.confirm_large_overflow:
+    warnings = document_warnings(rendered.items)
+    token = warnings_token(rendered.data, warnings)
+    missing = any(w.get("kind") == "missing" for w in warnings)
+    if warnings and (
+        not payload.confirm_large_overflow
+        or (missing and payload.confirm_warnings_token != token)
+        or (payload.confirm_warnings_token is not None and payload.confirm_warnings_token != token)
+    ):
         return JSONResponse(
             status_code=409,
             content={
                 "error": {
-                    "code": "EXPORT_LARGE_OVERFLOW",
-                    "message": "存在大超出，请确认后冻结归档",
+                    "code": "DOCUMENT_WARNINGS" if missing else "EXPORT_LARGE_OVERFLOW",
+                    "message": "存在内容或排版问题，请核对清单后确认归档",
                 },
                 "warnings": warnings,
+                "warning_token": token,
             },
         )
     with get_conn() as conn:

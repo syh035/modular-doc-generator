@@ -43,7 +43,7 @@ it.each(['create', 'update', 'delete'] as const)('迟到的全库列表不会覆
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input), method = init?.method ?? 'GET'
     if (path === '/api/tags') return Response.json({ tags: [] })
-    if (path === '/api/blocks' && method === 'GET') return new Promise<Response>(complete => { resolve = complete })
+    if (path === '/api/blocks?materials_only=true' && method === 'GET') return new Promise<Response>(complete => { resolve = complete })
     if (method === 'DELETE') return new Response(null, { status: 204 })
     return Response.json(block(action === 'create' ? 2 : 1, '新素材'))
   }))
@@ -138,7 +138,7 @@ describe('块库抽屉宽度与开合（UI 调整②批）', () => {
 describe('blocks store（M6a 基础）', () => {
   it('loadBlocks：列表写入', async () => {
     stubFetch({
-      '/api/blocks': () => ({ blocks: [block(1, '姓名'), block(2, '电话')] }),
+      '/api/blocks?materials_only=true': () => ({ blocks: [block(1, '姓名'), block(2, '电话')] }),
     })
     const store = useBlocksStore()
     await store.loadBlocks()
@@ -155,7 +155,7 @@ describe('blocks store（M6a 基础）', () => {
 
   it('createNewBlock：成功追加列表并复位表单态', async () => {
     stubFetch({
-      '/api/blocks': () => ({ blocks: [] }),
+      '/api/blocks?materials_only=true': () => ({ blocks: [] }),
       '/api/tags': () => ({ tags: [] }),
     })
     vi.stubGlobal(
@@ -405,7 +405,7 @@ describe('批量标签', () => {
 
 it('模板块库只显示绑定集合，切换立即清空并丢弃旧响应，全局资产保留', async () => {
   let resolveOld!: (response: Response) => void
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input).endsWith('=1')
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input).includes('template_id=1&')
     ? new Promise<Response>(resolve => { resolveOld = resolve })
     : Promise.resolve(Response.json({ blocks: [block(2, 'B')] }))))
   const store = useBlocksStore()

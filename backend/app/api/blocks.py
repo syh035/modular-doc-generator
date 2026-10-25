@@ -7,6 +7,7 @@
 - 分类功能已移除（2026-09-18 用户确认），块列表平铺按更新时间倒序
 """
 
+import hashlib
 import sqlite3
 from typing import Literal
 
@@ -20,7 +21,7 @@ from app.core.errors import (
     TEMPLATE_NOT_FOUND,
     AppError,
 )
-from app.models.db import get_conn
+from app.models.db import get_conn, utcnow
 from app.models.entities import Block, Tag
 from app.models.repositories import bindings as bindings_repo
 from app.models.repositories import blocks as blocks_repo
@@ -163,12 +164,14 @@ def add_to_template(block_id: int, template_id: int) -> dict[str, int]:
 
 
 @router.get("/blocks")
-def list_blocks(template_id: int | None = None) -> dict[str, object]:
+def list_blocks(template_id: int | None = None, materials_only: bool = False) -> dict[str, object]:
     """块列表（存活块，排除软删除，更新时间倒序，含各自标签组）。"""
     with get_conn() as conn:
         items = [
             _block_dict(b, tags_repo.tags_of_block(conn, b.id))
-            for b in blocks_repo.list_blocks(conn, template_id=template_id)
+            for b in blocks_repo.list_blocks(
+                conn, template_id=template_id, materials_only=materials_only
+            )
         ]
     return {"blocks": items}
 
@@ -288,3 +291,186 @@ def delete_block(block_id: int) -> Response:
     if not deleted:
         raise AppError(BLOCK_NOT_FOUND, f"字符块不存在或已删除（id={block_id}）", status_code=404)
     return Response(status_code=204)
+
+
+class MaterialField(BaseModel):
+    kind: Literal["region", "insertion"]
+    version_id: int
+    id: int
+
+
+class ScopedMaterialEdit(BlockUpdate):
+    action: Literal["update", "delete"] = "update"
+    token: str
+    selected: list[MaterialField] = []
+
+
+@router.get("/blocks/{block_id}/references")
+def material_references(block_id: int) -> dict[str, object]:
+    from app.services.material_scope import references
+
+    with get_conn() as conn:
+        return references(conn, block_id)
+
+
+@router.post("/blocks/{block_id}/scoped")
+def scoped_material_edit(block_id: int, payload: ScopedMaterialEdit) -> dict[str, object]:
+    from app.services.material_scope import apply_scope
+
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        block = blocks_repo.get_block(conn, block_id)
+        if block is None:
+            raise AppError(BLOCK_NOT_FOUND, "素材不存在或已删除", 404)
+        name, content = _validate(
+            payload.name if payload.name is not None else block.name,
+            payload.content if payload.content is not None else block.content,
+            payload.kind or block.kind,
+        )
+        tag_names = _validate_tags(payload.tags) if payload.tags is not None else None
+        apply_scope(
+            conn,
+            block_id,
+            payload.token,
+            [(f.kind, f.version_id, f.id) for f in payload.selected],
+            deleting=payload.action == "delete",
+            content_changed=content != block.content or (payload.kind or block.kind) != block.kind,
+        )
+        if payload.action == "delete":
+            blocks_repo.soft_delete_block(conn, block_id)
+            tags_repo.prune_orphan_tags(conn)
+            return {"deleted": True}
+        updated = blocks_repo.update_block(
+            conn, block_id, name=name, content=content, kind=payload.kind
+        )
+        assert updated is not None
+        tags = (
+            _replace_tags(conn, block_id, tag_names)
+            if tag_names is not None
+            else tags_repo.tags_of_block(conn, block_id)
+        )
+        return _block_dict(updated, tags)
+
+
+class FieldMaterialCreate(BlockCreate):
+    idempotency_key: str | None = None
+    line_break_mode: Literal["paragraph", "soft"] | None = None
+    version_id: int
+    field: MaterialField
+    expected_content: str
+
+
+@router.post("/blocks/from-field", status_code=201)
+def material_from_field(payload: FieldMaterialCreate) -> dict[str, object]:
+    """Validate source, create a new material and bind exactly one field in one transaction."""
+    import json
+
+    from app.core.config import settings
+    from app.models.repositories import regions as regions_repo
+    from app.models.repositories import versions as versions_repo
+    from app.services.docx_parser import iter_flow_paragraphs
+    from app.services.insertions import require_row
+
+    name, content = _validate(payload.name, payload.content, payload.kind)
+    tag_names = _validate_tags(payload.tags)
+    request_hash = hashlib.sha256(
+        json.dumps(payload.model_dump(exclude={"idempotency_key"}), sort_keys=True).encode()
+    ).hexdigest()
+    key = f"material:{payload.idempotency_key}" if payload.idempotency_key else None
+    if key and len(key) > 120:
+        raise AppError(BLOCK_INVALID, "提交标识过长", 400)
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if key:
+            receipt = conn.execute(
+                "SELECT request_sha256,response_json FROM migration_receipts "
+                "WHERE idempotency_key=?",
+                (key,),
+            ).fetchone()
+            if receipt is not None:
+                if receipt[0] != request_hash:
+                    raise AppError(
+                        "MATERIAL_REQUEST_CONFLICT", "此操作已保存，请重新打开字段后再修改", 409
+                    )
+                result = _block_with_tags(conn, json.loads(receipt[1])["block_id"])
+                if result is None:
+                    raise AppError(
+                        BLOCK_NOT_FOUND, "此前创建的素材已删除或撤销，重试不会重复创建", 410
+                    )
+                return result
+        version = versions_repo.get_version(conn, payload.version_id)
+        if version is None or payload.field.version_id != version.id:
+            raise AppError("VERSION_NOT_FOUND", "文稿不存在或字段归属不正确", 404)
+        current: str | None
+        if payload.field.kind == "insertion":
+            row = require_row(conn, version.id, payload.field.id)
+            old = (
+                blocks_repo.get_block(conn, row["block_id"])
+                if row["block_id"] is not None and row["status"] == "active"
+                else None
+            )
+            current = old.content if old else ""
+        else:
+            region = regions_repo.get_region(conn, payload.field.id)
+            if (
+                region is None
+                or region.template_id != version.template_id
+                or region.review_status == "excluded"
+            ):
+                raise AppError("REGION_TEMPLATE_MISMATCH", "区域不存在、不属于此文稿或已排除", 400)
+            binding = bindings_repo.get_binding(conn, version.id, region.id)
+            old = (
+                blocks_repo.get_block(conn, binding.block_id)
+                if binding and binding.status == "active"
+                else None
+            )
+            tpl = templates_repo.get_template(conn, version.template_id)
+            assert tpl is not None
+            path = json.loads(region.anchor)["path"]
+            current = (
+                old.content
+                if old
+                else ""
+                if binding and binding.missing_policy == "blank"
+                else region.placeholder
+            )
+            if current is None:
+                current = next(
+                    (
+                        text
+                        for anchor, text in iter_flow_paragraphs(
+                            (settings.templates_dir / tpl.storage_name).read_bytes()
+                        )
+                        if anchor["path"] == path
+                    ),
+                    "",
+                )
+        if current != payload.expected_content:
+            raise AppError("REGION_TEXT_CONFLICT", "原文字已变化，请重新打开编辑后再设定素材", 409)
+        block = blocks_repo.create_block(conn, name, content, kind=payload.kind)
+        tags = _replace_tags(conn, block.id, tag_names)
+        conn.execute(
+            "INSERT OR IGNORE INTO template_blocks VALUES (?,?)", (version.template_id, block.id)
+        )
+        if payload.field.kind == "insertion":
+            conn.execute(
+                "UPDATE document_insertions SET block_id=?,status='active',"
+                "line_break_mode=COALESCE(?,line_break_mode),updated_at=? WHERE id=?",
+                (block.id, payload.line_break_mode, utcnow(), payload.field.id),
+            )
+        else:
+            bindings_repo.upsert_binding(
+                conn,
+                version.id,
+                payload.field.id,
+                block.id,
+                line_break_mode=payload.line_break_mode
+                or (binding.line_break_mode if binding else "paragraph"),
+                position=binding.position if binding else "inside",
+            )
+        if key:
+            conn.execute(
+                "INSERT INTO migration_receipts VALUES (?,?,?,?)",
+                (key, request_hash, json.dumps({"block_id": block.id}), utcnow()),
+            )
+        return _block_dict(block, tags)

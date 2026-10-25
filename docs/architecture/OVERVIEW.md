@@ -42,9 +42,9 @@ flowchart LR
 
 文档工具条显示当前文稿名、所用模板及保存状态，“文稿操作”集中另存、重命名与删除，列表行复用 DocumentActions。另存复制指定源 ID 并打开新稿，重命名仅更新元数据，删除当前稿后返回列表并清空预览，不自动打开其他稿；失败保留名称或删除确认。新界面显式允许删除最后一稿，模板、素材及归档保留；旧调用仍保留末稿保护。更换模板从文稿操作进入可视套用，确认后创建并打开新稿，取消保留原稿与编辑器。“归档”“导出”直接可见，普通导出不自动归档；缩放与图例仍在底部“预览工具”按需展开。
 
-BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜索。块库保留块编辑标签与已有数据，统一通过搜索查找；块库只按统一查询过滤，不叠加不可见的 activeTagId。兼容的标签 API 和 store 能力保留。BlockEditor 宽版弹窗处理新建／编辑，App 在 ≤900px 使用 BlockDrawer。整页／宽度缩放由 previewScale 计算，PDF 与覆盖层共用同一 scale 和 viewport，不改变单渲染管线。
+BlockLibrary 与 FieldEditor 共用 matchesBlock 名称／正文／标签搜索。正文直接进入 FieldEditor，选用／设定素材、独立编辑、引用同步和插入排版均在同一侧栏，≤850px 上下排列，素材选择不遮住整份文稿。检查模式仅隐藏侧栏，返回保留未保存输入；切换稿件或模板才清理。块库只按统一查询过滤，不叠加不可见的 activeTagId；BlockEditor 处理素材新建／编辑，窄屏块库使用 BlockDrawer。整页／宽度缩放由 previewScale 计算，PDF 与覆盖层共用同一 scale 和 viewport。
 
-素材主页面使用 BlockLibrary 的 standalone 模式展示全库，新建不传 template_id，不自动关联当前模板；编辑页侧栏继续显示该模板成员。素材保存后失效全库及范围读取的旧请求，必要时重读正在加载的成员范围；旧响应不能覆盖已完成的增删改。模板元数据列表同样隔离过期读取。文稿、模板、素材和归档均沿用原有 API 与数据库身份，引用同步新规则和同栏选择仍待 M40。
+素材主页面使用 BlockLibrary 的 standalone 模式展示全库，新建不传 template_id；编辑页块库显示该模板成员，字段侧栏可搜索全库素材。新 UI 查询 materials_only=true，当前稿独立编辑产生 material=false 的私有块，不混入素材库；旧列表默认仍返回全部存活块。素材保存后失效全库及范围旧请求，必要时补读成员；模板列表同样隔离迟到响应。MaterialScope 按 kind／version_id／id 展示存活引用，以快照 token 防过期写入，默认不勾选；所选引用同步，未选引用换绑旧内容私有副本，文字相等不参与身份判断。只修改名称／标签不拆引用。
 
 块库与模板管理各自维护批量勾选；全选只覆盖可见列表，换筛选清除选择。删除逐项调用 API，成功项移出列表，失败项保留并提示；删除当前模板通过 store.removeTemplate 清空预览、版本、迁移与导出警示。
 
@@ -52,14 +52,15 @@ BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜�
 
 ## 内容资产和持久化
 
-[schema.py](../../backend/app/models/schema.py) 定义 `blocks / tags / block_tags / templates / regions / versions / bindings / template_blocks / template_candidate_scans / version_region_actions / archives / migration_receipts`。
+[schema.py](../../backend/app/models/schema.py) 定义 `blocks / tags / block_tags / templates / regions / versions / bindings / template_blocks / template_candidate_scans / version_region_actions / document_insertions / archives / migration_receipts`。
 
 - 块是独立于模板的多行纯文本资产，通过标签组织；删除采用软删除。
 - 模板保存原文件路径、SHA-256 指纹和解析/校对状态；同内容重传关联已有模板。
 - DELETE /api/templates/{id} 在 BEGIN IMMEDIATE 内检查有效绑定，有绑定返回 409 TEMPLATE_IN_USE；无绑定级联删区域、版本、绑定，并删除原件。提交失败恢复暂存原件；原件无法暂存返回 500 TEMPLATE_DELETE_FAILED 并回滚。字符块 API 与 D11 软删除契约不变。
 - 区域属于模板，文档流 anchor 承担定位身份，bbox 供页面展示和测量。
 - 版本属于模板；一个版本的一个区域至多绑定一个块，同一块可被多个区域或版本引用。
-- 被引用块软删除后，相关绑定进入 missing 状态；渲染与导出按现行降级规则处理。
+- 素材按显式范围删除时，所选区域绑定进入 missing／missing_policy=blank，插入行进入 missing，均留空高亮；未选者保留独立文字。旧删除调用保留原 missing 原文回退行为，绑定默认 missing_policy=original，重新绑定恢复默认。
+- document_insertions 保存当前稿的锚点、上下位置、顺序、独立 block_id 和换行设置，SQLite 单调分配 ID。公开字段身份为 field_ref={kind:region|insertion,id}，渲染内部负 ID 仅作适配，不写入模板 regions；复制、历史快照及新稿套用包含插入行。有依赖行的原段落／区域／模板删除显式拒绝，不隐式丢失内容。
 - 工作稿渲染读取当前块内容；「归档」独立存储当时的 DOCX／PDF 字节、来源和校验信息，不移动或删除工作稿。「归档库」支持搜索、只读预览、下载和显式删除，不提供修改内容接口。`archives` 不对来源模板或版本建立级联外键，原件删除、共享块修改及工作稿撤销不影响归档。
 
 [db.py](../../backend/app/models/db.py) 开启 WAL 与外键。一次 `get_conn()` 范围内的写入统一提交，异常回滚，repositories 不自行提交。现有迁移是幂等的轻量补列/删列，没有单独的版本化迁移框架。
@@ -71,6 +72,8 @@ BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜�
 3. [校对服务](../../backend/app/services/proofread_service.py) 处理候选、框选、微调和区域状态，逐操作落库。
 4. [替换引擎](../../backend/app/services/replacement.py) 定位文档流元素，替换占位符片段或整段内容；跨 run 占位符、多行克隆、样式继承和路径重算已有处理。
 5. [渲染编排](../../backend/app/services/render_service.py) 使用同一 DOCX 产物转换 PDF，并计算几何/溢出；[导出服务](../../backend/app/services/export_service.py) 保存同源 DOCX 和处理警示。
+
+模板页可直接独立检查，selectTemplate(id,{review:true}) 不选内容版本、不建稿、不触发旧迁移。检查清单通过 review-summary 只读列出页眉、页脚和文本框，正文候选仍来自 regions；添加在同一原文 PDF 框选、内嵌命名，默认保存后返回原稿或模板页。独立插入行先解析原段落身份再生成真实段落，首轮几何补齐合并虚拟行；插入推移后的未绑定人工框按当前成品测量，保留模板人工设置。
 
 现有占位符支持段内替换；无占位符区域走整段替换路径。预览上的 bbox 框选并不等同于实现任意字符区间替换，这属于后续需要核对的能力边界。
 
@@ -85,11 +88,14 @@ BlockLibrary 与 BindingDialog 共用 matchesBlock 名称／正文／标签搜�
 请求/响应模型以 [API 路由源码](../../backend/app/api/) 为准。服务运行后可通过内部 `/docs` 查看 FastAPI 生成的接口说明；本文件不复制全部字段。
 
 - 块与标签：`/api/blocks`、`/api/tags`。
+- 素材影响：`GET /api/blocks/{id}/references` 读取字段及 token，`POST /api/blocks/{id}/scoped` 原子更新／删除，范围过期返回 MATERIAL_SCOPE_STALE=409。`POST /api/blocks/from-field` 同事务创建新素材并关联当前字段，expected_content 防冲突，idempotency_key 防重复，结果删除或撤销后同键返回 410。
+- 独立插入行：`POST /api/versions/{id}/insertions` 指定相邻字段 kind／id 与 side，`PUT`／`DELETE /api/versions/{id}/insertions/{row_id}` 编辑或删除本稿行；旧区域绑定与 position 解释保留。
 - 模板及区域：`/api/templates`、`/api/templates/{id}/regions`、`/api/regions/{id}`。
 - 版本与绑定：`/api/templates/{id}/versions`、`/api/versions/{id}/bindings`。
 - 版本文字编辑：`POST /api/versions/{version_id}/regions/{region_id}/text`，请求 `{content, sync_block=false, expected_content?}`，返回绑定信息。`expected_content` 不一致返回 409 `REGION_TEXT_CONFLICT`；空白或超过 5000 字返回 400 `BLOCK_INVALID`，排除区域拒绝编辑。默认新建块并换绑当前版本，显式同步才更新共享原块，标签保留；写入在单个 `BEGIN IMMEDIATE` 事务内完成。版本 overlay 增加 `current_text`（占位符区域仅包含可替换部分），前端保存后刷新块库、标签与版本预览。
 - 识别升级：非空正文／表格都生成候选，占位符优先、一个占位符段落不额外创建整段候选。`template_candidate_scans.revision=2`（全文补齐）／`3`（词表升级） 标记新上传或已升级模板，启动只补齐旧规则忽略的短句；不恢复旧长段落／占位符的人工删除，不覆盖人工状态／框／绑定。扫描只读原件；不可解析原件跳过并记录模板 id，不输出文档内容或阻断应用启动。
 - 渲染与导出：模板/版本 preview、版本 overlay 和 export。
+- 导出及归档将同步删除留空字段与大超出合并为 warnings；有留空字段时返回 DOCUMENT_WARNINGS=409 和 warning_token，明确确认须同时提交 confirm_warnings_token 与 confirm_large_overflow=true。令牌绑定同批 DOCX 字节和警告清单，过期重列；取消不生成产物，归档冻结当时清单及字段。旧大超出单项确认契约保持兼容。
 - 跨模板迁移：模板 migrate/plan 与 migrate/apply；默认 mode=legacy，保留按类型及顺序匹配和目标默认空稿的旧契约。显式 mode=new_document 由 [document_migration](../../backend/app/services/document_migration.py) 承接，NewDocumentDialog 展示实际文字及同源 PDF，内部保留 D7 匹配数据，使用者只需安排位置或明确不带入。
 
 新稿模式的 plan 在只读事务中返回 source_items（实际存活填写文字及排版设置）、plan_token 和 target_version_id=null；不要求目标已有稿为空，也不创建版本。missing、已软删除素材及原稿删除段落中的绑定不带入；校对排除旗标不能使仍在原稿显示的有效绑定文字被静默丢弃。内部保留 D7 三清单，为可视放置提供初始安排。
@@ -124,4 +130,4 @@ POST /api/templates/{id}/migrate/preview 接受 source_version_id、plan_token�
 [原生 AppKit 应用](../../desktop/README.md)通过 WKWebView 提供独立工作台窗口；代码、前端和离线依赖随 App，Python 3.12 与 LibreOffice 由环境检测引导安装。Foundation Process 启动一个 Python 后端，健康响应的 application、project_fingerprint 与 data_fingerprint 校验资源和数据身份后才复用已有服务。停止、退出及启动失败回滚只操作本实例拥有的进程；系统通知须主动授权。
 
 
-template_blocks 为模板库成员关联，区别于版本区域绑定；新建块可在尚未绑定区域时属于模板，解绑不丢成员。旧 active 绑定幂等补齐，绑定／复制／迁移自动关联目标模板；共享加入复用相同 block_id，编辑仍沿用全局块语义。模板删除级联成员但保留块资产；关联表按依赖顺序纳入全局历史恢复。查询 `GET /api/blocks?template_id=...` 与创建可选 template_id 保持旧 API 默认，全局列表供显式共享弹窗使用。
+template_blocks 为模板库成员关联，区别于版本区域绑定；新建素材可在尚未绑定区域时属于模板，解绑不丢成员。旧 active 绑定幂等补齐，绑定／复制／迁移自动关联目标模板；共享加入复用 block_id，素材正文修改按显式引用范围处理。模板删除级联成员但保留素材；关联表按依赖顺序纳入历史恢复。`GET /api/blocks?template_id=...` 与创建可选 template_id 保持旧默认，新增 materials_only 筛出可复用素材，字段选择侧栏读取全库。

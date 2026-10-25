@@ -13,10 +13,10 @@ export async function listArchives(): Promise<Archive[]> {
   return (await apiFetch<{ archives: Archive[] }>('/api/archives')).archives
 }
 
-export function createArchive(versionId: number, name: string, confirmOverflow: boolean): Promise<Archive> {
+export function createArchive(versionId: number, name: string, confirmOverflow: boolean, warningToken?: string): Promise<Archive> {
   return apiFetch(`/api/versions/${versionId}/archives`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, confirm_large_overflow: confirmOverflow }),
+    body: JSON.stringify({ name, confirm_large_overflow: confirmOverflow, ...(warningToken ? { confirm_warnings_token: warningToken } : {}) }),
   })
 }
 

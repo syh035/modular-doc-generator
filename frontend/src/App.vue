@@ -75,6 +75,43 @@ async function openManagedDocument(templateId: number, versionId: number | null)
     }
   }
 }
+const templateReview = ref(false)
+let reviewReturn: { templateId: number | null; versionId: number | null } | null = null
+watch([() => preview.currentVersionId, () => preview.proofreadMode], ([versionId, checking]) => {
+  if (versionId !== null && !checking) { templateReview.value = false; reviewReturn = null }
+}, { flush: 'sync' })
+async function checkTemplate(templateId: number): Promise<void> {
+  if (openingDocument.value) return
+  const request = ++navigationRequest
+  const sourcePage = appStore.activeTab
+  const previous = reviewReturn ?? { templateId: preview.currentTemplateId, versionId: preview.currentVersionId }
+  openingDocument.value = true
+  navigationError.value = null
+  try {
+    await preview.selectTemplate(templateId, { review: true })
+    if (request !== navigationRequest || sourcePage !== appStore.activeTab) return
+    if (preview.status !== 'ready') { navigationError.value = preview.error; return }
+    reviewReturn = previous
+    templateReview.value = true
+    appStore.setTab('workbench')
+  } catch (err) {
+    if (request === navigationRequest && sourcePage === appStore.activeTab) navigationError.value = err instanceof Error ? err.message : String(err)
+  } finally { if (request === navigationRequest) openingDocument.value = false }
+}
+async function finishTemplateReview(): Promise<void> {
+  const reviewedId = preview.currentTemplateId
+  const previous = reviewReturn
+  templateReview.value = false
+  reviewReturn = null
+  appStore.openTemplates(reviewedId)
+  if (previous?.templateId != null && previous.versionId != null) {
+    await preview.selectTemplate(previous.templateId, { versionId: previous.versionId })
+    if (preview.status !== 'ready') navigationError.value = `检查已保存，原文稿暂未打开：${preview.error ?? '请从文稿列表重试'}`
+  } else {
+    await preview.selectTemplate(null)
+    preview.proofreadMode = false
+  }
+}
 // 返回列表或指南时保留编辑器；再次打开当前稿不丢失尚未提交的编辑文字。
 const workbenchMounted = ref(false)
 watch(() => appStore.activeTab, tab => { if (tab === 'workbench') workbenchMounted.value = true }, { immediate: true })
@@ -178,6 +215,7 @@ onBeforeUnmount(stopResize)
       @import="topBarRef?.pickFile()"
       @use="openManagedDocument"
       @documents="appStore.openTemplateDocuments"
+      @check="checkTemplate"
     />
     <main
       v-if="appStore.activeTab === 'materials'"
@@ -225,6 +263,8 @@ onBeforeUnmount(stopResize)
       />
       <TemplatePreview
         ref="previewRef"
+        :template-review="templateReview"
+        @reviewed="finishTemplateReview"
         @import="topBarRef?.pickFile()"
         @archive="archiveOpen = true"
       />
@@ -234,6 +274,7 @@ onBeforeUnmount(stopResize)
       v-if="archiveOpen"
       @close="archiveOpen = false"
       @saved="archived"
+      @locate="archiveOpen = false; previewRef?.selectEditorField($event)"
     />
   </div>
 </template>

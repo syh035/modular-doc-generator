@@ -11,6 +11,18 @@
 """
 
 DDL_STATEMENTS: tuple[str, ...] = (
+    """CREATE TABLE IF NOT EXISTS document_insertions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
+        source_region_id INTEGER NOT NULL REFERENCES regions(id) ON DELETE RESTRICT,
+        side TEXT NOT NULL CHECK (side IN ('before','after')),
+        rank INTEGER NOT NULL,
+        block_id INTEGER REFERENCES blocks(id),
+        status TEXT NOT NULL DEFAULT 'active',
+        line_break_mode TEXT NOT NULL DEFAULT 'paragraph',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""",
     # Operational receipts survive undo/deletion to prevent retries creating a second document.
     """CREATE TABLE IF NOT EXISTS migration_receipts (
         idempotency_key TEXT PRIMARY KEY,

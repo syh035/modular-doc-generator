@@ -283,8 +283,8 @@ def confirm_all_candidates(page, expected: int) -> None:
 
 def create_block(page, name: str, content: str) -> None:
     """块库新建字符块（创建成功自动选中，出现正向绑定指引）。"""
-    page.get_by_role("button", name="+ 新建字符块", exact=True).click()
-    form = page.get_by_role("dialog", name="字符块编辑", exact=True)
+    page.get_by_role("button", name="+ 新建素材", exact=True).click()
+    form = page.get_by_role("dialog", name="素材编辑", exact=True)
     form.wait_for(state="visible")
     form.locator("input").first.fill(name)
     form.locator("textarea").fill(content)

@@ -19,6 +19,7 @@ import {
   updateBlock,
   type Block,
   type BlockPayload,
+  type MaterialSelection,
   type TagInfo,
 } from '../api/blocks'
 
@@ -233,10 +234,10 @@ export const useBlocksStore = defineStore('blocks', () => {
   }
 
   /** 软删除块（D11）：列表移除；若是选中块清空选中；关联绑定已在后端置 missing。 */
-  async function removeBlock(id: number): Promise<boolean> {
+  async function removeBlock(id: number, scope?: MaterialSelection): Promise<boolean> {
     mutationError.value = null
     try {
-      await deleteBlock(id)
+      await deleteBlock(id, scope)
       invalidateBlockReads()
       blocks.value = blocks.value.filter(b => b.id !== id)
       if (selectedBlockId.value === id) {

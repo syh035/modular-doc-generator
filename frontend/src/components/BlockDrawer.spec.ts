@@ -17,7 +17,7 @@ it('窄屏只保留一层标题，菜单先处理 Esc，再次 Esc 才退出抽�
   await flushPromises()
   expect(wrapper.findAll('.header')).toHaveLength(1)
   expect(wrapper.text()).not.toContain('选择内容块后，点击文档区域绑定')
-  expect(wrapper.find('[aria-label="+ 新建字符块"]').exists()).toBe(true)
+  expect(wrapper.find('[aria-label="+ 新建素材"]').exists()).toBe(true)
   const menu = wrapper.get<HTMLDetailsElement>('.library-actions')
   menu.element.open = true
   ;(menu.get('summary').element as HTMLElement).focus()

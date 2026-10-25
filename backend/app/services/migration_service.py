@@ -295,6 +295,27 @@ def new_source_items(conn: sqlite3.Connection, source_version_id: int) -> list[d
         block = blocks_repo.get_block(conn, int(str(item["block_id"])))
         if item["source_region_id"] in visible and block is not None:
             result.append({**item, "content": block.content, "kind": block.kind})
+    # New-document mode includes independent rows as explicit source fields.
+    for row in conn.execute(
+        "SELECT i.*,b.name,b.content,b.kind FROM document_insertions i "
+        "JOIN blocks b ON b.id=i.block_id WHERE i.version_id=? "
+        "AND i.status='active' AND b.deleted_at IS NULL ORDER BY i.source_region_id,i.rank,i.id",
+        (source_version_id,),
+    ):
+        result.append(
+            {
+                "source_region_id": -row["id"],
+                "field_ref": {"kind": "insertion", "id": row["id"]},
+                "source_label": f"插入行 {row['id']}",
+                "type": "custom",
+                "block_id": row["block_id"],
+                "line_break_mode": row["line_break_mode"],
+                "position": "inside",
+                "block_name": row["name"],
+                "content": row["content"],
+                "kind": row["kind"],
+            }
+        )
     return result
 
 

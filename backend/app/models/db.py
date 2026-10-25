@@ -66,6 +66,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE blocks ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'")
     if "category" in cols:
         conn.execute("ALTER TABLE blocks DROP COLUMN category")  # 2026-09-18 用户确认移除分类
+    if "material" not in cols:
+        conn.execute("ALTER TABLE blocks ADD COLUMN material INTEGER NOT NULL DEFAULT 1")
     # M5b（P21 bbox 生命周期）：bbox_pdf_sha 记录测量来源 PDF，bbox_source 区分自动/人工
     region_cols = [r[1] for r in conn.execute("PRAGMA table_info(regions)")]
     if "bbox_pdf_sha" not in region_cols:
@@ -79,4 +81,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "line_break_mode" not in binding_cols:
         conn.execute(
             "ALTER TABLE bindings ADD COLUMN line_break_mode TEXT NOT NULL DEFAULT 'paragraph'"
+        )
+
+    if "missing_policy" not in binding_cols:
+        conn.execute(
+            "ALTER TABLE bindings ADD COLUMN missing_policy TEXT NOT NULL DEFAULT 'original'"
         )

@@ -73,6 +73,7 @@ def _binding_dict(b: Binding, block_name: str | None) -> dict[str, object]:
 
 
 class RegionTextEdit(BaseModel):
+    line_break_mode: Literal["paragraph", "soft"] | None = None
     content: str
     sync_block: bool = False
     expected_content: str | None = None
@@ -81,7 +82,12 @@ class RegionTextEdit(BaseModel):
 @router.post("/versions/{version_id}/regions/{region_id}/text")
 def edit_region_text(version_id: int, region_id: int, payload: RegionTextEdit) -> dict[str, object]:
     return text_edit_service.save_text(
-        version_id, region_id, payload.content, payload.sync_block, payload.expected_content
+        version_id,
+        region_id,
+        payload.content,
+        payload.sync_block,
+        payload.expected_content,
+        payload.line_break_mode,
     )
 
 
@@ -104,6 +110,23 @@ def edit_region_layout(
         if region.template_id != version.template_id:
             raise AppError(REGION_TEMPLATE_MISMATCH, "区域不属于当前模板", status_code=400)
         if payload.action == "remove":
+            import json
+
+            paths = {
+                r.id
+                for r in regions_repo.list_regions(conn, version.template_id)
+                if json.loads(r.anchor)["path"] == json.loads(region.anchor)["path"]
+            }
+            if any(
+                conn.execute(
+                    "SELECT 1 FROM document_insertions WHERE version_id=? AND source_region_id=?",
+                    (version_id, identity),
+                ).fetchone()
+                for identity in paths
+            ):
+                raise AppError(
+                    "INSERTION_DEPENDENCY", "此段落还有插入行，请先移除插入行再删除段落", 409
+                )
             conn.execute(
                 "INSERT OR REPLACE INTO version_region_actions VALUES (?, ?, 'remove')",
                 (version_id, region_id),
@@ -250,6 +273,7 @@ _DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessing
 
 class ExportRequest(BaseModel):
     confirm_large_overflow: bool = False
+    confirm_warnings_token: str | None = None
 
 
 @router.post("/versions/{version_id}/export")
@@ -265,16 +289,23 @@ def export_version(version_id: int, payload: ExportRequest) -> Response:
             raise AppError(VERSION_NOT_FOUND, f"内容版本不存在（id={version_id}）", status_code=404)
         version_name = version.name
     rendered = render_service.render_version(version_id)
-    warnings = export_service.extract_large_overflow_warnings(rendered.items)
-    if warnings and not payload.confirm_large_overflow:
+    warnings = export_service.document_warnings(rendered.items)
+    token = export_service.warnings_token(rendered.data, warnings)
+    missing = any(w.get("kind") == "missing" for w in warnings)
+    if warnings and (
+        not payload.confirm_large_overflow
+        or (missing and payload.confirm_warnings_token != token)
+        or (payload.confirm_warnings_token is not None and payload.confirm_warnings_token != token)
+    ):
         return JSONResponse(
             status_code=409,
             content={
                 "error": {
-                    "code": EXPORT_LARGE_OVERFLOW,
-                    "message": f"存在 {len(warnings)} 处大超出，确认后将按重排结果导出",
+                    "code": "DOCUMENT_WARNINGS" if missing else EXPORT_LARGE_OVERFLOW,
+                    "message": f"存在 {len(warnings)} 处内容或排版问题，请核对清单后确认导出",
                 },
                 "warnings": warnings,
+                "warning_token": token,
             },
         )
     file_name = export_service.export_file_name(version_name)

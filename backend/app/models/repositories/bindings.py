@@ -11,7 +11,7 @@ from app.models.entities import Binding
 
 _SELECT = (
     "SELECT id, version_id, region_id, block_id, status, created_at, updated_at, "
-    "line_break_mode, position FROM bindings"
+    "line_break_mode, position, missing_policy FROM bindings"
 )
 
 
@@ -39,7 +39,8 @@ def upsert_binding(
         "updated_at, line_break_mode, position) "
         "VALUES (?, ?, ?, 'active', ?, ?, COALESCE(?, 'paragraph'), COALESCE(?, 'inside')) "
         "ON CONFLICT (version_id, region_id) DO UPDATE SET "
-        "block_id = excluded.block_id, status = 'active', updated_at = excluded.updated_at, "
+        "block_id = excluded.block_id, status = 'active', missing_policy = 'original', "
+        "updated_at = excluded.updated_at, "
         "line_break_mode = COALESCE(?, bindings.line_break_mode), "
         "position = COALESCE(?, bindings.position)",
         (

@@ -16,6 +16,7 @@ export interface BBox {
 /** 模板区域（文档流锚定，bbox=null 表示渲染未匹配，前端画虚线）。 */
 export interface Region {
   id: number
+  field_ref?: { kind: 'region' | 'insertion'; id: number }
   template_id: number
   type: string
   label: string

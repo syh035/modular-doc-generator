@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import JSONResponse, Response
 
+from app.core.config import settings
 from app.core.errors import TEMPLATE_NOT_FOUND, AppError
 from app.models.db import get_conn
 from app.models.entities import Region, Template
@@ -15,6 +16,7 @@ from app.models.repositories import templates as templates_repo
 from app.models.repositories import versions as versions_repo
 from app.services import render_service, template_service
 from app.services.libreoffice import cache_access
+from app.services.review_summary import unsupported_objects
 
 router = APIRouter(prefix="/api")
 
@@ -115,6 +117,22 @@ def get_template(template_id: int) -> dict[str, object]:
         out = _template_dict(tpl, regions=regions_repo.list_regions(conn, tpl.id))
     out["default_version_id"] = _default_version_id(tpl.id)
     return out
+
+
+@router.get("/templates/{template_id}/review-summary")
+def review_summary(template_id: int) -> dict[str, object]:
+    with get_conn() as conn:
+        tpl = _get_or_404(conn, template_id)
+        regions = regions_repo.list_regions(conn, template_id)
+    return {
+        "pending": sum(r.review_status == "pending" for r in regions),
+        "confirmed": sum(r.review_status == "confirmed" for r in regions),
+        "excluded": sum(r.review_status == "excluded" for r in regions),
+        "unlocated": sum(r.bbox_json is None for r in regions),
+        "unsupported": unsupported_objects(
+            (settings.templates_dir / tpl.storage_name).read_bytes()
+        ),
+    }
 
 
 @router.get("/templates/{template_id}/regions")

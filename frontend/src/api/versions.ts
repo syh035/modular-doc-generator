@@ -8,6 +8,8 @@ export interface BindingInfo {
   block_id: number
   block_name: string | null
   status: string // active / missing
+  missing_policy?: 'original' | 'blank'
+  is_material?: boolean
   line_break_mode?: 'paragraph' | 'soft'
   position?: 'inside' | 'before' | 'after'
 }

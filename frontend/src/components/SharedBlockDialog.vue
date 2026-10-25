@@ -14,7 +14,7 @@ useModalEsc(() => { if (!props.busy) emit('close') })
   <dialog
     ref="modal"
     class="dialog-mask"
-    aria-label="共享字符块"
+    aria-label="共享素材"
     @click.self="!busy && emit('close')"
   >
     <section class="shared-card">
@@ -28,7 +28,7 @@ useModalEsc(() => { if (!props.busy) emit('close') })
           ×
         </button>
       </header>
-      <p>从全局资产库加入当前模板，复用同一字符块。编辑或删除共享块会影响所有使用它的模板。</p>
+      <p>从全局资产库加入当前模板，复用同一素材。编辑或删除素材时，可选择是否同步到引用文稿。</p>
       <label>搜索共享块<input
         v-model="query"
         type="search"
@@ -44,7 +44,7 @@ useModalEsc(() => { if (!props.busy) emit('close') })
       </p>
       <div class="shared-list">
         <p v-if="visible.length === 0">
-          暂无可共享的字符块
+          暂无可共享的素材
         </p>
         <article
           v-for="block in visible"

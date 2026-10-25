@@ -4,10 +4,12 @@
  * 后端校验错误（REGION_FRAME_EMPTY / REGION_FRAME_MULTI）经 error prop 内联显示。
  */
 import { useModalEsc } from '../composables/useModalEsc'
-import { ref } from 'vue'
+import { onMounted, ref, useTemplateRef } from 'vue'
 import { REGION_TYPE_OPTIONS } from '../constants/regionTypes'
 
 const props = defineProps<{
+  embedded?: boolean
+  returnToTemplate?: boolean
   error: string | null
   submitting: boolean
   initialName?: string
@@ -32,21 +34,27 @@ function onSubmit(continueAdding = false): void {
 }
 function close(): void { if (!props.submitting) emit('close') }
 function reframe(): void { if (!props.submitting) emit('reframe', label.value, type.value) }
-useModalEsc(close)
+if (!props.embedded) useModalEsc(close)
+const panel = useTemplateRef<HTMLElement>('panel')
+onMounted(() => { if (props.embedded) panel.value?.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true }) })
 </script>
 
 <template>
   <!-- 遮罩：点击关闭；卡片阻止冒泡（复用 BindingDialog 布局） -->
-  <dialog
+  <component
+    :is="embedded ? 'section' : 'dialog'"
     ref="modal"
     class="dialog-mask"
+    :class="{ embedded }"
     aria-label="添加可编辑区域"
-    aria-modal="true"
+    :aria-modal="embedded ? undefined : true"
     tabindex="-1"
     data-testid="region-name-dialog"
+    @keydown.esc.stop.prevent="close"
     @click.self="close"
   >
     <form
+      ref="panel"
       class="dialog-card"
       @submit.prevent="onSubmit(false)"
     >
@@ -136,14 +144,16 @@ useModalEsc(close)
           class="primary"
           :disabled="submitting || label.trim().length === 0"
         >
-          {{ submitting ? '正在保存…' : '保存并返回文档' }}
+          {{ submitting ? '正在保存…' : returnToTemplate ? '保存并返回模板' : '保存并返回文档' }}
         </button>
       </div>
     </form>
-  </dialog>
+  </component>
 </template>
 
 <style scoped>
+.dialog-mask.embedded { position: static; background: none; display: block; margin: 10px 0; }
+.embedded .dialog-card { width: 100%; box-shadow: none; border: 1px solid var(--border); }
 .dialog-mask {
   position: fixed;
   inset: 0;

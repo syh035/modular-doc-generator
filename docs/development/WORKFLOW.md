@@ -57,6 +57,21 @@ CI 定义见 [.github/workflows/ci.yml](../../.github/workflows/ci.yml)：后端
 - 每模块：类型检查 + lint + 模块测试全绿
 - v1 整体：三大场景 E2E（日常沉淀 / 定向投递 / 模板换装）+ 一致性专项（预览 PDF vs 导出重转 PDF 逐页 diff + 3–5 个真实模板人工比对）
 
+### 2026-10-25 整体功能验收口径
+
+M39—M40 本地通过后端 408 项、前端 368 项、ruff／mypy（app 与 tests）、eslint／vue-tsc 和生产构建。隔离合成资料库完成原模板检查与零稿返回、原位补选、侧栏选择／设定素材、显式引用同步删除、留空高亮、导出／归档定位补全及确认、独立行、批量标签／可见范围和撤销；桌面、850／320 像素及 Tab 操作均检查。旧归档 Word／PDF 的 SHA-256 与冻结文字保持不变。最终提交远程五项 CI 结果单独核对，不用上一提交的成功代替。
+
+实际 DOCX 采用 [python-docx 官方测试资料](https://github.com/python-openxml/python-docx/tree/e45454602b53e8e572b179ccf1c91093ec9f4ed7/features/steps/test_files)，固定提交 e454546，核对 Git blob 与下载字节后使用。它们是公开 Word 测试样本，覆盖表格、分节、页眉页脚和超链接，不是用户真实简历，也不能据此保证任意复杂模板均无差异。
+
+| 样本 | 页数 | 原件与未编辑稿 | 编辑并插行后的预览与导出重转 | 归档 |
+|---|---:|---|---|---|
+| blk-paras-and-tables.docx | 1 | 一致 | 一致 | 字节一致 |
+| doc-access-sections.docx | 1 | 一致 | 一致 | 字节一致 |
+| hdr-header-footer.docx | 2 | 一致 | 一致 | 字节一致 |
+| par-hyperlinks.docx | 1 | 一致 | 一致 | 字节一致 |
+
+一致性脚本以 1pt 坐标容差核对，四份均为零行／坐标差异。Poppler 渲染全部五页人工比对，检查文字、表格、页眉页脚和分页，无意外重叠或裁切。合成场景另覆盖人工框推移、缺失确认过期、个性化副本身份、复制／撤销／新稿套用与旧 schema 迁移；验收不读取正式用户库。
+
 
 桌面模块（macOS）补充门禁：`xcrun swift-format lint --strict desktop/*.swift`、`backend/.venv/bin/ruff check scripts/build_desktop.py scripts/test_desktop.py`、`backend/.venv/bin/mypy scripts/build_desktop.py scripts/test_desktop.py`、`python3 scripts/test_desktop.py` 和 `python3 scripts/build_desktop.py`。生命周期测试使用独立临时目录与随机回环端口，不触碰正式库；完整验收另检查原生窗口、实际服务和 LibreOffice 转换。CI 包含 Apple Silicon 与 Intel 两个 macOS 桌面任务。
 

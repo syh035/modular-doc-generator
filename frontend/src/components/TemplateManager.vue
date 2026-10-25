@@ -6,7 +6,7 @@ import { useModalEsc } from '../composables/useModalEsc'
 import VersionDialog from './VersionDialog.vue'
 
 const props = defineProps<{ embedded?: boolean; initialTemplateId?: number | null }>()
-const emit = defineEmits<{ close: []; use: [templateId: number, versionId: number | null]; import: []; documents: [templateId: number] }>()
+const emit = defineEmits<{ close: []; use: [templateId: number, versionId: number | null]; import: []; documents: [templateId: number]; check: [templateId: number] }>()
 const store = usePreviewStore()
 const query = ref('')
 const selectedId = ref(props.initialTemplateId ?? store.currentTemplateId ?? store.templates[0]?.id ?? null)
@@ -305,6 +305,27 @@ const managerModal = props.embedded ? useTemplateRef<HTMLElement>('modal') : use
                 @click="deleteTargets = [selected.id]"
               >
                 删除模板
+              </button>
+            </div>
+            <div
+              v-if="embedded"
+              class="notice"
+              aria-label="模板使用引导"
+            >
+              <p>已识别 {{ selected.regions_count }} 个区域。可先检查或补充可编辑位置，也可直接创建文稿，稍后检查。</p>
+              <button
+                class="ui-btn"
+                :disabled="busy || loading"
+                @click="emit('check', selected.id)"
+              >
+                检查区域
+              </button>
+              <button
+                class="ui-btn"
+                :disabled="busy || loading"
+                @click="emit('documents', selected.id)"
+              >
+                开始编辑文稿
               </button>
             </div>
             <div class="version-heading-actions">

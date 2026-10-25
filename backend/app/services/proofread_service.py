@@ -254,5 +254,11 @@ def delete_region(region_id: int) -> None:
         region = regions_repo.get_region(conn, region_id)
         if region is None:
             raise AppError(REGION_NOT_FOUND, f"区域不存在（id={region_id}）", status_code=404)
+        if conn.execute(
+            "SELECT 1 FROM document_insertions WHERE source_region_id=?", (region_id,)
+        ).fetchone():
+            raise AppError(
+                "INSERTION_DEPENDENCY", "此区域仍有文稿插入行，请先处理对应文稿中的插入行", 409
+            )
         regions_repo.delete_region(conn, region_id)
         _maybe_mark_ready(conn, region.template_id)

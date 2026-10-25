@@ -14,6 +14,7 @@ from app.api.blocks import router as blocks_router
 from app.api.guide import router as guide_router
 from app.api.health import router as health_router
 from app.api.history import router as history_router
+from app.api.insertions import router as insertions_router
 from app.api.maintenance import router as maintenance_router
 from app.api.migrations import router as migrations_router
 from app.api.regions import router as regions_router
@@ -46,6 +47,7 @@ def create_app() -> FastAPI:
                 request.method in {"PUT", "PATCH"}
                 and re.fullmatch(r"/api/versions/\d+", path) is not None
             )
+            or "/insertions" in path
             or "/bindings" in path
             or path.endswith(("/text", "/layout", "/migrate/apply"))
             or ("/templates/" in path and path.endswith("/regions"))
@@ -107,6 +109,7 @@ def create_app() -> FastAPI:
         return await call_next(request)
 
     app.include_router(history_router)
+    app.include_router(insertions_router)
     app.include_router(archives_router)
     app.include_router(maintenance_router)
     app.include_router(health_router)

@@ -120,6 +120,8 @@ def _persist_region_bboxes(
     updated = 0
     with get_conn() as conn:
         for r in regions:
+            if r.id < 0:
+                continue
             stale = _auto_bbox_stale(r, pdf_sha)
             if not stale:
                 continue
@@ -239,6 +241,13 @@ def render_version(version_id: int) -> VersionRender:
             )
         }
 
+        from app.services.insertions import render_rows
+
+        inserted_regions, inserted_bindings, inserted_blocks = render_rows(conn, version_id)
+        regions.extend(inserted_regions)
+        bindings.extend(inserted_bindings)
+        block_by_id.update(inserted_blocks)
+
     return render_document(
         tpl, regions, bindings, block_by_id, removed_ids, identity=f"v_{version_id}"
     )
@@ -261,6 +270,14 @@ def render_document(
         for b in bindings
         if b.status == "active" and b.block_id in block_by_id
     }
+    block_contents.update(
+        {b.region_id: "" for b in bindings if b.status == "missing" and b.missing_policy == "blank"}
+    )
+    # Every new row is a real empty paragraph even before it has text or a material.
+    for region in regions:
+        if region.id < 0:
+            block_contents.setdefault(region.id, "")
+    has_insertions = any(r.id < 0 for r in regions)
     binding_by_region = {b.region_id: b for b in bindings}
     docx_path = settings.templates_dir / tpl.storage_name
     if not docx_path.is_file():
@@ -346,7 +363,17 @@ def render_document(
                 if any(_auto_bbox_stale(region, template_sha) for region in regions):
                     _persist_region_bboxes(tpl, regions, template_pdf, template_sha)
                 with get_conn() as conn:
-                    regions = regions_repo.list_regions(conn, tpl.id)
+                    originals = regions_repo.list_regions(conn, tpl.id)
+                source_by_id = {r.id: r for r in originals}
+                inserted = [
+                    replace(
+                        r,
+                        bbox_json=source_by_id[json.loads(r.anchor)["source_region_id"]].bbox_json,
+                    )
+                    for r in regions
+                    if r.id < 0
+                ]
+                regions = [*originals, *inserted]
         else:
             pdf_path = manager.convert(tmp_docx)
     finally:
@@ -387,6 +414,10 @@ def render_document(
         items.append(
             {
                 "id": region.id,
+                "field_ref": {
+                    "kind": "insertion" if region.id < 0 else "region",
+                    "id": abs(region.id),
+                },
                 "template_id": region.template_id,
                 "type": region.type,
                 "label": region.label,
@@ -398,7 +429,9 @@ def render_document(
                     r.id in removed_ids and json.loads(r.anchor)["path"] == path for r in regions
                 ),
                 "current_text": (
-                    block.content
+                    ""
+                    if binding and binding.status == "missing" and binding.missing_policy == "blank"
+                    else block.content
                     if binding and binding.status == "active" and block
                     else region.placeholder
                     if region.placeholder is not None
@@ -412,6 +445,7 @@ def render_document(
                     and region.bbox_source == "manual"
                     and region.bbox_json
                     and not (binding and binding.status == "active")
+                    and not has_insertions
                     else _geometry_bbox(geo)
                     if geo
                     else None
@@ -426,6 +460,8 @@ def render_document(
                         "status": binding.status,
                         "line_break_mode": binding.line_break_mode,
                         "position": binding.position,
+                        "missing_policy": binding.missing_policy,
+                        "is_material": block.material if block else False,
                     }
                     if binding
                     else None

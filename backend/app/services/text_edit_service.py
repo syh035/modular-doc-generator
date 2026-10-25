@@ -29,6 +29,7 @@ def save_text(
     content: str,
     sync_block: bool,
     expected_content: str | None = None,
+    line_break_mode: str | None = None,
 ) -> dict[str, object]:
     if not content.strip() or len(content) > 5000:
         raise AppError(BLOCK_INVALID, "内容不能为空，且不能超过 5000 字", status_code=400)
@@ -72,6 +73,8 @@ def save_text(
                 )
             )
         )
+        if binding and binding.status == "missing" and binding.missing_policy == "blank":
+            current = ""
         if expected_content is not None and expected_content != current:
             raise AppError(
                 REGION_TEXT_CONFLICT, "内容已发生变化，请重新打开编辑窗口", status_code=409
@@ -85,14 +88,20 @@ def save_text(
             block = original_block
         else:
             name = (region.label.strip() + " · 编辑")[:30]
-            block = blocks_repo.create_block(conn, name, content)
+            block = blocks_repo.create_block(conn, name, content, material=False)
             if original_block is not None:
                 conn.execute(
                     "INSERT INTO block_tags (block_id, tag_id) SELECT ?, tag_id "
                     "FROM block_tags WHERE block_id = ?",
                     (block.id, original_block.id),
                 )
-        saved = bindings_repo.upsert_binding(conn, version_id, region_id, block.id)
+        saved = (
+            bindings_repo.upsert_binding(conn, version_id, region_id, block.id)
+            if line_break_mode is None
+            else bindings_repo.upsert_binding(
+                conn, version_id, region_id, block.id, line_break_mode=line_break_mode
+            )
+        )
         return {
             "version_id": version_id,
             "region_id": region_id,

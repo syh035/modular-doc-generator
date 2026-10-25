@@ -1392,6 +1392,23 @@ describe('导出（M9，PRD 4.8 / D5）', () => {
     expect(store.exportError).toBeNull()
   })
 
+  it('待补内容与大超出合并成一次服务端确认，并携带同批令牌输出', async () => {
+    const options = { exportStatus: 409, overflow: { orig_height: 20, new_height: 70, ratio: 2.5, level: 'large', clipped: false, fixed_row: false },
+      exportBody: { error: { code: 'DOCUMENT_WARNINGS', message: '请核对待补内容' }, warning_token: 'same-batch',
+        warnings: [{ region_id: 1, label: '姓名', kind: 'missing', ratio: null, clipped: false, fixed_row: false }, { region_id: 2, label: '经历', ratio: 2.5, clipped: false, fixed_row: false }] } }
+    const fn = exportRoutes(options)
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    store.regions[0]!.binding = { block_id: 9, block_name: '原素材', status: 'missing', missing_policy: 'blank' }
+    expect((await store.requestExport(false)).needConfirm).toBe(true)
+    expect(store.exportWarnings).toHaveLength(2)
+    options.exportStatus = 200
+    expect((await store.requestExport(true)).ok).toBe(true)
+    const calls = fn.mock.calls.filter(c => String(c[0]).includes('/export'))
+    expect(calls).toHaveLength(2)
+    expect(JSON.parse(calls[1]![1]!.body as string)).toEqual({ confirm_large_overflow: true, confirm_warnings_token: 'same-batch' })
+  })
+
   it('导出失败（写盘 500）：ok=false，exportError 可读', async () => {
     exportRoutes({
       exportStatus: 500,

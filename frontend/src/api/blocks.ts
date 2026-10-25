@@ -28,7 +28,11 @@ export interface TagInfo {
 }
 
 /** 块更新载荷（部分更新：仅传入字段生效；tags 传入即整组替换）。 */
+export interface MaterialReference { kind: 'region' | 'insertion'; version_id: number; id: number }
+export interface MaterialSelection { token: string; selected: MaterialReference[] }
+
 export interface BlockPayload {
+  reference_scope?: MaterialSelection
   template_id?: number
   name?: string
   content?: string
@@ -38,7 +42,7 @@ export interface BlockPayload {
 
 /** 块列表（存活块，更新时间倒序，含各自标签组）。 */
 export async function listBlocks(templateId?: number): Promise<Block[]> {
-  const url = templateId === undefined ? '/api/blocks' : `/api/blocks?template_id=${templateId}`
+  const url = templateId === undefined ? '/api/blocks?materials_only=true' : `/api/blocks?template_id=${templateId}&materials_only=true`
   const body = await apiFetch<{ blocks: Block[] }>(url)
   return body.blocks
 }
@@ -59,16 +63,17 @@ export function createBlock(payload: BlockPayload): Promise<Block> {
 
 /** 更新块（部分更新）。 */
 export function updateBlock(id: number, payload: BlockPayload): Promise<Block> {
-  return apiFetch<Block>(`/api/blocks/${id}`, {
-    method: 'PUT',
+  const { reference_scope, ...fields } = payload
+  return apiFetch<Block>(reference_scope ? `/api/blocks/${id}/scoped` : `/api/blocks/${id}`, {
+    method: reference_scope ? 'POST' : 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(reference_scope ? { ...fields, ...reference_scope, action: 'update' } : fields),
   })
 }
 
 /** 软删除块（D11）：关联绑定置 missing。 */
-export async function deleteBlock(id: number): Promise<void> {
-  await apiFetch<void>(`/api/blocks/${id}`, { method: 'DELETE' }) // 204 无响应体
+export async function deleteBlock(id: number, scope?: MaterialSelection): Promise<void> {
+  await apiFetch<void>(scope ? `/api/blocks/${id}/scoped` : `/api/blocks/${id}`, scope ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...scope, action: 'delete' }) } : { method: 'DELETE' }) // 204 无响应体
 }
 
 /** 标签列表（含存活块计数，按名称排序）。 */

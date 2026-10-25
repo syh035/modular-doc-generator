@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { useModalEsc } from '../composables/useModalEsc'
 import { ref } from 'vue'
+import MaterialScope from './MaterialScope.vue'
+import type { MaterialSelection } from '../api/blocks'
 import BlockImpact, { type BlockUsage } from './BlockImpact.vue'
 
 const props = defineProps<{ editing: boolean; busy: boolean; error: string | null; submitLabel: string; blockId?: number; versionId?: number | null; material?: boolean }>()
@@ -8,8 +10,9 @@ const name = defineModel<string>('name', { required: true })
 const content = defineModel<string>('content', { required: true })
 const kind = defineModel<'text' | 'blank'>('kind', { default: 'text' })
 const tags = defineModel<string>('tags', { required: true })
-const emit = defineEmits<{ submit: [scope: 'shared' | 'version']; close: [] }>()
+const emit = defineEmits<{ submit: [scope: 'shared' | 'version', selection?: MaterialSelection]; close: [] }>()
 const usage = ref<BlockUsage | null>(null)
+const selection = ref<MaterialSelection | null>(null)
 const scope = ref<'shared' | 'version'>('shared')
 useModalEsc(() => { if (!props.busy) emit('close') })
 </script>
@@ -23,7 +26,7 @@ useModalEsc(() => { if (!props.busy) emit('close') })
   >
     <form
       class="editor-card"
-      @submit.prevent="!busy && (!blockId || usage) && emit('submit', scope)"
+      @submit.prevent="!busy && (!blockId || (material ? selection : usage)) && emit('submit', scope, selection ?? undefined)"
     >
       <header>
         <h2>{{ editing ? (material ? '编辑素材' : '编辑字符块') : (material ? '新建素材' : '新建字符块') }}</h2><button
@@ -38,11 +41,18 @@ useModalEsc(() => { if (!props.busy) emit('close') })
       </header>
       <div class="editor-fields">
         <template v-if="editing && blockId">
+          <MaterialScope
+            v-if="material"
+            :block-id="blockId"
+            :disabled="busy"
+            @change="selection = $event"
+          />
           <BlockImpact
+            v-else
             :block-id="blockId"
             @loaded="usage = $event"
           />
-          <label>修改范围<select
+          <label v-if="!material">修改范围<select
             v-model="scope"
             :disabled="busy"
             aria-label="修改范围"
@@ -100,7 +110,7 @@ useModalEsc(() => { if (!props.busy) emit('close') })
         </button><button
           type="submit"
           class="ui-btn ui-primary"
-          :disabled="busy || (!!blockId && !usage) || !name.trim() || (kind === 'text' && !content.trim())"
+          :disabled="busy || (!!blockId && !(material ? selection : usage)) || !name.trim() || (kind === 'text' && !content.trim())"
         >
           {{ submitLabel }}
         </button>

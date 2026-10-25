@@ -2,7 +2,6 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, getActivePinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Region } from '../api/templates'
-import * as blocksApi from '../api/blocks'
 import { useAppStore } from '../stores/app'
 import { useBlocksStore } from '../stores/blocks'
 import { usePreviewStore, type DisplayRegion } from '../stores/preview'
@@ -77,8 +76,9 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
-function mountPreview() {
+function mountPreview(attachTo?: Element) {
   const wrapper = mount(TemplatePreview, {
+    attachTo,
     global: { plugins: [createPinia()] },
   })
   useAppStore().setTab('workbench')
@@ -86,8 +86,8 @@ function mountPreview() {
 }
 
 /** 置 ready 态并渲染一页（含区域覆盖层）。 */
-async function readyWith(regions: DisplayRegion[]) {
-  const wrapper = mountPreview()
+async function readyWith(regions: DisplayRegion[], attachTo?: Element) {
+  const wrapper = mountPreview(attachTo)
   const store = usePreviewStore()
   store.status = 'ready'
   store.currentTemplateId = 1
@@ -193,7 +193,7 @@ describe('TemplatePreview（M5a 只读预览）', () => {
     expect(overlay.attributes('style')).toContain('top: 20px')
     expect(overlay.attributes('style')).toContain('width: 20px')
     expect(overlay.attributes('style')).toContain('height: 5px')
-    expect(overlay.attributes('title')).toBe('字段1（未绑定，点击选择字符块）')
+    expect(overlay.attributes('title')).toBe('字段1（尚未填写，点击编辑或选用素材）')
 
     // 绿色覆盖层（M6a：active 绑定）
     const bound = wrapper.find('.overlay.bound')
@@ -235,7 +235,7 @@ describe('TemplatePreview（M5a 只读预览）', () => {
     ])
     const overlay = wrapper.find('.overlay.pending')
     expect(overlay.exists()).toBe(true)
-    expect(overlay.attributes('title')).toContain('待重新绑定')
+    expect(overlay.attributes('title')).toContain('点击补全')
   })
 
   it('切回 idle（pdfData 置空）：清空页面渲染', async () => {
@@ -273,7 +273,7 @@ describe('TemplatePreview（M5a 只读预览）', () => {
     await flushPromises()
     expect(cancelSpy).toHaveBeenCalledTimes(1) // 旧批次先取消再重排
     expect(renderSpy).toHaveBeenCalledTimes(1) // 同一 PDF，仅更新覆盖层
-    expect(wrapper.find('.overlay.pending').attributes('title')).toBe('字段2（未绑定，点击选择字符块）')
+    expect(wrapper.find('.overlay.pending').attributes('title')).toBe('字段2（尚未填写，点击编辑或选用素材）')
   })
 })
 
@@ -289,60 +289,30 @@ describe('TemplatePreview 绑定交互（M6a）', () => {
     expect(wrapper.find('[data-testid="binding-dialog"]').exists()).toBe(false)
   })
 
-  it('反向：未选块 → 点区域弹浮层，点块项绑定', async () => {
-    const { wrapper, store } = await readyWith([region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 })])
-    const bindSpy = vi.spyOn(store, 'bindRegionToBlock').mockResolvedValue(true)
-    const blocksStore = useBlocksStore()
-    blocksStore.blocks = [
-      {
-        id: 9,
-        name: '姓名块',
-        content: '张三',
-        tags: [],
-        created_at: '',
-        updated_at: '',
-      },
-    ]
-
-    const listSpy = vi.spyOn(blocksApi, 'listBlocks').mockResolvedValueOnce(blocksStore.blocks)
-    await blocksStore.loadTemplateBlocks(1)
-    listSpy.mockRestore()
-    await wrapper.find('.overlay').trigger('click')
-    const dialog = wrapper.find('[data-testid="binding-dialog"]')
-    expect(dialog.exists()).toBe(true)
-    expect(dialog.text()).toContain('区域：字段1')
-
-    await dialog.find('.block-item').trigger('click')
-    expect(bindSpy).toHaveBeenCalledWith(1, 9)
-    expect(wrapper.find('[data-testid="binding-dialog"]').exists()).toBe(false)
-  })
-
-  it('已绑定区域：浮层显示当前块，点解绑', async () => {
-    const { wrapper, store } = await readyWith([
-      region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 }, {
-        block_id: 9,
-        block_name: '姓名块',
-        status: 'active',
-      }),
-    ])
-    const unbindSpy = vi.spyOn(store, 'unbindRegionFromBlock').mockResolvedValue(true)
-
-    await wrapper.find('.overlay.bound').trigger('click')
-    const dialog = wrapper.find('[data-testid="binding-dialog"]')
-    expect(dialog.text()).toContain('当前绑定')
-    expect(dialog.text()).toContain('姓名块')
-
-    await dialog.find('.danger').trigger('click')
-    expect(unbindSpy).toHaveBeenCalledWith(1)
-    expect(wrapper.find('[data-testid="binding-dialog"]').exists()).toBe(false)
-  })
-
-  it('浮层遮罩点击关闭', async () => {
+  it('点字段直接打开编辑侧栏，文稿保持可见', async () => {
     const { wrapper } = await readyWith([region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 })])
     await wrapper.find('.overlay').trigger('click')
-    expect(wrapper.find('[data-testid="binding-dialog"]').exists()).toBe(true)
-    await wrapper.find('[data-testid="binding-dialog"]').trigger('click')
-    expect(wrapper.find('[data-testid="binding-dialog"]').exists()).toBe(false)
+    expect(wrapper.get('[aria-label="文稿字段编辑"]').text()).toContain('字段1')
+    expect(wrapper.find('dialog[aria-label="编辑区域文字"]').exists()).toBe(false)
+    expect(wrapper.find('.pdf-page').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('已绑定区域直接显示当前文稿文字，不先弹素材选择框', async () => {
+    const item = { ...region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 }, { block_id: 9, block_name: '姓名块', status: 'active', is_material: true }), current_text: '当前文稿文字' }
+    const { wrapper } = await readyWith([item])
+    await wrapper.find('.overlay.bound').trigger('click')
+    expect(wrapper.get('textarea').element).toHaveProperty('value', '当前文稿文字')
+    expect(wrapper.get('[aria-label="文稿字段编辑"]').text()).toContain('姓名块')
+    wrapper.unmount()
+  })
+
+  it('侧栏通过明确的关闭按钮退出', async () => {
+    const { wrapper } = await readyWith([region(1, { page: 0, x0: 1, y0: 2, x1: 3, y1: 4 })])
+    await wrapper.find('.overlay').trigger('click')
+    await wrapper.get('[aria-label="关闭字段编辑"]').trigger('click')
+    expect(wrapper.find('[aria-label="文稿字段编辑"]').exists()).toBe(false)
+    wrapper.unmount()
   })
 
   it('绑定失败：error 横幅展示（不动摇已渲染内容）', async () => {
@@ -704,6 +674,7 @@ describe('区域检查与补选任务', () => {
     })))
     const create = vi.spyOn(store, 'createFrameRegion').mockResolvedValue({ ok: true, error: null })
     const confirm = vi.spyOn(store, 'confirmRegion')
+    if (!store.proofreadMode) { await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises() }
     await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
     await draw(wrapper)
     expect(wrapper.get('[data-testid=region-name-input]').element).toHaveProperty('value', '补选区域2')
@@ -711,7 +682,7 @@ describe('区域检查与补选任务', () => {
     expect(create).toHaveBeenCalledOnce()
     expect(create.mock.calls[0]?.slice(1)).toEqual(['补选区域2', 'custom'])
     expect(confirm).not.toHaveBeenCalled()
-    expect(mode.mock.calls.map(call => call[0])).toEqual([true, false])
+    expect(mode.mock.calls.map(call => call[0])).toEqual([true, true, false])
     expect(store.proofreadMode).toBe(false)
     expect(wrapper.get('.region-feedback').text()).toContain('已保存区域「补选区域2」')
     expect(store.currentVersionId).toBe(8)
@@ -726,6 +697,7 @@ describe('区域检查与补选任务', () => {
       }]
       return { ok: true, error: null }
     })
+    if (!store.proofreadMode) { await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises() }
     await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
     await draw(wrapper)
     await action(wrapper, '保存并继续添加').trigger('click'); await flushPromises()
@@ -744,6 +716,7 @@ describe('区域检查与补选任务', () => {
     const { wrapper, store } = await workflow()
     const create = vi.spyOn(store, 'createFrameRegion').mockResolvedValueOnce({ ok: false, error: '框选包含多个段落' })
       .mockResolvedValue({ ok: true, error: null })
+    if (!store.proofreadMode) { await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises() }
     await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
     await draw(wrapper)
     await wrapper.get('[data-testid=region-name-input]').setValue('自定义经历')
@@ -763,12 +736,13 @@ describe('区域检查与补选任务', () => {
     wrapper.unmount()
   })
 
-  it('从文档取消补选会返回文档，从检查任务取消只返回检查', async () => {
+  it('添加仅位于检查任务中，取消框选保留检查任务', async () => {
     const { wrapper, store } = await workflow()
+    if (!store.proofreadMode) { await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises() }
     await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
     await wrapper.get('[data-testid=cancel-region-task]').trigger('click'); await flushPromises()
-    expect(store.proofreadMode).toBe(false)
-    await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises()
+    expect(store.proofreadMode).toBe(true)
+    if (!store.proofreadMode) { await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises() }
     await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
     await wrapper.get('[data-testid=cancel-region-task]').trigger('click'); await flushPromises()
     expect(store.proofreadMode).toBe(true)
@@ -831,6 +805,7 @@ describe('区域检查与补选任务', () => {
 
   it.each(['template', 'mode'])('同一 tick 的 %s 往返也隔离旧创建与新命名草稿', async context => {
     const { wrapper, store } = await workflow()
+    if (!store.proofreadMode) { await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises() }
     await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
     await draw(wrapper)
     let finish!: (result: { ok: boolean; error: string | null }) => void
@@ -840,6 +815,7 @@ describe('区域检查与补选任务', () => {
     if (context === 'template') { store.currentTemplateId = 2; store.currentTemplateId = 1 }
     else { store.proofreadMode = false; store.proofreadMode = true }
     await flushPromises()
+    if (!store.proofreadMode) { await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises() }
     await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
     await draw(wrapper)
     await wrapper.get('[data-testid=region-name-input]').setValue('新的同模板任务')
@@ -881,6 +857,7 @@ describe('区域框选与位置写入的交互保护', () => {
   }
   it('等待模板请求及新画布全部完成，加载期间不可重入或在旧 PDF 框选', async () => {
     const { wrapper, store } = await readyWith([])
+    store.proofreadMode = true; await flushPromises()
     let finishRequest!: () => void
     let finishCanvas!: () => void
     const toggle = vi.spyOn(store, 'toggleProofreadMode').mockImplementation(async () => {
@@ -889,6 +866,7 @@ describe('区域框选与位置写入的交互保护', () => {
       store.pdfData = new ArrayBuffer(9); store.refreshing = false
     })
     renderSpy.mockImplementationOnce(() => new Promise<void>(resolve => { finishCanvas = resolve }))
+    if (!store.proofreadMode) { await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises() }
     await wrapper.get('[data-testid=add-region]').trigger('click')
     await draw(wrapper)
     expect(wrapper.find('[data-testid=region-name-dialog]').exists()).toBe(false)
@@ -905,6 +883,7 @@ describe('区域框选与位置写入的交互保护', () => {
   })
   it('取消加载后旧请求完成不会重新进入框选', async () => {
     const { wrapper, store } = await readyWith([])
+    store.proofreadMode = true; await flushPromises()
     let finish!: () => void
     vi.spyOn(store, 'toggleProofreadMode').mockImplementation(async on => {
       if (!on) { store.proofreadMode = false; store.refreshing = false; return }
@@ -912,6 +891,7 @@ describe('区域框选与位置写入的交互保护', () => {
       await new Promise<void>(resolve => { finish = resolve })
       store.pdfData = new ArrayBuffer(9); store.refreshing = false
     })
+    if (!store.proofreadMode) { await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises() }
     await wrapper.get('[data-testid=add-region]').trigger('click')
     await wrapper.get('[data-testid=cancel-region-task]').trigger('click')
     finish(); await flushPromises()
@@ -964,6 +944,7 @@ describe('区域框选与位置写入的交互保护', () => {
   it('区域创建防重复，旧模板请求完成不会清除新模板命名草稿', async () => {
     const { wrapper, store } = await readyWith([])
     store.proofreadMode = true; await flushPromises()
+    if (!store.proofreadMode) { await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises() }
     await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
     await draw(wrapper)
     let finish!: (result: { ok: boolean; error: string | null }) => void
@@ -974,6 +955,7 @@ describe('区域框选与位置写入的交互保护', () => {
     expect(create).toHaveBeenCalledTimes(1)
     store.currentTemplateId = 2; store.pdfData = new ArrayBuffer(10)
     await flushPromises()
+    if (!store.proofreadMode) { await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises() }
     await wrapper.get('[data-testid=add-region]').trigger('click'); await flushPromises()
     await draw(wrapper)
     await wrapper.get('[data-testid=region-name-input]').setValue('新的命名草稿')
@@ -1085,5 +1067,23 @@ it('M24 在飞渲染取消后不能复用未完成画布', async () => {
   store.regions = []
   await flushPromises()
   expect(renderSpy).toHaveBeenCalledTimes(2)
+  wrapper.unmount()
+})
+
+
+it('进入区域检查再返回时保留当前字段尚未保存的文字', async () => {
+  const { wrapper, store } = await readyWith([{ ...region(1, { page: 0, x0: 10, y0: 20, x1: 100, y1: 40 }), current_text: '原文' }], document.body)
+  vi.spyOn(useBlocksStore(), 'loadBlocks').mockResolvedValue()
+  store.currentVersionId = 8
+  await flushPromises()
+  vi.spyOn(store, 'toggleProofreadMode').mockImplementation(async on => { store.proofreadMode = on })
+  await wrapper.get('.overlay').trigger('click')
+  await wrapper.get('textarea').setValue('尚未保存的文字')
+  await wrapper.get('[data-testid=review-regions]').trigger('click'); await flushPromises()
+  expect(store.proofreadMode).toBe(true)
+  expect(wrapper.get('[aria-label="文稿字段编辑"]').isVisible()).toBe(false)
+  await wrapper.get('[data-testid=finish-region-review]').trigger('click'); await flushPromises()
+  expect(wrapper.get('[aria-label="文稿字段编辑"]').isVisible()).toBe(true)
+  expect(wrapper.get('textarea').element).toHaveProperty('value', '尚未保存的文字')
   wrapper.unmount()
 })

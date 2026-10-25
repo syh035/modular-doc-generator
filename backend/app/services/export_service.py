@@ -76,3 +76,34 @@ def write_export(data: bytes, file_name: str) -> Path:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
     return target
+
+
+def document_warnings(items: list[dict[str, object]]) -> list[dict[str, object]]:
+    result = extract_large_overflow_warnings(items)
+    for item in items:
+        binding = item.get("binding")
+        if (
+            not item.get("removed")
+            and isinstance(binding, dict)
+            and binding.get("status") == "missing"
+            and binding.get("missing_policy") == "blank"
+        ):
+            result.append(
+                {
+                    "region_id": item["id"],
+                    "field_ref": item.get("field_ref"),
+                    "label": item["label"],
+                    "kind": "missing",
+                    "ratio": None,
+                    "clipped": False,
+                    "fixed_row": False,
+                }
+            )
+    return result
+
+
+def warnings_token(data: bytes, warnings: list[dict[str, object]]) -> str:
+    import hashlib
+    import json
+
+    return hashlib.sha256(data + json.dumps(warnings, sort_keys=True).encode()).hexdigest()
