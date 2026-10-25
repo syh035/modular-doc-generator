@@ -59,7 +59,7 @@ CI 定义见 [.github/workflows/ci.yml](../../.github/workflows/ci.yml)：后端
 
 ### 2026-10-25 整体功能验收口径
 
-M39—M40 本地通过后端 408 项、前端 368 项、ruff／mypy（app 与 tests）、eslint／vue-tsc 和生产构建。隔离合成资料库完成原模板检查与零稿返回、原位补选、侧栏选择／设定素材、显式引用同步删除、留空高亮、导出／归档定位补全及确认、独立行、批量标签／可见范围和撤销；桌面、850／320 像素及 Tab 操作均检查。旧归档 Word／PDF 的 SHA-256 与冻结文字保持不变。最终提交远程五项 CI 结果单独核对，不用上一提交的成功代替。
+M39—M40 本地通过后端 408 项、前端 368 项、ruff／mypy（app 与 tests）、eslint／vue-tsc 和生产构建。隔离合成资料库完成原模板检查与零稿返回、原位补选、侧栏选择／设定素材、显式引用同步删除、留空高亮、导出／归档定位补全及确认、独立行、批量标签／可见范围和撤销；桌面、850／320 像素及 Tab 操作均检查。旧归档 Word／PDF 的 SHA-256 与冻结文字保持不变。代码提交 1abe2d0 的[远程五项 CI](https://github.com/syh035/modular-doc-generator/actions/runs/40194803869)全部通过，含三大真实文档场景及两架构桌面检查，不用上一提交的成功代替。
 
 实际 DOCX 采用 [python-docx 官方测试资料](https://github.com/python-openxml/python-docx/tree/e45454602b53e8e572b179ccf1c91093ec9f4ed7/features/steps/test_files)，固定提交 e454546，核对 Git blob 与下载字节后使用。它们是公开 Word 测试样本，覆盖表格、分节、页眉页脚和超链接，不是用户真实简历，也不能据此保证任意复杂模板均无差异。
 
