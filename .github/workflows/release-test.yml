@@ -33,6 +33,7 @@ jobs:
           python -m venv backend/.venv
           backend/.venv/bin/pip install -c backend/requirements-release.txt -e './backend[dev]'
           npm ci --prefix frontend
+          brew update
           brew install --cask libreoffice
       - name: Verify backend, frontend and native app
         run: |

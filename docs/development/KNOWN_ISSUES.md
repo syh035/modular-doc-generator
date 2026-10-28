@@ -179,3 +179,7 @@
 ### P75：设定素材保留字段排版
 
 新建素材并关联字段时，upsert 的默认换段／inside 会无意覆盖原绑定的 soft／before 等设置。当前明确选择的 line_break_mode 优先，否则保留原模式，position 保持原值；插入行同样保留旧模式。幂等请求摘要包含本次模式，重试不能改变已提交内容。
+
+### P76：发布 runner 的旧 Homebrew 元数据
+
+macOS runner 预装的 cask 元数据可能引用已从 stable 下载目录移除的 LibreOffice 版本，安装时 404。发布步骤显式 brew update 后再安装，保留包校验及真实转换测试，不以跳过转换规避失败。失败标签不重写，修复后递增测试序号。
