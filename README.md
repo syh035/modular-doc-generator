@@ -7,12 +7,12 @@
 
 ## 下载与安装
 
-当前为 [v1.3.0-test.3 开源测试版](https://github.com/syh035/modular-doc-generator/releases/tag/v1.3.0-test.3)，支持 macOS 14+：
+当前为 [v1.3.0-test.5 开源测试版](https://github.com/syh035/modular-doc-generator/releases/tag/v1.3.0-test.5)，支持 macOS 14+：
 
 | 电脑 | 下载 |
 |------|------|
-| Apple Silicon（M 系列） | [arm64 ZIP](https://github.com/syh035/modular-doc-generator/releases/download/v1.3.0-test.3/ModularDocGenerator-1.3.0-macOS-arm64.zip) |
-| Intel | [x86_64 ZIP](https://github.com/syh035/modular-doc-generator/releases/download/v1.3.0-test.3/ModularDocGenerator-1.3.0-macOS-x86_64.zip) |
+| Apple Silicon（M 系列） | [arm64 ZIP](https://github.com/syh035/modular-doc-generator/releases/download/v1.3.0-test.5/ModularDocGenerator-1.3.0-macOS-arm64.zip) |
+| Intel | [x86_64 ZIP](https://github.com/syh035/modular-doc-generator/releases/download/v1.3.0-test.5/ModularDocGenerator-1.3.0-macOS-x86_64.zip) |
 
 1. 下载对应架构的 ZIP，解压后将 App 放到 Applications。
 2. 打开 App，按检测结果安装 Python 3.12 和 LibreOffice，再初始化应用依赖。
@@ -22,7 +22,7 @@
 
 ## 核心功能
 
-以下按当前源码说明，固定标签下载包尚未包含全部 [未发布更新](CHANGELOG.md#unreleased)。
+本测试包包含以下功能，完整变更见 [更新日志](CHANGELOG.md)。
 
 - **文稿与模板**：文稿按模板分组，新建、继续编辑、另存、重命名和删除；模板有独立浏览入口。
 - **文字编辑与检查**：点击正文直接编辑，在原模板检查任务中补选遗漏区域；模板可独立检查，原件保留。
@@ -46,6 +46,6 @@
 
 ## 许可与更多资料
 
-原创源码采用 [MIT](LICENSE)；组合 App 采用 AGPL-3.0，详见 [分发说明](desktop/DISTRIBUTION.md)。[发布页](https://github.com/syh035/modular-doc-generator/releases/tag/v1.3.0-test.3)提供校验文件和对应源码。
+原创源码采用 [MIT](LICENSE)；组合 App 采用 AGPL-3.0，详见 [分发说明](desktop/DISTRIBUTION.md)。[发布页](https://github.com/syh035/modular-doc-generator/releases/tag/v1.3.0-test.5)提供校验文件和对应源码。
 
 [更新日志](CHANGELOG.md) · [开发文档](docs/README.md)

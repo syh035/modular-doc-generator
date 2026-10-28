@@ -2,7 +2,7 @@
 
 本应用使用 Swift AppKit 普通应用窗口、Dock、WKWebView 与可选状态栏入口，CFBundleExecutable 是 Mach-O；服务直接通过 Foundation Process 启动。后端代码、前端生产资源和锁定 Python wheels 随 App 提供，用户数据与运行环境独立到 Application Support，使用者无需源码目录或 Node。
 
-已发布 [v1.3.0-test.3 开源测试版](https://github.com/syh035/modular-doc-generator/releases/tag/v1.3.0-test.3)，包含 arm64／x86_64 ZIP、SHA-256 校验文件及对应源码。
+已发布 [v1.3.0-test.5 开源测试版](https://github.com/syh035/modular-doc-generator/releases/tag/v1.3.0-test.5)，包含 arm64／x86_64 ZIP、SHA-256 校验文件及对应源码。
 
 ## 构建与运行
 
