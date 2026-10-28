@@ -1,36 +1,70 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useBlocksStore } from '../stores/blocks'
 import BlockLibrary from './BlockLibrary.vue'
 import { usePreviewStore } from '../stores/preview'
 
+const wrappers: VueWrapper[] = []
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.unstubAllGlobals()
   localStorage.clear()
 })
-
-/** 复用 active pinia：组件内 useBlocksStore() 回落到 activePinia，与测试同一实例。 */
-function mountLibrary() {
-  usePreviewStore().currentTemplateId = 1
-  return mount(BlockLibrary)
+afterEach(() => {
+  wrappers.splice(0).forEach(wrapper => wrapper.unmount())
+  vi.restoreAllMocks(); vi.unstubAllGlobals()
+})
+async function openLibraryMenu(wrapper: VueWrapper): Promise<void> {
+  const menu = wrapper.get<HTMLDetailsElement>('.library-actions')
+  menu.element.open = true
+  await menu.trigger('toggle')
 }
 
-describe('字符块批量删除', () => {
+/** 复用 active pinia：组件内 useBlocksStore() 回落到 activePinia，与测试同一实例。 */
+function mountLibrary(attach = false) {
+  usePreviewStore().currentTemplateId = 1
+  const wrapper = mount(BlockLibrary, { attachTo: attach ? document.body : undefined })
+  wrappers.push(wrapper)
+  return wrapper
+}
+
+it.each([null, 9])('素材主页面展示全库，新建不自动加入当前模板（当前模板=%s）', async templateId => {
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input) === '/api/tags' ? Response.json({ tags: [] })
+    : Response.json({ blocks: [{ id: 6, name: '全库素材', content: '共用正文', tags: [], created_at: '', updated_at: '' }] }))
+  vi.stubGlobal('fetch', fetcher)
+  usePreviewStore().currentTemplateId = templateId
+  const store = useBlocksStore()
+  const create = vi.spyOn(store, 'createNewBlock').mockResolvedValue(true)
+  const wrapper = mount(BlockLibrary, { props: { standalone: true } })
+  wrappers.push(wrapper)
+  await flushPromises()
+  expect(wrapper.text()).toContain('全库素材')
+  expect(fetcher.mock.calls.map(call => String(call[0]))).not.toContain(`/api/blocks?template_id=${templateId}`)
+  await wrapper.get('[aria-label=新建素材]').trigger('click')
+  await wrapper.get('input[placeholder="1–30 字"]').setValue('独立素材')
+  await wrapper.get('textarea').setValue('可复用正文')
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  expect(create).toHaveBeenCalledWith('独立素材', '可复用正文', [], 'text', undefined)
+})
+
+describe('素材批量删除', () => {
   async function library() {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => Response.json(String(input) === '/api/tags' ? { tags: [] } : { blocks: [1, 2].map(id => ({ id, name: id === 1 ? '工作' : '项目', content: '正文', tags: [], created_at: '', updated_at: '' })) })))
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => Response.json(String(input).endsWith('/references') ? { fields: [], token: 'scope-token' } : String(input) === '/api/tags' ? { tags: [] } : { blocks: [1, 2].map(id => ({ id, name: id === 1 ? '工作' : '项目', content: '正文', tags: [], created_at: '', updated_at: '' })) })))
     const wrapper = mountLibrary()
     await flushPromises()
     return wrapper
   }
   function button(wrapper: ReturnType<typeof mount>, text: string) { return wrapper.findAll('button').find(b => b.text() === text)! }
-  it('卡片直接提供删除键；全选限定搜索结果，换筛选清空勾选', async () => {
+  it('卡片管理收进菜单；全选限定搜索结果，换筛选清空勾选', async () => {
     const wrapper = await library()
-    expect(wrapper.findAll('.item-head > .ops > .danger')).toHaveLength(2)
+    expect(wrapper.findAll('.item-head > .ops > .danger')).toHaveLength(0)
+    expect(wrapper.findAll('.block-menu:not([open])')).toHaveLength(2)
+    await openLibraryMenu(wrapper)
     await button(wrapper, '批量管理').trigger('click')
     await wrapper.get('.block-search input').setValue('工作')
-    await wrapper.get('[aria-label="全选当前字符块列表"]').setValue(true)
+    await wrapper.get('[aria-label="全选当前素材列表"]').setValue(true)
     expect(wrapper.text()).toContain('已选 1 项')
     await wrapper.get('.block-search input').setValue('')
     expect(wrapper.text()).toContain('已选 0 项')
@@ -44,14 +78,16 @@ describe('字符块批量删除', () => {
       store.blocks = store.blocks.filter(b => b.id !== id)
       return true
     })
+    await openLibraryMenu(wrapper)
     await button(wrapper, '批量管理').trigger('click')
-    await wrapper.get('[aria-label="全选当前字符块列表"]').setValue(true)
+    await wrapper.get('[aria-label="全选当前素材列表"]').setValue(true)
     await button(wrapper, '批量删除').trigger('click')
+    await flushPromises()
     expect(spy).not.toHaveBeenCalled()
     await button(wrapper, '确认批量删除').trigger('click')
     await flushPromises()
     expect(spy.mock.calls.map(c => c[0])).toEqual([1, 2])
-    expect(wrapper.get('[role="status"]').text()).toContain('已删除 1 个字符块；未删除：项目：保存失败')
+    expect(wrapper.get('[role="status"]').text()).toContain('已删除 1 个素材；未删除：项目：保存失败')
     expect(wrapper.text()).toContain('已选 1 项')
   })
 })
@@ -74,7 +110,10 @@ describe('BlockLibrary 头部折叠与宽度绑定（UI 调整②批）', () => 
     const wrapper = mountLibrary()
     await flushPromises()
     expect(wrapper.find('button.icon-collapse').exists()).toBe(false)
-    expect(wrapper.find('.header .primary').text()).toContain('新建字符块')
+    expect(wrapper.get('.header .primary').attributes('aria-label')).toBe('+ 新建素材')
+    expect(wrapper.text()).toContain('当前模板')
+    expect(wrapper.find('.scope-hint').exists()).toBe(false)
+    expect(wrapper.find('.result-count').exists()).toBe(false)
   })
 
   it('抽屉宽度跟随 store.libraryWidth', async () => {
@@ -237,7 +276,7 @@ describe('BlockLibrary（M6a 最小实现）', () => {
     store.blocks = []
     const wrapper = mountLibrary()
     await flushPromises()
-    expect(wrapper.find('.empty').text()).toContain('当前模板暂无字符块')
+    expect(wrapper.find('.empty').text()).toContain('当前模板暂无素材')
   })
 })
 
@@ -252,6 +291,7 @@ it('未选模板隐藏详情；选模板与绑定变化刷新列表，切换关�
   }))
   const preview = usePreviewStore()
   const wrapper = mount(BlockLibrary)
+  wrappers.push(wrapper)
   await flushPromises()
   expect(wrapper.text()).toContain('请先选择模板')
   expect(wrapper.findAll('.block-item')).toHaveLength(0)
@@ -293,9 +333,10 @@ it('新建块归属当前模板，共享块显式加入并保持同一身份', a
   await flushPromises()
   expect(wrapper.findAll('.block-item')).toHaveLength(0)
   const button = (text: string) => wrapper.findAll('button').find(b => b.text() === text)!
+  await openLibraryMenu(wrapper)
   await button('共享块').trigger('click')
   await flushPromises()
-  expect(wrapper.get('[aria-label="共享字符块"]').text()).toContain('影响所有使用它的模板')
+  expect(wrapper.get('[aria-label="共享素材"]').text()).toContain('可选择是否同步到引用文稿')
   await button('加入当前模板').trigger('click')
   await flushPromises()
   expect(wrapper.findAll('.block-item')).toHaveLength(1)
@@ -321,12 +362,126 @@ it('精简标签入口，统一搜索仍匹配标签且不受旧筛选状态影�
   await wrapper.get('.block-search input').setValue('研发')
   expect(wrapper.findAll('.block-item')).toHaveLength(1)
   expect(wrapper.get('.block-item').text()).toContain('第一段')
+  await openLibraryMenu(wrapper)
   await wrapper.findAll('button').find(b => b.text() === '批量管理')!.trigger('click')
   expect(wrapper.text()).not.toContain('批量标签')
-  await wrapper.get('[aria-label="全选当前字符块列表"]').setValue(true)
+  await wrapper.get('[aria-label="全选当前素材列表"]').setValue(true)
   expect(wrapper.text()).toContain('已选 1 项')
   await wrapper.get('.block-search input').setValue('')
   expect(wrapper.findAll('.block-item')).toHaveLength(2)
   expect(wrapper.text()).toContain('已选 0 项')
   expect(useBlocksStore().blocks[0].tags[0].name).toBe('研发')
+})
+
+describe('素材库紧凑菜单', () => {
+  const blocks = [{ id: 1, name: '经历', content: '第一行\n第二行\n第三行', tags: [], created_at: '', updated_at: '' }]
+  function stubLibrary(): void {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => Response.json(String(input).endsWith('/references')
+      ? { fields: [], token: 'scope-token' } : String(input) === '/api/tags' ? { tags: [] } : { blocks })))
+  }
+  it('库菜单和卡片菜单响应 Esc 与外部点击，不误选内容块', async () => {
+    stubLibrary()
+    const wrapper = mountLibrary(true)
+    await flushPromises()
+    await openLibraryMenu(wrapper)
+    const libraryMenu = wrapper.get<HTMLDetailsElement>('.library-actions')
+    const libraryTrigger = libraryMenu.get('summary')
+    ;(libraryTrigger.element as HTMLElement).focus()
+    document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(libraryMenu.element.open).toBe(false)
+    expect(document.activeElement).toBe(libraryTrigger.element)
+
+    const cardMenu = wrapper.get<HTMLDetailsElement>('.block-menu')
+    cardMenu.element.open = true
+    const search = wrapper.get('.block-search input')
+    ;(search.element as HTMLInputElement).focus()
+    await search.trigger('pointerdown')
+    expect(cardMenu.element.open).toBe(false)
+    expect(document.activeElement).toBe(search.element)
+    expect(useBlocksStore().selectedBlockId).toBeNull()
+  })
+  it('编辑后关闭菜单，退出编辑归还卡片入口', async () => {
+    stubLibrary()
+    const wrapper = mountLibrary(true)
+    await flushPromises()
+    const menu = wrapper.get<HTMLDetailsElement>('.block-menu')
+    menu.element.open = true
+    const edit = menu.findAll('button').find(button => button.text() === '编辑')!
+    ;(edit.element as HTMLButtonElement).focus()
+    await edit.trigger('click')
+    await flushPromises()
+    expect(menu.element.open).toBe(false)
+    expect(useBlocksStore().selectedBlockId).toBeNull()
+    await wrapper.get('[aria-label="关闭块编辑"]').trigger('click')
+    expect(document.activeElement).toBe(menu.get('summary').element)
+  })
+  it.each(['.library-actions', '.block-menu'])('Tab 可进入 %s 的操作，焦点离开后才收起', async selector => {
+    stubLibrary()
+    const wrapper = mountLibrary(true)
+    await flushPromises()
+    const menu = wrapper.get<HTMLDetailsElement>(selector)
+    const summary = menu.get('summary')
+    ;(summary.element as HTMLElement).focus()
+    // jsdom 不合成 Enter 激活，使用 summary 的原生 click 展开 details。
+    ;(summary.element as HTMLElement).click()
+    expect(menu.element.open).toBe(true)
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    summary.element.dispatchEvent(tab)
+    expect(tab.defaultPrevented).toBe(false)
+    expect(menu.element.open).toBe(true)
+    // jsdom 不执行原生 Tab 移动，显式模拟浏览器随后产生的真实 focusin。
+    const actions = menu.findAll('button')
+    ;(actions[0].element as HTMLButtonElement).focus()
+    expect(menu.element.open).toBe(true)
+    ;(actions[1].element as HTMLButtonElement).focus()
+    expect(menu.element.open).toBe(true)
+    const search = wrapper.get('.block-search input')
+    ;(search.element as HTMLInputElement).focus()
+    expect(menu.element.open).toBe(false)
+    expect(document.activeElement).toBe(search.element)
+  })
+  it('删除仍等待影响范围加载并二次确认，取消后归还卡片入口', async () => {
+    let resolveUsage!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/references')
+      ? new Promise<Response>(resolve => { resolveUsage = resolve })
+      : Response.json(String(input) === '/api/tags' ? { tags: [] } : { blocks })))
+    const wrapper = mountLibrary(true)
+    await flushPromises()
+    const remove = vi.spyOn(useBlocksStore(), 'removeBlock')
+    const menu = wrapper.get<HTMLDetailsElement>('.block-menu')
+    menu.element.open = true
+    await menu.findAll('button').find(button => button.text() === '删除')!.trigger('click')
+    await flushPromises()
+    const confirmation = wrapper.get('.delete-confirm')
+    const confirm = confirmation.findAll('button').find(button => button.text() === '确认删除')!
+    expect(menu.element.open).toBe(false)
+    expect(confirm.attributes('disabled')).toBeDefined()
+    expect(remove).not.toHaveBeenCalled()
+    resolveUsage(Response.json({ fields: [], token: 'scope-token' }))
+    await flushPromises()
+    expect(confirm.attributes('disabled')).toBeUndefined()
+    await confirmation.get('.cancel-delete').trigger('click')
+    expect(wrapper.find('.delete-confirm').exists()).toBe(false)
+    expect(remove).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(menu.get('summary').element)
+  })
+  it('删除成功后归还搜索输入，不把键盘焦点留在已移除的卡片', async () => {
+    stubLibrary()
+    const wrapper = mountLibrary(true)
+    await flushPromises()
+    vi.spyOn(useBlocksStore(), 'removeBlock').mockImplementation(async () => {
+      useBlocksStore().blocks = []
+      return true
+    })
+    const menu = wrapper.get<HTMLDetailsElement>('.block-menu')
+    menu.element.open = true
+    await menu.findAll('button').find(button => button.text() === '删除')!.trigger('click')
+    await flushPromises()
+    const confirm = wrapper.findAll('.delete-actions button').find(button => button.text() === '确认删除')!
+    ;(confirm.element as HTMLButtonElement).focus()
+    await confirm.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.block-item').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('.block-search input').element)
+  })
 })

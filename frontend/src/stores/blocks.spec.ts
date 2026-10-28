@@ -38,6 +38,47 @@ beforeEach(() => {
   localStorage.clear()
 })
 
+it.each(['create', 'update', 'delete'] as const)('迟到的全库列表不会覆盖已保存的素材（%s）', async action => {
+  let resolve!: (response: Response) => void
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input), method = init?.method ?? 'GET'
+    if (path === '/api/tags') return Response.json({ tags: [] })
+    if (path === '/api/blocks?materials_only=true' && method === 'GET') return new Promise<Response>(complete => { resolve = complete })
+    if (method === 'DELETE') return new Response(null, { status: 204 })
+    return Response.json(block(action === 'create' ? 2 : 1, '新素材'))
+  }))
+  const store = useBlocksStore()
+  store.blocks = [block(1, '旧素材')]
+  const old = store.loadBlocks()
+  if (action === 'create') await store.createNewBlock('新素材', '正文')
+  else if (action === 'update') await store.updateExistingBlock(1, { name: '新素材', content: '正文' })
+  else await store.removeBlock(1)
+  resolve(Response.json({ blocks: [block(1, '旧素材')] }))
+  await old
+  expect(store.blocks.map(item => item.name)).toEqual(action === 'create' ? ['新素材', '旧素材'] : action === 'update' ? ['新素材'] : [])
+})
+
+it('失效正在读取的模板素材后重新读取成员，保留新保存内容并结束加载', async () => {
+  let resolveOld!: (response: Response) => void
+  let reads = 0
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input)
+    if (path === '/api/tags') return Response.json({ tags: [] })
+    if (init?.method === 'PUT') return Response.json(block(1, '新素材'))
+    if (reads++ === 0) return new Promise<Response>(resolve => { resolveOld = resolve })
+    return Response.json({ blocks: [block(1, '新素材')] })
+  }))
+  const store = useBlocksStore()
+  const old = store.loadTemplateBlocks(1)
+  await store.updateExistingBlock(1, { name: '新素材', content: '正文' })
+  resolveOld(Response.json({ blocks: [block(1, '旧素材')] }))
+  await old
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(store.libraryBlocks.map(block => block.name)).toEqual(['新素材'])
+  expect(store.libraryLoading).toBe(false)
+  expect(reads).toBe(2)
+})
+
 it('标签刷新丢弃旧响应，防止批量删除后恢复过期标签', async () => {
   let resolveOld!: (response: Response) => void
   const fetchFn = vi.fn()
@@ -97,7 +138,7 @@ describe('块库抽屉宽度与开合（UI 调整②批）', () => {
 describe('blocks store（M6a 基础）', () => {
   it('loadBlocks：列表写入', async () => {
     stubFetch({
-      '/api/blocks': () => ({ blocks: [block(1, '姓名'), block(2, '电话')] }),
+      '/api/blocks?materials_only=true': () => ({ blocks: [block(1, '姓名'), block(2, '电话')] }),
     })
     const store = useBlocksStore()
     await store.loadBlocks()
@@ -114,7 +155,7 @@ describe('blocks store（M6a 基础）', () => {
 
   it('createNewBlock：成功追加列表并复位表单态', async () => {
     stubFetch({
-      '/api/blocks': () => ({ blocks: [] }),
+      '/api/blocks?materials_only=true': () => ({ blocks: [] }),
       '/api/tags': () => ({ tags: [] }),
     })
     vi.stubGlobal(
@@ -364,7 +405,7 @@ describe('批量标签', () => {
 
 it('模板块库只显示绑定集合，切换立即清空并丢弃旧响应，全局资产保留', async () => {
   let resolveOld!: (response: Response) => void
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input).endsWith('=1')
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input).includes('template_id=1&')
     ? new Promise<Response>(resolve => { resolveOld = resolve })
     : Promise.resolve(Response.json({ blocks: [block(2, 'B')] }))))
   const store = useBlocksStore()

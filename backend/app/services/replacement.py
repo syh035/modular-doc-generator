@@ -323,12 +323,35 @@ def apply_replacements(
     para_groups: dict[int, list[tuple[Region, int]]] = {}
     id_to_para: dict[int, etree._Element] = {}
     region_paras: list[tuple[Region, etree._Element]] = []
-    for region in regions:
+    # Resolve all source anchors before any sibling insertion changes their paths.
+    resolved = {r.id: _resolve_paragraph(body, json.loads(r.anchor)) for r in regions if r.id > 0}
+    insertion_paras: dict[int, etree._Element] = {}
+    after_tails: dict[int, etree._Element] = {}
+    for region in sorted(
+        (r for r in regions if r.id < 0),
+        key=lambda r: (
+            json.loads(r.anchor)["source_region_id"],
+            json.loads(r.anchor)["rank"],
+            r.id,
+        ),
+    ):
         anchor = json.loads(region.anchor)
-        assert isinstance(anchor, dict)
-        para = _resolve_paragraph(body, anchor)
+        source = resolved.get(anchor["source_region_id"])
+        if source is None:
+            raise ValueError("Insertion source paragraph is missing")
+        style_run = next(iter(source.findall(f"{_W}r")), etree.Element(f"{_W}r"))
+        para = _clone_line_paragraph(source, style_run, "")
+        if anchor["side"] == "before":
+            source.addprevious(para)
+        else:
+            tail = after_tails.get(anchor["source_region_id"], source)
+            tail.addnext(para)
+            after_tails[anchor["source_region_id"]] = para
+        insertion_paras[region.id] = para
+    for region in regions:
+        para = insertion_paras.get(region.id) if region.id < 0 else resolved.get(region.id)
         if para is None:
-            continue  # anchor 与文档失配（防御）：该区域保留原文
+            continue
         para_groups.setdefault(id(para), []).append((region, region.order_index))
         id_to_para[id(para)] = para
         region_paras.append((region, para))

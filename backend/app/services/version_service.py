@@ -35,6 +35,12 @@ def list_versions_with_counts(
         )
         for version_id, n in cur.fetchall():
             counts[int(version_id)] = int(n)
+    for row in conn.execute(
+        "SELECT version_id,COUNT(*) FROM document_insertions WHERE status='active' AND "
+        "block_id IS NOT NULL GROUP BY version_id"
+    ):
+        if row[0] in counts:
+            counts[row[0]] += row[1]
     return [
         {
             "id": v.id,
@@ -79,9 +85,23 @@ def create_version(
             conn, ver.id, region_id, block_id, line_break_mode=line_break_mode, position=position
         )
     if copy_from is not None:
+        from app.services.insertions import copy_rows
+
+        copy_rows(conn, copy_from, ver.id)
         conn.execute(
             "INSERT INTO version_region_actions (version_id, region_id, action) "
             "SELECT ?, region_id, action FROM version_region_actions WHERE version_id = ?",
+            (ver.id, copy_from),
+        )
+    if copy_from is not None:
+        conn.execute(
+            "INSERT INTO bindings "
+            "(version_id,region_id,block_id,status,line_break_mode,position,"
+            "missing_policy,created_at,updated_at) "
+            "SELECT "
+            "?,region_id,block_id,status,line_break_mode,position,missing_policy,"
+            "created_at,updated_at "
+            "FROM bindings WHERE version_id=? AND status='missing' AND missing_policy='blank'",
             (ver.id, copy_from),
         )
     return ver
@@ -101,13 +121,15 @@ def rename_version(conn: sqlite3.Connection, version_id: int, new_name: str) -> 
         ) from exc
 
 
-def delete_version(conn: sqlite3.Connection, version_id: int) -> None:
-    """删除版本（绑定随 FK CASCADE）；模板至少保留一个版本。"""
+def delete_version(
+    conn: sqlite3.Connection, version_id: int, *, allow_empty_template: bool = False
+) -> None:
+    """删除版本及绑定；显式允许空模板时可删除最后一稿，保留模板与素材。"""
     ver = versions_repo.get_version(conn, version_id)
     if ver is None:
         raise AppError(VERSION_NOT_FOUND, f"内容版本不存在（id={version_id}）", status_code=404)
     siblings = versions_repo.list_versions(conn, ver.template_id)
-    if len(siblings) <= 1:
+    if len(siblings) <= 1 and not allow_empty_template:
         raise AppError(
             LAST_VERSION,
             f"模板（id={ver.template_id}）至少保留一个内容版本",

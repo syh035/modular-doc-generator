@@ -33,6 +33,53 @@ def post_upload(client: TestClient, filename: str, data: bytes) -> httpx.Respons
 # ---- 上传成功 ----
 
 
+def test_template_only_upload_reuse_and_explicit_document(client: TestClient) -> None:
+    data = make_docx()
+    response = client.post(
+        "/api/templates",
+        files={"file": ("独立模板.docx", data)},
+        data={"create_default_version": "false"},
+    )
+    assert response.status_code == 201
+    template = response.json()
+    tid = template["id"]
+    assert template["default_version_id"] is None
+    assert template["regions"]
+    assert client.get(f"/api/templates/{tid}/versions").json()["versions"] == []
+    # 重传只关联原模板，旧调用也不能偷偷给已有零稿模板补建。
+    reused = post_upload(client, "再次导入.docx", data).json()
+    assert reused["id"] == tid and reused["reused"] is True
+    assert reused["default_version_id"] is None
+    created = client.post(f"/api/templates/{tid}/versions", json={"name": "投递稿"})
+    assert created.status_code == 201
+    vid = created.json()["id"]
+    assert client.delete(f"/api/versions/{vid}").json()["error"]["code"] == "LAST_VERSION"
+    assert client.delete(f"/api/versions/{vid}?allow_empty_template=true").status_code == 204
+    assert client.get(f"/api/templates/{tid}").json()["default_version_id"] is None
+    assert client.get(f"/api/templates/{tid}/versions").json()["versions"] == []
+    from app.main import create_app
+
+    with TestClient(create_app()) as restarted:
+        assert restarted.get(f"/api/templates/{tid}").json()["default_version_id"] is None
+        assert restarted.get(f"/api/templates/{tid}/versions").json()["versions"] == []
+    assert (
+        client.post(f"/api/templates/{tid}/versions", json={"name": "重新填写"}).status_code == 201
+    )
+
+
+def test_template_only_reupload_preserves_old_default(client: TestClient) -> None:
+    data = make_docx()
+    original = post_upload(client, "旧模板.docx", data).json()
+    reused = client.post(
+        "/api/templates",
+        files={"file": ("新名称.docx", data)},
+        data={"create_default_version": "false"},
+    ).json()
+    assert reused["id"] == original["id"]
+    assert reused["default_version_id"] == original["default_version_id"]
+    assert len(client.get(f"/api/templates/{original['id']}/versions").json()["versions"]) == 1
+
+
 def test_upload_201_with_regions(client: TestClient) -> None:
     resp = post_upload(client, "我的模板.docx", make_docx())
     assert resp.status_code == 201

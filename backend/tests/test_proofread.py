@@ -67,7 +67,12 @@ def patch_fake_convert(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, texts: l
         doc.close()
         return pdf
 
-    monkeypatch.setattr("app.services.libreoffice._manager", SimpleNamespace(convert=convert))
+    monkeypatch.setattr(
+        "app.services.libreoffice._manager",
+        SimpleNamespace(
+            convert=convert, convert_many=lambda paths: [convert(path) for path in paths]
+        ),
+    )
 
 
 def static_fake_convert(monkeypatch: pytest.MonkeyPatch, pdf_path: Path) -> None:

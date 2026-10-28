@@ -12,12 +12,19 @@
 - 单用户场景：全局渲染锁串行化，避免并发重复转换与重复落库
 """
 
+from __future__ import annotations
+
+import copy
 import hashlib
 import json
 import threading
 import uuid
+from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import asdict, replace
+from functools import wraps
 from pathlib import Path
-from typing import cast
+from typing import ParamSpec, TypeVar, cast
 
 from app.core.config import settings
 from app.core.errors import (
@@ -27,7 +34,7 @@ from app.core.errors import (
     AppError,
 )
 from app.models.db import get_conn
-from app.models.entities import Block, Region, Template
+from app.models.entities import Binding, Block, Region, Template
 from app.models.repositories import bindings as bindings_repo
 from app.models.repositories import blocks as blocks_repo
 from app.models.repositories import regions as regions_repo
@@ -39,6 +46,29 @@ from app.services.pdf_geometry import RegionGeometry, align_flow_to_lines, extra
 from app.services.replacement import apply_replacements
 
 _render_lock = threading.Lock()
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+_recent_renders: OrderedDict[str, VersionRender] = OrderedDict()
+
+
+def clear_render_results() -> None:
+    with libreoffice.cache_access():
+        _recent_renders.clear()
+
+
+def _copy_render(rendered: VersionRender) -> VersionRender:
+    result = copy.copy(rendered)
+    result.items = copy.deepcopy(rendered.items)
+    return result
+
+
+def protected_render(function: Callable[_P, _T]) -> Callable[_P, _T]:
+    @wraps(function)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        with libreoffice.cache_access():
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 def _bbox_dict(geo_bbox: tuple[float, float, float, float], page: int) -> dict[str, object]:
@@ -90,6 +120,8 @@ def _persist_region_bboxes(
     updated = 0
     with get_conn() as conn:
         for r in regions:
+            if r.id < 0:
+                continue
             stale = _auto_bbox_stale(r, pdf_sha)
             if not stale:
                 continue
@@ -147,6 +179,7 @@ class VersionRender:
     def __init__(self, data: bytes, pdf_path: Path, items: list[dict[str, object]]) -> None:
         self.data = data
         self.pdf_path = pdf_path
+        self.pdf_data = pdf_path.read_bytes()
         self.items = items
 
 
@@ -173,6 +206,7 @@ def _region_extent(
     return (0.0, 0.0, 0.0, total)
 
 
+@protected_render
 def render_version(version_id: int) -> VersionRender:
     """渲染内容版本：替换 → LO 转 PDF（sha 缓存）→ 几何对齐。
 
@@ -195,15 +229,11 @@ def render_version(version_id: int) -> VersionRender:
         bindings = bindings_repo.list_bindings(conn, version.id)
         # 有效绑定（active 且块存活）→ 替换内容；missing 态保留原文
         block_by_id: dict[int, Block] = {}
-        block_contents: dict[int, str] = {}
         for b in bindings:
             block = blocks_repo.get_block(conn, b.block_id)
             if block is None:
                 continue  # 块已物理删除（RESTRICT 兜底，理论不可达）
             block_by_id[b.block_id] = block
-            if b.status == "active":
-                block_contents[b.region_id] = block.content
-        binding_by_region = {b.region_id: b for b in bindings}
         removed_ids = {
             int(row[0])
             for row in conn.execute(
@@ -211,6 +241,44 @@ def render_version(version_id: int) -> VersionRender:
             )
         }
 
+        from app.services.insertions import render_rows
+
+        inserted_regions, inserted_bindings, inserted_blocks = render_rows(conn, version_id)
+        regions.extend(inserted_regions)
+        bindings.extend(inserted_bindings)
+        block_by_id.update(inserted_blocks)
+
+    return render_document(
+        tpl, regions, bindings, block_by_id, removed_ids, identity=f"v_{version_id}"
+    )
+
+
+@protected_render
+def render_document(
+    tpl: Template,
+    regions: list[Region],
+    bindings: list[Binding],
+    block_by_id: dict[int, Block],
+    removed_ids: set[int],
+    *,
+    identity: str,
+    transient: bool = False,
+) -> VersionRender:
+    """同源文稿渲染；transient 只使用传入快照，几何在内存测量，不写业务库。"""
+    block_contents = {
+        b.region_id: block_by_id[b.block_id].content
+        for b in bindings
+        if b.status == "active" and b.block_id in block_by_id
+    }
+    block_contents.update(
+        {b.region_id: "" for b in bindings if b.status == "missing" and b.missing_policy == "blank"}
+    )
+    # Every new row is a real empty paragraph even before it has text or a material.
+    for region in regions:
+        if region.id < 0:
+            block_contents.setdefault(region.id, "")
+    has_insertions = any(r.id < 0 for r in regions)
+    binding_by_region = {b.region_id: b for b in bindings}
     docx_path = settings.templates_dir / tpl.storage_name
     if not docx_path.is_file():
         raise AppError(
@@ -219,22 +287,44 @@ def render_version(version_id: int) -> VersionRender:
             status_code=500,
         )
 
+    source_data = docx_path.read_bytes()
+    manager = libreoffice.get_manager()
+    environment = getattr(manager, "environment_fingerprint", lambda: str(id(manager)))()
+    key = hashlib.sha256(
+        json.dumps(
+            {
+                "database": str(settings.db_path),
+                "identity": identity,
+                "transient": transient,
+                "source": hashlib.sha256(source_data).hexdigest(),
+                "environment": environment,
+                "regions": [asdict(r) for r in regions],
+                "bindings": [asdict(b) for b in bindings],
+                "blocks": [asdict(b) for b in block_by_id.values()],
+                "removed": sorted(removed_ids),
+                "threshold": settings.overflow_threshold,
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    cached = _recent_renders.get(key)
+    if cached is not None and cached.pdf_path.is_file():
+        _recent_renders.move_to_end(key)
+        return _copy_render(cached)
+
     # M7：溢出测量需要模板原 bbox（regions.bbox，ensure 时落库）——有绑定时
-    # 缺失即触发模板渲染补齐（幂等，LO 内容缓存吸收重复开销），再重读区域
-    if block_contents and any(
+    # 首次缺少原框时，原件与成品合并转换，仍分别测量原高度和替换后几何。
+    needs_template_preview = bool(block_contents) and any(
         r.id in block_contents
         and (
             r.bbox_json is None
             or (r.bbox_source != "manual" and json.loads(r.bbox_json).get("geometry_version") != 2)
         )
         for r in regions
-    ):
-        ensure_template_preview(tpl.id)
-        with get_conn() as conn:
-            regions = regions_repo.list_regions(conn, tpl.id)
+    )
 
     outcome = apply_replacements(
-        docx_path.read_bytes(),
+        source_data,
         regions,
         block_contents,
         line_break_modes={b.region_id: b.line_break_mode for b in bindings},
@@ -252,10 +342,40 @@ def render_version(version_id: int) -> VersionRender:
     # 成品 DOCX 走 LO 缓存：临时文件（uuid 防并发碰撞）→ convert → 即删
     tmp_dir = settings.render_cache_dir / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_docx = tmp_dir / f"v_{version_id}_{uuid.uuid4().hex}.docx"
+    tmp_docx = tmp_dir / f"{identity}_{uuid.uuid4().hex}.docx"
     try:
         tmp_docx.write_bytes(outcome.data)
-        pdf_path = libreoffice.get_manager().convert(tmp_docx)
+        if needs_template_preview:
+            template_pdf, pdf_path = manager.convert_many([docx_path, tmp_docx])
+            template_sha = pdf_sha256(template_pdf)
+            if transient:
+                original_geometry = align_flow_to_lines(
+                    list(iter_flow_paragraphs(source_data)), extract_pdf_lines(template_pdf)
+                )
+                regions = [
+                    replace(r, bbox_json=json.dumps(_geometry_bbox(original_geo)))
+                    if r.bbox_source != "manual"
+                    and (original_geo := original_geometry.get(tuple(json.loads(r.anchor)["path"])))
+                    else r
+                    for r in regions
+                ]
+            else:
+                if any(_auto_bbox_stale(region, template_sha) for region in regions):
+                    _persist_region_bboxes(tpl, regions, template_pdf, template_sha)
+                with get_conn() as conn:
+                    originals = regions_repo.list_regions(conn, tpl.id)
+                source_by_id = {r.id: r for r in originals}
+                inserted = [
+                    replace(
+                        r,
+                        bbox_json=source_by_id[json.loads(r.anchor)["source_region_id"]].bbox_json,
+                    )
+                    for r in regions
+                    if r.id < 0
+                ]
+                regions = [*originals, *inserted]
+        else:
+            pdf_path = manager.convert(tmp_docx)
     finally:
         tmp_docx.unlink(missing_ok=True)
 
@@ -294,6 +414,10 @@ def render_version(version_id: int) -> VersionRender:
         items.append(
             {
                 "id": region.id,
+                "field_ref": {
+                    "kind": "insertion" if region.id < 0 else "region",
+                    "id": abs(region.id),
+                },
                 "template_id": region.template_id,
                 "type": region.type,
                 "label": region.label,
@@ -305,7 +429,9 @@ def render_version(version_id: int) -> VersionRender:
                     r.id in removed_ids and json.loads(r.anchor)["path"] == path for r in regions
                 ),
                 "current_text": (
-                    block.content
+                    ""
+                    if binding and binding.status == "missing" and binding.missing_policy == "blank"
+                    else block.content
                     if binding and binding.status == "active" and block
                     else region.placeholder
                     if region.placeholder is not None
@@ -319,6 +445,7 @@ def render_version(version_id: int) -> VersionRender:
                     and region.bbox_source == "manual"
                     and region.bbox_json
                     and not (binding and binding.status == "active")
+                    and not has_insertions
                     else _geometry_bbox(geo)
                     if geo
                     else None
@@ -333,10 +460,20 @@ def render_version(version_id: int) -> VersionRender:
                         "status": binding.status,
                         "line_break_mode": binding.line_break_mode,
                         "position": binding.position,
+                        "missing_policy": binding.missing_policy,
+                        "is_material": block.material if block else False,
                     }
                     if binding
                     else None
                 ),
             }
         )
-    return VersionRender(outcome.data, pdf_path, items)
+    rendered = VersionRender(outcome.data, pdf_path, items)
+    _recent_renders[key] = rendered
+    while len(_recent_renders) > 1 and (
+        len(_recent_renders) > 8
+        or sum(len(value.data) + len(value.pdf_data) for value in _recent_renders.values())
+        > 64 * 1024 * 1024
+    ):
+        _recent_renders.popitem(last=False)
+    return _copy_render(rendered)

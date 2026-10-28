@@ -6,10 +6,12 @@
 """
 
 import argparse
+import os
+import tempfile
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
-from run_e2e import cleanup, ensure_services
+from run_e2e import cleanup, ensure_services, seed, select_template
 
 region = {
     "id": 1,
@@ -73,7 +75,8 @@ def check(chromium_executable: str | None) -> None:
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=chromium_executable, headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 900})
-        page.goto("http://localhost:5173")
+        template_id = seed(1)[0]["id"]
+        select_template(page, template_id)
         page.wait_for_selector(".app-shell")
         separator = page.get_by_role("separator", name="块库宽度")
         if not separator.is_visible():
@@ -87,6 +90,7 @@ def check(chromium_executable: str | None) -> None:
             360, max(230, old - 16) + 16
         )
         page.reload()
+        page.locator(f"#template-documents-{template_id} .edit-document").first.click()
         page.wait_for_selector("[role=separator]")
         assert page.evaluate(
             "localStorage.getItem('blocks.libraryWidth')"
@@ -158,8 +162,10 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     Path("/tmp/m12-check").mkdir(exist_ok=True)
-    try:
-        ensure_services()
-        check(args.chromium_executable)
-    finally:
-        cleanup()
+    with tempfile.TemporaryDirectory(prefix="modudoc-modals-") as data_dir:
+        os.environ["MODUDOC_DATA_DIR"] = data_dir
+        try:
+            ensure_services()
+            check(args.chromium_executable)
+        finally:
+            cleanup()

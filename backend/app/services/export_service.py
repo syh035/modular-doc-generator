@@ -10,7 +10,9 @@
   绝不静默（PRD 边界：非浏览器下载拦截导致的静默失败）
 """
 
+import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -57,13 +59,51 @@ def write_export(data: bytes, file_name: str) -> Path:
     """成品 DOCX 落盘 data/exports/（同名覆盖），返回写入路径；失败可读报错。"""
     exports_dir = settings.exports_dir
     target = exports_dir / file_name
+    temporary: Path | None = None
     try:
         exports_dir.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        with tempfile.NamedTemporaryFile(dir=exports_dir, prefix=".export-", delete=False) as file:
+            temporary = Path(file.name)
+            file.write(data)
+        os.replace(temporary, target)
     except OSError as exc:
         raise AppError(
             EXPORT_WRITE_FAILED,
             f"导出文件写入失败（{target}）：{exc.strerror or exc}。请检查磁盘空间与目录权限后重试",
             status_code=500,
         ) from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return target
+
+
+def document_warnings(items: list[dict[str, object]]) -> list[dict[str, object]]:
+    result = extract_large_overflow_warnings(items)
+    for item in items:
+        binding = item.get("binding")
+        if (
+            not item.get("removed")
+            and isinstance(binding, dict)
+            and binding.get("status") == "missing"
+            and binding.get("missing_policy") == "blank"
+        ):
+            result.append(
+                {
+                    "region_id": item["id"],
+                    "field_ref": item.get("field_ref"),
+                    "label": item["label"],
+                    "kind": "missing",
+                    "ratio": None,
+                    "clipped": False,
+                    "fixed_row": False,
+                }
+            )
+    return result
+
+
+def warnings_token(data: bytes, warnings: list[dict[str, object]]) -> str:
+    import hashlib
+    import json
+
+    return hashlib.sha256(data + json.dumps(warnings, sort_keys=True).encode()).hexdigest()

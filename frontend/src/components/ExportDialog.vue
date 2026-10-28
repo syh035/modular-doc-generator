@@ -16,6 +16,7 @@ defineProps<{
 const emit = defineEmits<{
   confirm: []
   close: []
+  locate: [id: number]
 }>()
 useModalEsc(() => emit('close'))
 </script>
@@ -33,7 +34,7 @@ useModalEsc(() => emit('close'))
   >
     <div class="dialog-card">
       <div class="dialog-head">
-        <span class="title">大超出警示（{{ warnings.length }}）</span>
+        <span class="title">输出前检查（{{ warnings.length }}）</span>
         <button
           type="button"
           class="icon-btn"
@@ -44,7 +45,7 @@ useModalEsc(() => emit('close'))
         </button>
       </div>
       <p class="hint">
-        以下区域内容超出原区域高度较多，导出将按重排结果落盘（后续内容顺延、页面向下伸展）。
+        以下字段存在待补内容或排版超出，导出会保留当前的留空与排版。
         建议返回精简内容或调整模板，也可确认后直接导出。
       </p>
       <ul class="warning-list">
@@ -58,8 +59,15 @@ useModalEsc(() => emit('close'))
             class="tag"
             :class="{ clipped: w.clipped }"
           >
-            {{ w.clipped ? '固定行高裁剪内容' : `+${Math.round((w.ratio ?? 0) * 100)}%` }}
+            {{ w.kind === 'missing' ? '素材已删除，待补内容' : w.clipped ? '固定行高裁剪内容' : `+${Math.round((w.ratio ?? 0) * 100)}%` }}
           </span>
+          <button
+            type="button"
+            :disabled="submitting"
+            @click="emit('locate', w.region_id)"
+          >
+            定位修改
+          </button>
         </li>
       </ul>
       <p
@@ -84,7 +92,7 @@ useModalEsc(() => emit('close'))
           data-testid="export-confirm"
           @click="emit('confirm')"
         >
-          {{ submitting ? '导出中…' : '仍要导出（重排）' }}
+          {{ submitting ? '导出中…' : warnings.some(w => w.kind === 'missing') ? '仍按当前内容导出' : '仍要导出（重排）' }}
         </button>
       </div>
     </div>

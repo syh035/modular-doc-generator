@@ -23,6 +23,7 @@ _TABLES = (
     "template_blocks",
     "bindings",
     "version_region_actions",
+    "document_insertions",
 )
 
 

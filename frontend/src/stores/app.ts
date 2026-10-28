@@ -17,19 +17,46 @@ export interface HealthStatus {
   libreoffice: LibreOfficeStatus
 }
 
-/** 顶部 tab：工作台（块库+预览）/ 模板制作指南。 */
-export type AppTab = 'workbench' | 'guide'
+/** 四入口页面、保留的文稿编辑器与模板制作指南。 */
+export type AppTab = 'documents' | 'workbench' | 'templates' | 'materials' | 'archives' | 'guide'
 
 export const useAppStore = defineStore('app', () => {
   /** 后端健康状态；null = 尚未探测 */
   const health = ref<HealthStatus | null>(null)
   /** 健康探测错误信息（网络不通等） */
   const healthError = ref<string | null>(null)
-  /** 顶部 tab（UI 调整①：工作台 / 模板制作指南）。 */
-  const activeTab = ref<AppTab>('workbench')
+  const activeTab = ref<AppTab>('documents')
+  const archiveId = ref<number | null>(null)
+  const archiveSource = ref<{ id: number; name: string } | null>(null)
+  const documentTemplateId = ref<number | null>(null)
+  const browsedTemplateId = ref<number | null>(null)
 
   function setTab(tab: AppTab): void {
+    if (tab === 'documents') documentTemplateId.value = null
+    if (tab === 'templates') browsedTemplateId.value = null
     activeTab.value = tab
+  }
+
+  function openArchives(id: number | null = null): void {
+    archiveId.value = id
+    archiveSource.value = null
+    activeTab.value = 'archives'
+  }
+
+  function openDocumentArchives(document: { id: number; name: string }): void {
+    archiveId.value = null
+    archiveSource.value = { id: document.id, name: document.name }
+    activeTab.value = 'archives'
+  }
+
+  function openTemplates(id: number | null = null): void {
+    browsedTemplateId.value = id
+    activeTab.value = 'templates'
+  }
+
+  function openTemplateDocuments(templateId: number | null): void {
+    documentTemplateId.value = templateId
+    activeTab.value = 'documents'
   }
 
   async function refreshHealth(): Promise<void> {
@@ -42,5 +69,5 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  return { health, healthError, activeTab, setTab, refreshHealth }
+  return { health, healthError, activeTab, archiveId, archiveSource, documentTemplateId, browsedTemplateId, setTab, openTemplates, openArchives, openDocumentArchives, openTemplateDocuments, refreshHealth }
 })

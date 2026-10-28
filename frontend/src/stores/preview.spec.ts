@@ -1,6 +1,8 @@
 import { createPinia, setActivePinia } from 'pinia'
+import { flushPromises } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Region } from '../api/templates'
+import { registerHistoryHooks } from '../api/historyHooks'
 import { usePreviewStore } from './preview'
 
 /** 造一个区域（bbox 可空）。 */
@@ -51,6 +53,390 @@ beforeEach(() => {
   vi.unstubAllGlobals()
 })
 
+describe('从文稿列表显式打开', () => {
+  function routes() {
+    return {
+      '/api/templates/2': () => ({ default_version_id: 20 }),
+      '/api/templates/2/versions': () => ({ versions: [
+        { id: 20, template_id: 2, name: '默认版本', binding_count: 0 },
+        { id: 21, template_id: 2, name: '投递稿', binding_count: 1 },
+      ] }),
+      '/api/versions/21/preview': () => new ArrayBuffer(8),
+      '/api/versions/21/overlay': () => ({ regions: [] }),
+    }
+  }
+
+  it.each([false, true])('直接渲染指定文稿一次，退出检查且不提示迁移（原检查=%s）', async reviewing => {
+    const fetcher = stubFetch(routes())
+    const store = usePreviewStore()
+    store.currentTemplateId = 1; store.currentVersionId = 10; store.status = 'ready'
+    store.proofreadMode = reviewing
+    store.regions = [{ ...region(1, null), binding: { block_id: 7, block_name: '已填写', status: 'active' } }]
+    await store.selectTemplate(2, { versionId: 21 })
+    expect(store.status).toBe('ready')
+    expect(store.currentVersionId).toBe(21)
+    expect(store.proofreadMode).toBe(false)
+    expect(store.migrationSource).toBeNull()
+    expect(fetcher.mock.calls.map(call => String(call[0])).filter(url => url.endsWith('/preview'))).toEqual(['/api/versions/21/preview'])
+  })
+
+  it('列表读取失败或文稿不属于所选模板时停止打开，不渲染其他模板内容', async () => {
+    const fetcher = stubFetch(routes())
+    const store = usePreviewStore()
+    await store.selectTemplate(2, { versionId: 99 })
+    expect(store.status).toBe('error')
+    expect(store.error).toContain('已不存在或不属于此模板')
+    expect(fetcher.mock.calls.some(call => String(call[0]).includes('/preview'))).toBe(false)
+    fetcher.mockImplementation(async input => String(input) === '/api/templates/2/versions'
+      ? Response.json({ error: { code: 'OFFLINE', message: '列表读取失败' } }, { status: 500 })
+      : Response.json({ default_version_id: 20 }))
+    await store.selectTemplate(2, { versionId: 21 })
+    expect(store.status).toBe('error')
+    expect(store.error).toBe('列表读取失败')
+  })
+
+  it('显式打开另一模板的空白默认稿也不触发迁移，不写入原稿内容', async () => {
+    const fetcher = stubFetch({ ...routes(),
+      '/api/versions/20/preview': () => new ArrayBuffer(8),
+      '/api/versions/20/overlay': () => ({ regions: [] }),
+    })
+    const store = usePreviewStore()
+    store.currentTemplateId = 1; store.currentVersionId = 10; store.status = 'ready'
+    store.templates = [{ id: 2, filename: '目标.docx', status: 'ready', storage_name: '2.docx', sha256: 'test', regions_count: 0, created_at: '', updated_at: '' }]
+    store.regions = [{ ...region(1, null), binding: { block_id: 7, block_name: '原稿内容', status: 'active' } }]
+    await store.selectTemplate(2, { versionId: 20 })
+    expect(store.status).toBe('ready')
+    expect(store.currentVersionId).toBe(20)
+    expect(store.migrationSource).toBeNull()
+    expect(fetcher.mock.calls.map(call => String(call[0]))).toEqual([
+      '/api/templates/2', '/api/templates/2/versions', '/api/versions/20/preview', '/api/versions/20/overlay',
+    ])
+  })
+
+  it('会话边界清理延迟时，后发打开仍优先，旧请求不再开始取数', async () => {
+    let release!: () => void
+    const pending = new Promise<void>(resolve => { release = resolve })
+    registerHistoryHooks({ before: () => {}, after: async () => {}, clear: vi.fn().mockReturnValueOnce(pending).mockResolvedValue(undefined) })
+    try {
+      const fetcher = stubFetch(routes())
+      const store = usePreviewStore()
+      const first = store.selectTemplate(1, { versionId: 10 })
+      await store.selectTemplate(2, { versionId: 21 })
+      release()
+      await first
+      expect(store.currentTemplateId).toBe(2)
+      expect(store.currentVersionId).toBe(21)
+      expect(store.status).toBe('ready')
+      expect(fetcher.mock.calls.some(call => String(call[0]).startsWith('/api/templates/1'))).toBe(false)
+    } finally { registerHistoryHooks(null) }
+  })
+
+  it('较早的打开请求在文稿列表返回后也不能启动过期 PDF 或覆盖新稿', async () => {
+    const fetcher = stubFetch({ ...routes(),
+      '/api/templates/3': () => ({ default_version_id: 30 }),
+      '/api/templates/3/versions': () => ({ versions: [{ id: 30, template_id: 3 }] }),
+      '/api/versions/30/preview': () => new ArrayBuffer(3),
+      '/api/versions/30/overlay': () => ({ regions: [] }),
+    }, { '/api/templates/2/versions': 30 })
+    const store = usePreviewStore()
+    const first = store.selectTemplate(2, { versionId: 21 })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    await store.selectTemplate(3, { versionId: 30 })
+    await first
+    expect(store.currentTemplateId).toBe(3)
+    expect(store.currentVersionId).toBe(30)
+    expect(store.status).toBe('ready')
+    expect(fetcher.mock.calls.some(call => String(call[0]) === '/api/versions/21/preview')).toBe(false)
+  })
+})
+
+describe('区域检查的异步上下文保护', () => {
+  const bbox = { page: 0, x0: 1, y0: 2, x1: 30, y1: 40 }
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>(complete => { resolve = complete })
+    return { promise, resolve }
+  }
+  function ready() {
+    const store = usePreviewStore()
+    store.currentTemplateId = 1; store.currentVersionId = 5; store.status = 'ready'
+    store.regions = [{ ...region(1, bbox), binding: null }]
+    store.pdfData = new ArrayBuffer(3)
+    store.pageFingerprints = ['working-page']
+    return store
+  }
+  it('模板详情未到达前保留整批工作稿，原文PDF与区域一起发布', async () => {
+    const detail = deferred<Response>()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/preview')
+      ? new Response(new ArrayBuffer(4)) : detail.promise))
+    const store = ready()
+    const previousPdf = store.pdfData
+    const switching = store.toggleProofreadMode(true)
+    await flushPromises()
+    expect(store.pdfData).toBe(previousPdf)
+    expect(store.pageFingerprints).toEqual(['working-page'])
+    expect(store.regions[0].id).toBe(1)
+    detail.resolve(Response.json({ regions: [region(2, bbox)] }))
+    await switching
+    expect(store.pdfData?.byteLength).toBe(4)
+    expect(store.regions.map(r => r.id)).toEqual([2])
+    expect(store.pageFingerprints).toEqual([])
+  })
+  it('读取PDF字节期间离开模板，旧字节不会覆盖已清空的新上下文', async () => {
+    const bytes = deferred<ArrayBuffer>()
+    const blob = new Blob()
+    const read = vi.spyOn(blob, 'arrayBuffer').mockReturnValue(bytes.promise)
+    const response = new Response()
+    vi.spyOn(response, 'blob').mockResolvedValue(blob)
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+    const store = ready()
+    const switching = store.toggleProofreadMode(true)
+    await flushPromises()
+    expect(read).toHaveBeenCalledOnce()
+    await store.selectTemplate(null)
+    bytes.resolve(new ArrayBuffer(4))
+    await switching
+    expect(store.pdfData).toBeNull()
+    expect(store.regions).toEqual([])
+    expect(store.refreshing).toBe(false)
+  })
+  it('离开模板后旧切换失败，不把错误带进新上下文', async () => {
+    const response = deferred<Response>()
+    vi.stubGlobal('fetch', vi.fn(() => response.promise))
+    const store = ready()
+    const switching = store.toggleProofreadMode(true)
+    await store.selectTemplate(null)
+    response.resolve(Response.json({ error: { code: 'FAILED', message: '旧转换失败' } }, { status: 500 }))
+    await switching
+    expect(store.status).toBe('idle')
+    expect(store.error).toBeNull()
+    expect(store.refreshing).toBe(false)
+  })
+  it('重复进入同一校对视图等待已有切换，而不是提前完成', async () => {
+    const detail = deferred<Response>()
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/preview')
+      ? new Response(new ArrayBuffer(4)) : detail.promise)
+    vi.stubGlobal('fetch', fetcher)
+    const store = ready()
+    const first = store.toggleProofreadMode(true)
+    let completed = false
+    const second = store.toggleProofreadMode(true).then(() => { completed = true })
+    await flushPromises()
+    expect(completed).toBe(false)
+    detail.resolve(Response.json({ regions: [region(2, bbox)] }))
+    await Promise.all([first, second])
+    expect(completed).toBe(true)
+    expect(fetcher.mock.calls.filter(call => String(call[0]).endsWith('/preview'))).toHaveLength(1)
+    expect(store.regions[0].id).toBe(2)
+  })
+  it.each([true, false])('模板渲染已开始时不改变视图模式（检查=%s）', async reviewing => {
+    const rendering = deferred<Response>()
+    let firstPreview = true
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/preview')) {
+        if (firstPreview) { firstPreview = false; return rendering.promise }
+        return new Response(new ArrayBuffer(url.startsWith('/api/templates/') ? 4 : 7))
+      }
+      if (url.endsWith('/versions')) return Response.json({ versions: [{ id: 22, name: '新版本' }] })
+      if (url.endsWith('/overlay')) return Response.json({ regions: [{ ...region(2, bbox), binding: { block_id: 9, block_name: '当前内容', status: 'active' } }] })
+      return Response.json({ default_version_id: 22, regions: [region(2, bbox)] })
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const store = ready()
+    store.proofreadMode = reviewing
+    const selecting = store.selectTemplate(2)
+    await flushPromises()
+    expect(store.status).toBe('loading')
+    expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/preview'))).toBe(true)
+    await store.toggleProofreadMode(!reviewing)
+    const modeDuringLoad = store.proofreadMode
+    rendering.resolve(new Response(new ArrayBuffer(reviewing ? 4 : 7)))
+    await selecting
+    expect(modeDuringLoad).toBe(reviewing)
+    expect(store.proofreadMode).toBe(reviewing)
+    expect(store.pdfData?.byteLength).toBe(reviewing ? 4 : 7)
+    expect(store.regions[0].binding === null).toBe(reviewing)
+    await store.toggleProofreadMode(!reviewing)
+    expect(store.proofreadMode).toBe(!reviewing)
+    expect(store.pdfData?.byteLength).toBe(reviewing ? 7 : 4)
+    expect(store.regions[0].binding === null).toBe(!reviewing)
+  })
+  it('未选模板时可先进入检查，随后加载模板原文', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/templates/1/preview') return new Response(new ArrayBuffer(4))
+      if (url.endsWith('/versions')) return Response.json({ versions: [{ id: 5, name: '默认版本' }] })
+      return Response.json({ default_version_id: 5, regions: [region(1, bbox)] })
+    }))
+    const store = usePreviewStore()
+    await store.toggleProofreadMode(true)
+    await store.selectTemplate(1)
+    expect(store.proofreadMode).toBe(true)
+    expect(store.status).toBe('ready')
+    expect(store.pdfData?.byteLength).toBe(4)
+    expect(store.regions[0].binding).toBeNull()
+  })
+  it.each([true, false])('切换转换失败时保留原视图，重试后才切换（检查=%s）', async reviewing => {
+    let fail = true
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/preview')) {
+        if (fail) return Response.json({ error: { code: 'CONVERSION_FAILED', message: '转换失败' } }, { status: 500 })
+        return new Response(new ArrayBuffer(url.startsWith('/api/templates/') ? 4 : 7))
+      }
+      if (url.endsWith('/overlay')) return Response.json({ regions: [{ ...region(2, bbox), binding: { block_id: 9, block_name: '当前内容', status: 'active' } }] })
+      return Response.json({ regions: [region(2, bbox)] })
+    }))
+    const store = ready()
+    store.proofreadMode = reviewing
+    const previousPdf = store.pdfData
+    const previousRegions = store.regions
+    await store.toggleProofreadMode(!reviewing)
+    expect(store.proofreadMode).toBe(reviewing)
+    expect(store.pdfData).toBe(previousPdf)
+    expect(store.regions).toBe(previousRegions)
+    expect(store.error).toBe('转换失败')
+    expect(store.refreshing).toBe(false)
+    fail = false
+    await store.toggleProofreadMode(!reviewing)
+    expect(store.proofreadMode).toBe(!reviewing)
+    expect(store.pdfData?.byteLength).toBe(reviewing ? 7 : 4)
+    expect(store.error).toBeNull()
+  })
+  it('返回转换失败恢复检查视图，也不重新接收切换前的旧保存', async () => {
+    const response = deferred<Response>()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PATCH') return response.promise
+      if (String(input).endsWith('/preview')) return Response.json({ error: { code: 'FAILED', message: '转换失败' } }, { status: 500 })
+      return Response.json({ templates: [] })
+    }))
+    const store = ready()
+    store.proofreadMode = true
+    const saving = store.confirmRegion(1)
+    await store.toggleProofreadMode(false)
+    response.resolve(Response.json({ ...region(1, bbox), label: '旧保存结果', review_status: 'confirmed' }))
+    await saving
+    expect(store.proofreadMode).toBe(true)
+    expect(store.regions[0].label).toBe('字段1')
+    expect(store.regions[0].review_status).toBe('pending')
+  })
+  it('补选保存后已切换模板，成功结果不追加到新模板', async () => {
+    const response = deferred<Response>()
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input) === '/api/templates'
+      ? Promise.resolve(Response.json({ templates: [] })) : response.promise))
+    const store = ready()
+    store.proofreadMode = true
+    const saving = store.createFrameRegion(bbox, '新增区域', 'custom')
+    await store.selectTemplate(null)
+    store.currentTemplateId = 2
+    store.regions = [{ ...region(22, bbox), template_id: 2, binding: null }]
+    response.resolve(Response.json(region(3, bbox), { status: 201 }))
+    expect((await saving).ok).toBe(true)
+    expect(store.regions.map(r => r.id)).toEqual([22])
+  })
+  it.each(['confirm', 'adjust', 'remove'] as const)('%s保存期间返回工作稿，不改写后续工作稿覆盖层', async action => {
+    const response = deferred<Response>()
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input) === '/api/templates'
+      ? Promise.resolve(Response.json({ templates: [] })) : response.promise))
+    const store = ready()
+    store.proofreadMode = true
+    const saving = action === 'confirm' ? store.confirmRegion(1)
+      : action === 'adjust' ? store.adjustRegionBBox(1, { ...bbox, x1: 100 })
+      : store.removeRegion(1)
+    store.proofreadMode = false
+    store.regions = [{ ...region(1, { ...bbox, y1: 200 }), label: '工作稿区域', binding: null }]
+    response.resolve(action === 'remove' ? new Response(null, { status: 204 })
+      : Response.json({ ...region(1, bbox), label: '旧校对结果', review_status: 'confirmed' }))
+    expect((await saving).ok).toBe(true)
+    expect(store.regions[0].label).toBe('工作稿区域')
+    expect(store.regions[0].bbox?.y1).toBe(200)
+  })
+  it('离开后再回到同模板校对，旧保存不覆盖重新读取的区域', async () => {
+    const response = deferred<Response>()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PATCH') return response.promise
+      const url = String(input)
+      if (url.endsWith('/preview')) return new Response(new ArrayBuffer(4))
+      if (url.endsWith('/overlay')) return Response.json({ regions: [] })
+      if (url === '/api/templates') return Response.json({ templates: [] })
+      return Response.json({ regions: [{ ...region(1, bbox), label: '新读取区域' }] })
+    }))
+    const store = ready()
+    store.proofreadMode = true
+    const saving = store.confirmRegion(1)
+    await store.toggleProofreadMode(false)
+    await store.toggleProofreadMode(true)
+    response.resolve(Response.json({ ...region(1, bbox), label: '旧保存区域', review_status: 'confirmed' }))
+    expect((await saving).ok).toBe(true)
+    expect(store.regions[0].label).toBe('新读取区域')
+  })
+  it.each([200, 500])('旧模板版本列表晚到(%s)，不覆盖新模板列表', async status => {
+    const previous = deferred<Response>()
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input).includes('/templates/1/')
+      ? previous.promise : Promise.resolve(Response.json({ versions: [{ id: 22, name: '新模板版本' }] }))))
+    const store = ready()
+    const older = store.loadVersionList()
+    store.currentTemplateId = 2
+    await store.loadVersionList()
+    previous.resolve(Response.json(status === 200 ? { versions: [{ id: 11, name: '旧模板版本' }] }
+      : { error: { code: 'FAILED', message: '旧请求失败' } }, { status }))
+    await older
+    expect(store.versions.map(v => v.id)).toEqual([22])
+  })
+  it('同模板两次刷新列表，较早请求不覆盖新结果', async () => {
+    const previous = deferred<Response>()
+    vi.stubGlobal('fetch', vi.fn().mockImplementationOnce(() => previous.promise)
+      .mockResolvedValue(Response.json({ versions: [{ id: 12, name: '新读取版本' }] })))
+    const store = ready()
+    const older = store.loadVersionList()
+    await store.loadVersionList()
+    previous.resolve(Response.json({ versions: [{ id: 11, name: '旧读取版本' }] }))
+    await older
+    expect(store.versions.map(v => v.id)).toEqual([12])
+  })
+})
+
+it('覆盖层使用下载 PDF 的批次，过期批次自动重新获取', async () => {
+  let previewCalls = 0
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.endsWith('/preview')) {
+      previewCalls++
+      return new Response(new Uint8Array([previewCalls]).buffer, {
+        headers: { 'X-Render-Token': `batch-${previewCalls}` },
+      })
+    }
+    if (url.endsWith('render_token=batch-1')) {
+      return Response.json({ error: { code: 'RENDER_BATCH_EXPIRED', message: '批次过期' } }, { status: 409 })
+    }
+    if (url.endsWith('render_token=batch-2')) return Response.json({ regions: [{ ...region(4, null), binding: null }] })
+    throw new Error(`Unexpected request ${url}`)
+  })
+  vi.stubGlobal('fetch', fetcher)
+  const store = usePreviewStore()
+  store.currentVersionId = 8; store.status = 'ready'
+  await store.refreshVersionRender()
+  expect(previewCalls).toBe(2)
+  expect(store.regions[0].id).toBe(4)
+  expect(new Uint8Array(store.pdfData!)[0]).toBe(2)
+  expect(store.error).toBeNull()
+})
+
+it('校对模式重新生成预览时保留模板原文，不切换为替换后的工作稿', async () => {
+  const fetcher = stubFetch({
+    '/api/templates/1/preview': () => new ArrayBuffer(8),
+    '/api/templates/1': () => ({ regions: [region(1, null)] }),
+  })
+  const store = usePreviewStore()
+  store.currentTemplateId = 1; store.currentVersionId = 8
+  store.status = 'ready'; store.proofreadMode = true
+  await store.refreshVersionRender()
+  expect(fetcher.mock.calls.map(call => String(call[0]))).toEqual(['/api/templates/1/preview', '/api/templates/1'])
+  expect(store.proofreadMode).toBe(true)
+  expect(store.regions[0].binding).toBeNull()
+})
+
 describe('删除模板', () => {
   it('删除当前模板清除预览、版本、迁移和导出警示', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })))
@@ -81,6 +467,35 @@ describe('删除模板', () => {
 })
 
 describe('loadTemplates', () => {
+  it.each([false, true])('只发布最后一次列表读取，迟到的旧响应不覆盖数据或错误（失败=%s）', async failed => {
+    let resolve!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>(complete => { resolve = complete }))
+      .mockResolvedValueOnce(Response.json({ templates: [{ id: 2, filename: '新模板.docx' }] })))
+    const store = usePreviewStore()
+    const old = store.loadTemplates()
+    await store.loadTemplates()
+    resolve(failed
+      ? Response.json({ error: { code: 'FAILED', message: '旧错误' } }, { status: 500 })
+      : Response.json({ templates: [{ id: 1, filename: '旧模板.docx' }] }))
+    await old
+    expect(store.templates.map(template => template.id)).toEqual([2])
+    expect(store.templatesError).toBeNull()
+  })
+
+  it('删除模板后迟到的列表不能把已删除模板带回来', async () => {
+    let resolve!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === 'DELETE'
+      ? new Response(null, { status: 204 })
+      : new Promise<Response>(complete => { resolve = complete })))
+    const store = usePreviewStore()
+    const old = store.loadTemplates()
+    expect((await store.removeTemplate(1)).ok).toBe(true)
+    resolve(Response.json({ templates: [{ id: 1, filename: '已删除.docx' }] }))
+    await old
+    expect(store.templates).toEqual([])
+  })
+
   it('成功写入列表', async () => {
     stubFetch({
       '/api/templates': () => ({ templates: [{ id: 3, filename: 'a.docx', regions_count: 2 }] }),
@@ -471,6 +886,7 @@ describe('版本管理（M8）', () => {
         'GET /api/templates/1': () =>
           Response.json({ id: 1, filename: 't.docx', default_version_id: 5, regions: [] }),
         'GET /api/templates/1/versions': () => Response.json(VERSIONS),
+        'GET /api/templates/1/preview': () => new Response(new ArrayBuffer(4)),
         'GET /api/versions/5/preview': () => new Response(new ArrayBuffer(5)),
         'GET /api/versions/5/overlay': () => Response.json({ regions: [] }),
         'GET /api/versions/6/preview': () => new Response(new ArrayBuffer(6)),
@@ -520,6 +936,8 @@ describe('版本管理（M8）', () => {
     expect(store.pdfData?.byteLength).toBe(5)
 
     await store.toggleProofreadMode(true)
+    expect(store.proofreadMode).toBe(true)
+    expect(store.error).toBeNull()
     await store.selectVersion(6) // 校对对象是模板本体，切版本不响应
     expect(store.currentVersionId).toBe(5)
   })
@@ -974,6 +1392,23 @@ describe('导出（M9，PRD 4.8 / D5）', () => {
     expect(store.exportError).toBeNull()
   })
 
+  it('待补内容与大超出合并成一次服务端确认，并携带同批令牌输出', async () => {
+    const options = { exportStatus: 409, overflow: { orig_height: 20, new_height: 70, ratio: 2.5, level: 'large', clipped: false, fixed_row: false },
+      exportBody: { error: { code: 'DOCUMENT_WARNINGS', message: '请核对待补内容' }, warning_token: 'same-batch',
+        warnings: [{ region_id: 1, label: '姓名', kind: 'missing', ratio: null, clipped: false, fixed_row: false }, { region_id: 2, label: '经历', ratio: 2.5, clipped: false, fixed_row: false }] } }
+    const fn = exportRoutes(options)
+    const store = usePreviewStore()
+    await store.selectTemplate(1)
+    store.regions[0]!.binding = { block_id: 9, block_name: '原素材', status: 'missing', missing_policy: 'blank' }
+    expect((await store.requestExport(false)).needConfirm).toBe(true)
+    expect(store.exportWarnings).toHaveLength(2)
+    options.exportStatus = 200
+    expect((await store.requestExport(true)).ok).toBe(true)
+    const calls = fn.mock.calls.filter(c => String(c[0]).includes('/export'))
+    expect(calls).toHaveLength(2)
+    expect(JSON.parse(calls[1]![1]!.body as string)).toEqual({ confirm_large_overflow: true, confirm_warnings_token: 'same-batch' })
+  })
+
   it('导出失败（写盘 500）：ok=false，exportError 可读', async () => {
     exportRoutes({
       exportStatus: 500,
@@ -989,6 +1424,21 @@ describe('导出（M9，PRD 4.8 / D5）', () => {
 })
 
 describe('uploadTemplate（顶栏「导入模板」）', () => {
+  it.each([false, true])('仅保存模板不打开或清空当前文稿，重传也不切稿（重传=%s）', async reused => {
+    const fn = uploadRoutes(reused)
+    const store = usePreviewStore()
+    store.currentTemplateId = 1; store.currentVersionId = 5; store.status = 'ready'
+    const pdf = new ArrayBuffer(6)
+    store.pdfData = pdf
+    const result = await store.uploadTemplate(new File(['docx'], 'new.docx'), { templateOnly: true })
+    expect(result).toEqual({ ok: true, error: null, templateId: 7, reused })
+    expect(store.currentTemplateId).toBe(1)
+    expect(store.currentVersionId).toBe(5)
+    expect(store.pdfData).toBe(pdf)
+    expect(store.status).toBe('ready')
+    expect(fn.mock.calls.map(call => String(call[0]))).toEqual(['/api/templates', '/api/templates'])
+    expect((fn.mock.calls[0]?.[1]?.body as FormData).get('create_default_version')).toBe('false')
+  })
   /** 方法+URL 双键路由 stub（上传链路 POST/GET 同路径不同义，stubFetch 按 URL 单键不够用）。 */
   function stubMethodFetch(routes: Record<string, () => unknown>) {
     const fn = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {

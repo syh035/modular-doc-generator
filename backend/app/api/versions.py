@@ -6,10 +6,12 @@
 - 块软删除 → 绑定原子置 missing（blocks repo 同事务完成），本层不重复
 """
 
+from time import perf_counter
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.core.errors import (
@@ -31,7 +33,13 @@ from app.models.repositories import blocks as blocks_repo
 from app.models.repositories import regions as regions_repo
 from app.models.repositories import templates as templates_repo
 from app.models.repositories import versions as versions_repo
-from app.services import export_service, render_service, text_edit_service, version_service
+from app.services import (
+    export_service,
+    render_service,
+    render_sessions,
+    text_edit_service,
+    version_service,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -65,6 +73,7 @@ def _binding_dict(b: Binding, block_name: str | None) -> dict[str, object]:
 
 
 class RegionTextEdit(BaseModel):
+    line_break_mode: Literal["paragraph", "soft"] | None = None
     content: str
     sync_block: bool = False
     expected_content: str | None = None
@@ -73,7 +82,12 @@ class RegionTextEdit(BaseModel):
 @router.post("/versions/{version_id}/regions/{region_id}/text")
 def edit_region_text(version_id: int, region_id: int, payload: RegionTextEdit) -> dict[str, object]:
     return text_edit_service.save_text(
-        version_id, region_id, payload.content, payload.sync_block, payload.expected_content
+        version_id,
+        region_id,
+        payload.content,
+        payload.sync_block,
+        payload.expected_content,
+        payload.line_break_mode,
     )
 
 
@@ -96,6 +110,23 @@ def edit_region_layout(
         if region.template_id != version.template_id:
             raise AppError(REGION_TEMPLATE_MISMATCH, "区域不属于当前模板", status_code=400)
         if payload.action == "remove":
+            import json
+
+            paths = {
+                r.id
+                for r in regions_repo.list_regions(conn, version.template_id)
+                if json.loads(r.anchor)["path"] == json.loads(region.anchor)["path"]
+            }
+            if any(
+                conn.execute(
+                    "SELECT 1 FROM document_insertions WHERE version_id=? AND source_region_id=?",
+                    (version_id, identity),
+                ).fetchone()
+                for identity in paths
+            ):
+                raise AppError(
+                    "INSERTION_DEPENDENCY", "此段落还有插入行，请先移除插入行再删除段落", 409
+                )
             conn.execute(
                 "INSERT OR REPLACE INTO version_region_actions VALUES (?, ?, 'remove')",
                 (version_id, region_id),
@@ -195,26 +226,38 @@ def delete_binding(version_id: int, region_id: int) -> Response:
 
 
 @router.get("/versions/{version_id}/preview")
-def get_version_preview(version_id: int) -> FileResponse:
+def get_version_preview(version_id: int) -> Response:
     """版本预览 PDF（模板 + 绑定替换后的成品，单管线铁律）。
 
     Cache-Control: no-store——URL 不随绑定内容变化，若交给浏览器启发式缓存，
     绑定后会复用旧 PDF 导致「替换了但预览没反应」（2026-09-18 实锤，P25）；
     转换成本由后端内容寻址缓存兜底，浏览器禁止缓存。
     """
+    started = perf_counter()
     rendered = render_service.render_version(version_id)
-    return FileResponse(
-        rendered.pdf_path, media_type="application/pdf", headers={"Cache-Control": "no-store"}
+    token = render_sessions.publish(version_id, rendered)
+    return Response(
+        rendered.pdf_data,
+        media_type="application/pdf",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Render-Token": token,
+            "Server-Timing": f"render;dur={(perf_counter() - started) * 1000:.2f}",
+        },
     )
 
 
 @router.get("/versions/{version_id}/overlay")
-def get_version_overlay(version_id: int) -> dict[str, object]:
+def get_version_overlay(version_id: int, render_token: str | None = None) -> dict[str, object]:
     """版本覆盖层与对应 PDF 的页级指纹；现算 bbox，不落库。"""
     from app.services.page_cache import page_fingerprints
 
-    rendered = render_service.render_version(version_id)
-    pdf_sha, hashes = page_fingerprints(rendered.pdf_path)
+    rendered = (
+        render_sessions.get(version_id, render_token)
+        if render_token
+        else render_service.render_version(version_id)
+    )
+    pdf_sha, hashes = page_fingerprints(rendered.pdf_data)
     return {
         "version_id": version_id,
         "regions": rendered.items,
@@ -230,6 +273,7 @@ _DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessing
 
 class ExportRequest(BaseModel):
     confirm_large_overflow: bool = False
+    confirm_warnings_token: str | None = None
 
 
 @router.post("/versions/{version_id}/export")
@@ -245,25 +289,34 @@ def export_version(version_id: int, payload: ExportRequest) -> Response:
             raise AppError(VERSION_NOT_FOUND, f"内容版本不存在（id={version_id}）", status_code=404)
         version_name = version.name
     rendered = render_service.render_version(version_id)
-    warnings = export_service.extract_large_overflow_warnings(rendered.items)
-    if warnings and not payload.confirm_large_overflow:
+    warnings = export_service.document_warnings(rendered.items)
+    token = export_service.warnings_token(rendered.data, warnings)
+    missing = any(w.get("kind") == "missing" for w in warnings)
+    if warnings and (
+        not payload.confirm_large_overflow
+        or (missing and payload.confirm_warnings_token != token)
+        or (payload.confirm_warnings_token is not None and payload.confirm_warnings_token != token)
+    ):
         return JSONResponse(
             status_code=409,
             content={
                 "error": {
-                    "code": EXPORT_LARGE_OVERFLOW,
-                    "message": f"存在 {len(warnings)} 处大超出，确认后将按重排结果导出",
+                    "code": "DOCUMENT_WARNINGS" if missing else EXPORT_LARGE_OVERFLOW,
+                    "message": f"存在 {len(warnings)} 处内容或排版问题，请核对清单后确认导出",
                 },
                 "warnings": warnings,
+                "warning_token": token,
             },
         )
     file_name = export_service.export_file_name(version_name)
-    path = export_service.write_export(rendered.data, file_name)
-    return FileResponse(
-        path,
+    export_service.write_export(rendered.data, file_name)
+    return Response(
+        rendered.data,
         media_type=_DOCX_MEDIA_TYPE,
-        filename=file_name,
-        headers={"Cache-Control": "no-store"},
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f"attachment; filename*=utf-8''{quote(file_name)}",
+        },
     )
 
 
@@ -322,8 +375,8 @@ def rename_version(version_id: int, payload: VersionRename) -> dict[str, object]
 
 
 @router.delete("/versions/{version_id}", status_code=204)
-def delete_version(version_id: int) -> Response:
-    """删除版本（绑定级联删）；模板至少保留一个版本（LAST_VERSION 400）。"""
+def delete_version(version_id: int, allow_empty_template: bool = False) -> Response:
+    """删除版本；默认保护最后一稿，allow_empty_template=true 显式允许零稿。"""
     with get_conn() as conn:
-        version_service.delete_version(conn, version_id)
+        version_service.delete_version(conn, version_id, allow_empty_template=allow_empty_template)
     return Response(status_code=204)

@@ -22,11 +22,15 @@
 from __future__ import annotations
 
 import atexit
+import hashlib
 import json
+import logging
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -45,6 +49,7 @@ RENDER_TIMEOUT = 120_000  # 绑定/迁移后的局部刷新（替换产物首次
 DEFAULT_TIMEOUT = 15_000
 
 _spawned: list[subprocess.Popen] = []
+logger = logging.getLogger(__name__)
 
 
 # ---- 环境准备 ----
@@ -54,7 +59,7 @@ def _port_up(url: str) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=3):
             return True
-    except Exception:
+    except OSError:
         return False
 
 
@@ -93,7 +98,14 @@ def ensure_services() -> None:
         else:
             raise SystemExit("后端 60s 未就绪")
     else:
-        print("· 后端已在运行，直接复用")
+        with urllib.request.urlopen("http://127.0.0.1:8740/api/health", timeout=5) as response:
+            health = json.load(response)
+        expected = hashlib.sha256(
+            str(Path(os.environ["MODUDOC_DATA_DIR"]).resolve()).encode()
+        ).hexdigest()
+        if health.get("data_fingerprint") != expected:
+            raise SystemExit("8740 已有其他资料库服务；E2E 拒绝使用该库。请先正常退出该实例。")
+        print("· 复用本轮隔离测试服务")
 
     if not _frontend_up():
         npm = shutil.which("npm")
@@ -117,7 +129,7 @@ def ensure_services() -> None:
         else:
             raise SystemExit("前端 60s 未就绪")
     else:
-        print("· 前端已在运行，直接复用")
+        raise SystemExit("5173 已有前端服务；E2E 不复用未知实例，请先正常退出该实例。")
 
 
 def cleanup() -> None:
@@ -136,7 +148,8 @@ def cleanup() -> None:
 
 def _run_venv(script: Path, *args: str) -> str:
     result = subprocess.run(
-        [str(VENV_PY), str(script), *args], capture_output=True, text=True, timeout=300
+        [str(VENV_PY), str(script), *args], capture_output=True, text=True, timeout=300,
+        check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -150,8 +163,12 @@ def seed(scenario: int) -> list[dict]:
     return json.loads(out.strip().splitlines()[-1])["templates"]
 
 
-def verify_preview(template_id: int, expect: list[str], absent: list[str]) -> dict:
+def verify_preview(
+    template_id: int, expect: list[str], absent: list[str], version_id: int | None = None
+) -> dict:
     args = ["preview", "--template-id", str(template_id)]
+    if version_id is not None:
+        args += ["--version-id", str(version_id)]
     args += _text_args(expect, absent)
     return json.loads(_run_venv(VERIFY, *args).strip().splitlines()[-1])
 
@@ -213,22 +230,39 @@ def new_page(browser, console_errors: list[str]):
 
 
 def select_template(page, template_id: int) -> None:
-    """工具条模板下拉选择 → 等 ready（canvas + 图例出现）。"""
+    """文稿首页按模板找到既有文稿 → 等 ready（canvas + 图例出现）。"""
     from playwright.sync_api import expect
 
     page.goto(FRONTEND_URL)
-    template_select = page.locator("select.template-select").first
-    template_select.wait_for(state="visible")
-    template_select.select_option(value=str(template_id))
+    page.locator(f"#template-documents-{template_id} .edit-document").first.click()
     page.locator(".pdf-page canvas").first.wait_for(state="visible", timeout=CANVAS_TIMEOUT)
     expect(page.locator(".legend-wide")).to_be_visible()
 
 
-def confirm_all_candidates(page, expected: int) -> None:
-    """校对模式：逐个确认候选区域 → 进度 N/N → 退回正常模式（版本渲染黄框）。"""
+def select_document(page, template_id: int, name: str) -> None:
+    """通过文稿列表显式选择，验证当前标题与实际稿件一致。"""
     from playwright.sync_api import expect
 
-    page.locator('[data-testid="proofread-toggle"]').check()
+    page.get_by_role("navigation", name="主导航").get_by_role(
+        "button", name="文稿", exact=True
+    ).click()
+    page.locator(f"#template-documents-{template_id}").get_by_role(
+        "article", name=name, exact=True
+    ).locator(".edit-document").click()
+    expect(page.get_by_test_id("current-document-name")).to_have_text(name)
+    page.locator(".pdf-page canvas").first.wait_for(
+        state="visible", timeout=CANVAS_TIMEOUT
+    )
+
+
+def confirm_all_candidates(page, expected: int) -> None:
+    """检查模板区域：逐个保留候选 → 进度 N/N → 返回当前文档。"""
+    from playwright.sync_api import expect
+
+    page.locator('[data-testid="review-regions"]').click()
+    expect(page.get_by_role("button", name="下一处待检查", exact=True)).to_be_enabled(
+        timeout=RENDER_TIMEOUT
+    )
     candidates = page.locator(".pdf-page .overlay.cand-high, .pdf-page .overlay.cand-low")
     candidates.first.wait_for(state="visible")
     expected = candidates.count()  # 全文识别包含正文、标题和 fixture 时间戳
@@ -237,17 +271,20 @@ def confirm_all_candidates(page, expected: int) -> None:
         page.locator('[data-testid="proofread-popover"]').wait_for(state="visible")
         page.locator('[data-testid="proofread-confirm"]').click()
         page.locator('[data-testid="proofread-popover"]').wait_for(state="hidden")
-    expect(page.locator('.legend-wide [data-testid="proofread-progress"]')).to_have_text(
+    expect(page.locator('[data-testid="proofread-progress"]')).to_have_text(
         f"已处理 {expected}/{expected}"
     )
-    page.locator('[data-testid="proofread-toggle"]').uncheck()
+    page.locator('[data-testid="finish-region-review"]').click()
+    expect(page.locator('[data-testid="review-regions"]')).to_be_enabled(
+        timeout=RENDER_TIMEOUT
+    )
     page.locator(".pdf-page .overlay.pending").first.wait_for(state="visible")
 
 
 def create_block(page, name: str, content: str) -> None:
     """块库新建字符块（创建成功自动选中，出现正向绑定指引）。"""
-    page.get_by_role("button", name="+ 新建字符块", exact=True).click()
-    form = page.get_by_role("dialog", name="字符块编辑", exact=True)
+    page.get_by_role("button", name="+ 新建素材", exact=True).click()
+    form = page.get_by_role("dialog", name="素材编辑", exact=True)
     form.wait_for(state="visible")
     form.locator("input").first.fill(name)
     form.locator("textarea").fill(content)
@@ -333,36 +370,22 @@ def scenario_2(browser) -> list[str]:
         # 新建版本（复制当前绑定底稿）→ 自动切换
         stamp = time.strftime("%H%M%S")
         version_name = f"投递版{stamp}"
-        page.locator('[data-testid="template-manage"]').click()
-        page.get_by_role("dialog", name="模板与版本管理").get_by_role(
-            "button", name="复制", exact=True
-        ).first.click()
+        page.locator('.template-preview .document-actions summary').click()
+        page.get_by_role("button", name="另存为文稿", exact=True).click()
         dialog = page.locator('[data-testid="version-dialog"]')
         dialog.wait_for(state="visible")
         dialog.locator('[data-testid="version-name-input"]').fill(version_name)
-        # Manager copy opens an explicit copy-mode version dialog.
+        # 另存明确复制当前稿，成功直接打开新文稿。
         dialog.locator('button[type="submit"]').click()
         dialog.wait_for(state="hidden")
-        page.get_by_role("dialog", name="模板与版本管理").locator("article").filter(
-            has_text=version_name
-        ).get_by_role("button", name="使用", exact=True).click()
-        page.get_by_role("dialog", name="模板与版本管理").wait_for(state="hidden")
-        version_select = page.locator('[data-testid="version-select"]')
-        expect(version_select.locator("option:checked")).to_have_text(
-            re.compile(f"{re.escape(version_name)}（1 项绑定）")
+        expect(page.get_by_test_id("current-document-name")).to_have_text(version_name)
+        expect(page.locator(".legend-wide")).to_contain_text(
+            "已绑定 1", timeout=RENDER_TIMEOUT
         )
 
-        # 版本来回切换（绑定数随绑定刷新）。
-        def _version_value(substring: str) -> str:
-            option = version_select.locator("option", has_text=substring).first
-            value = option.get_attribute("value")
-            assert value is not None, f"版本下拉找不到含 {substring!r} 的选项"
-            return value
-
-        version_select.select_option(value=_version_value("默认版本"))
-        page.locator(".pdf-page canvas").first.wait_for(state="visible", timeout=CANVAS_TIMEOUT)
-        version_select.select_option(value=_version_value(version_name))
-        page.locator(".pdf-page canvas").first.wait_for(state="visible", timeout=CANVAS_TIMEOUT)
+        # 文稿名与绑定数分别校验，从列表来回切换，不能只改当前标题。
+        select_document(page, template_id, "默认版本")
+        select_document(page, template_id, version_name)
         expect(bar).to_be_visible(timeout=RENDER_TIMEOUT)  # 大超出在新版本同样存在
 
         # 导出：大超出拦截 → 警示弹层 → 确认重排导出 → 文件名与产物校验
@@ -393,7 +416,7 @@ def scenario_2(browser) -> list[str]:
 
 
 def scenario_3(browser) -> list[str]:
-    """模板换装：源版本绑定 → 切 ready 新模板 → 迁移确认 → 绑定零重录。"""
+    """模板换装：原稿保留 → 只读套用预览 → 明确生成新稿 → 验证指定新稿。"""
     errors: list[str] = []
     context, page = new_page(browser, errors)
     try:
@@ -415,26 +438,34 @@ def scenario_3(browser) -> list[str]:
         create_block(page, "工作块S", work_content)
         bind_selected_block(page, "工作经历", bound_count=2)
 
-        # 切目标模板 → 迁移弹层（prompt）→ 方案（自动匹配 2）→ 确认
-        page.locator("select.template-select").first.select_option(value=str(target_id))
-        migration = page.locator('[data-testid="migration-dialog"]')
+        # 选择模板只做试排，不切走或覆盖原稿。
+        page.locator('.template-preview .document-actions summary').click()
+        page.get_by_role("button", name="更换模板", exact=True).click()
+        migration = page.get_by_role("dialog", name="更换模板生成新稿", exact=True)
         migration.wait_for(state="visible")
-        expect(migration).to_contain_text("2 个绑定")
-        migration.locator('[data-testid="migration-proceed"]').click()
-        auto_list = migration.locator('[data-testid="migration-auto-list"]')
-        auto_list.wait_for(state="visible")
-        assert auto_list.locator("li.row").count() == 2, "自动匹配清单应含 2 行"
-        expect(page.locator('[data-testid="migration-count"]')).to_have_text("将迁移 2 个绑定")
-        migration.locator('[data-testid="migration-apply"]').click()
-        migration.wait_for(state="hidden")
+        migration.get_by_role("combobox", name="选择新模板").select_option(value=str(target_id))
+        migration.get_by_role("textbox", name="新文稿名称").fill("换装新稿")
+        expect(migration).to_contain_text(work_content, timeout=RENDER_TIMEOUT)
+        generate = migration.get_by_role("button", name="生成新文稿", exact=True)
+        expect(generate).to_be_enabled(timeout=RENDER_TIMEOUT)
+        with page.expect_response(
+            lambda response: response.url.endswith(f"/templates/{target_id}/migrate/apply")
+            and response.request.method == "POST", timeout=RENDER_TIMEOUT
+        ) as submitted:
+            generate.click()
+        result_document = submitted.value.json()
+        assert submitted.value.status == 201, result_document
+        migration.wait_for(state="hidden", timeout=RENDER_TIMEOUT)
 
-        # 绑定零重录：目标默认版本 2 项绑定 + 预览替换生效（迁移后首次替换渲染，放宽超时）
+        # 校验新稿 ID，不能误把目标默认空稿当成迁移结果。
         expect(page.locator(".legend-wide")).to_contain_text("已绑定 2", timeout=RENDER_TIMEOUT)
-        version_select = page.locator('[data-testid="version-select"]')
-        expect(version_select.locator("option:checked")).to_have_text(
-            re.compile("默认版本（2 项绑定）"), timeout=RENDER_TIMEOUT
+        expect(page.get_by_test_id("current-document-name")).to_have_text(
+            "换装新稿", timeout=RENDER_TIMEOUT
         )
-        result = verify_preview(target_id, expect=["李四", work_content], absent=["{{"])
+        result = verify_preview(
+            target_id, expect=["李四", work_content], absent=["{{"],
+            version_id=result_document["version_id"],
+        )
         assert result["ok"], f"迁移后预览 PDF 校验失败: {result}"
     except Exception:
         page.screenshot(path="/tmp/e2e_fail_s3.png")
@@ -453,8 +484,11 @@ def main() -> None:
     if not wanted or any(n not in SCENARIOS for n in wanted):
         raise SystemExit("用法: run_e2e.py [1|2|3|all]")
 
-    ensure_services()
+    data = tempfile.TemporaryDirectory(prefix="modudoc-e2e-")
+    os.environ["MODUDOC_DATA_DIR"] = data.name
+    atexit.register(data.cleanup)
     atexit.register(cleanup)
+    ensure_services()
 
     from playwright.sync_api import sync_playwright
 
@@ -470,6 +504,7 @@ def main() -> None:
                 results.append((f"场景{number} {name}", "PASS", errors))
                 print(f"  PASS {name}")
             except Exception as exc:
+                logger.exception("场景 %s 验证失败", number)
                 results.append((f"场景{number} {name}", "FAIL", [str(exc)]))
                 print(f"  FAIL {name}: {exc}")
                 if _diag:
@@ -486,7 +521,7 @@ def main() -> None:
             print(f"    · {msg}")
         if status == "FAIL":
             failed = True
-    print("\n说明：模板/块为累加式测试数据（未清理）；下载产物在 /tmp/e2e_downloads/")
+    print("\n说明：临时测试资料库将在服务退出后删除；下载产物在 /tmp/e2e_downloads/")
     raise SystemExit(1 if failed else 0)
 
 

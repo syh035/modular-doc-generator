@@ -26,6 +26,30 @@ beforeEach(() => {
 async function manager() { const wrapper = mount(TemplateManager); await flushPromises(); return wrapper }
 function button(wrapper: ReturnType<typeof mount>, text: string) { return wrapper.findAll('button').find(b => b.text() === text)! }
 
+it('模板主页面不创建模态，浏览不切换文稿，文稿操作回到文稿列表', async () => {
+  const store = usePreviewStore()
+  const load = vi.spyOn(store, 'loadTemplates').mockResolvedValue()
+  const select = vi.spyOn(store, 'selectTemplate')
+  const wrapper = mount(TemplateManager, { props: { embedded: true } })
+  await flushPromises()
+  expect(wrapper.element.tagName).toBe('MAIN')
+  expect(wrapper.find('dialog').exists()).toBe(false)
+  expect(wrapper.find('[aria-label=关闭模板管理]').exists()).toBe(false)
+  expect(load).toHaveBeenCalledOnce()
+  store.status = 'error'
+  await flushPromises()
+  expect(wrapper.find('.current-badge').exists()).toBe(false)
+  await wrapper.findAll('.template-item')[1]!.trigger('click')
+  await flushPromises()
+  expect(store.currentTemplateId).toBe(1)
+  expect(store.currentVersionId).toBe(5)
+  expect(select).not.toHaveBeenCalled()
+  expect(wrapper.text()).not.toContain('创建空白版本')
+  await button(wrapper, '查看文稿列表').trigger('click')
+  expect(wrapper.emitted('documents')).toEqual([[2]])
+  wrapper.unmount()
+})
+
 describe('模板与版本管理', () => {
   it('全选仅含当前搜索结果；切换搜索清除选择', async () => {
     const wrapper = await manager()

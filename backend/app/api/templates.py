@@ -4,9 +4,10 @@ import json
 import sqlite3
 from typing import Annotated
 
-from fastapi import APIRouter, File, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi import APIRouter, File, Form, UploadFile
+from fastapi.responses import JSONResponse, Response
 
+from app.core.config import settings
 from app.core.errors import TEMPLATE_NOT_FOUND, AppError
 from app.models.db import get_conn
 from app.models.entities import Region, Template
@@ -14,6 +15,8 @@ from app.models.repositories import regions as regions_repo
 from app.models.repositories import templates as templates_repo
 from app.models.repositories import versions as versions_repo
 from app.services import render_service, template_service
+from app.services.libreoffice import cache_access
+from app.services.review_summary import unsupported_objects
 
 router = APIRouter(prefix="/api")
 
@@ -69,14 +72,19 @@ def _get_or_404(conn: sqlite3.Connection, template_id: int) -> Template:
 
 
 @router.post("/templates")
-def upload_template(file: Annotated[UploadFile, File()]) -> JSONResponse:
-    """上传 DOCX 模板：校验 → 候选解析（M3b 三层识别）→ 默认版本。
+def upload_template(
+    file: Annotated[UploadFile, File()],
+    create_default_version: Annotated[bool, Form()] = True,
+) -> JSONResponse:
+    """上传 DOCX 模板；create_default_version=false 仅保存模板，旧调用默认建稿。
 
     201 = 新建；200 = 同 sha256 内容重传关联已有模板（D10，reused=true，
     区域与版本均为已有模板的解析结果）。同步完成（D12）。
     """
     data = file.file.read()
-    tpl, regions, reused = template_service.upload_template(file.filename or "", data)
+    tpl, regions, reused = template_service.upload_template(
+        file.filename or "", data, create_default_version=create_default_version
+    )
     out = _template_dict(tpl, regions=regions)
     out["default_version_id"] = _default_version_id(tpl.id)
     out["reused"] = reused
@@ -84,7 +92,7 @@ def upload_template(file: Annotated[UploadFile, File()]) -> JSONResponse:
 
 
 def _default_version_id(template_id: int) -> int | None:
-    """模板默认版本 id（最早创建即默认；无版本=历史数据，前端走模板预览兜底）。"""
+    """最早创建的版本 id；零文稿模板合法，返回 None，不自动补建。"""
     with get_conn() as conn:
         versions = versions_repo.list_versions(conn, template_id)
     return versions[0].id if versions else None
@@ -111,6 +119,22 @@ def get_template(template_id: int) -> dict[str, object]:
     return out
 
 
+@router.get("/templates/{template_id}/review-summary")
+def review_summary(template_id: int) -> dict[str, object]:
+    with get_conn() as conn:
+        tpl = _get_or_404(conn, template_id)
+        regions = regions_repo.list_regions(conn, template_id)
+    return {
+        "pending": sum(r.review_status == "pending" for r in regions),
+        "confirmed": sum(r.review_status == "confirmed" for r in regions),
+        "excluded": sum(r.review_status == "excluded" for r in regions),
+        "unlocated": sum(r.bbox_json is None for r in regions),
+        "unsupported": unsupported_objects(
+            (settings.templates_dir / tpl.storage_name).read_bytes()
+        ),
+    }
+
+
 @router.get("/templates/{template_id}/regions")
 def list_regions(template_id: int) -> dict[str, object]:
     """模板全部区域，按文档流顺序（AGENTS.md 约定路径）。"""
@@ -123,14 +147,13 @@ def list_regions(template_id: int) -> dict[str, object]:
 
 
 @router.get("/templates/{template_id}/preview")
-def get_preview(template_id: int) -> FileResponse:
+def get_preview(template_id: int) -> Response:
     """模板预览 PDF（单管线铁律：预览即管线产物，P2）。
 
     首次调用触发 LibreOffice 转换并计算区域 bbox（同步完成，10 页内
     模板远低于 D12 解析基线的量级）；后续调用命中转换缓存。
     """
-    pdf_path = render_service.ensure_template_preview(template_id)
+    with cache_access():
+        pdf_data = render_service.ensure_template_preview(template_id).read_bytes()
     # no-store：同 P25（URL 不随内容变化，禁止浏览器启发式缓存复用旧 PDF）
-    return FileResponse(
-        pdf_path, media_type="application/pdf", headers={"Cache-Control": "no-store"}
-    )
+    return Response(pdf_data, media_type="application/pdf", headers={"Cache-Control": "no-store"})

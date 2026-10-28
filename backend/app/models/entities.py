@@ -17,6 +17,7 @@ class Block:
     updated_at: str
     deleted_at: str | None  # 软删除标记（D11），NULL = 存活
     kind: str = "text"
+    material: bool = True
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Block":
@@ -28,6 +29,7 @@ class Block:
             updated_at=row["updated_at"],
             deleted_at=row["deleted_at"],
             kind=row["kind"],
+            material=bool(row["material"]),
         )
 
 
@@ -133,6 +135,7 @@ class Binding:
     updated_at: str
     line_break_mode: str = "paragraph"
     position: str = "inside"
+    missing_policy: str = "original"
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Binding":
@@ -146,4 +149,5 @@ class Binding:
             updated_at=row["updated_at"],
             line_break_mode=row["line_break_mode"],
             position=row["position"],
+            missing_policy=row["missing_policy"],
         )

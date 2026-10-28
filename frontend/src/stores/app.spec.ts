@@ -8,6 +8,24 @@ const healthy: HealthStatus = {
 }
 
 describe('app store（冒烟）', () => {
+  it('模板文稿筛选和归档定位彼此独立，文稿主入口会返回全部文稿', () => {
+    const store = useAppStore()
+    store.openTemplateDocuments(5)
+    expect(store.documentTemplateId).toBe(5)
+    expect(store.activeTab).toBe('documents')
+    store.openArchives(7)
+    expect(store.activeTab).toBe('archives')
+    expect(store.archiveId).toBe(7)
+    store.openDocumentArchives({ id: 12, name: '当前稿' })
+    expect(store.archiveSource).toEqual({ id: 12, name: '当前稿' })
+    expect(store.archiveId).toBeNull()
+    store.openArchives(7)
+    expect(store.archiveSource).toBeNull()
+    store.setTab('documents')
+    expect(store.documentTemplateId).toBeNull()
+    store.openArchives()
+    expect(store.archiveId).toBeNull()
+  })
   beforeEach(() => {
     setActivePinia(createPinia())
   })
@@ -33,12 +51,14 @@ describe('app store（冒烟）', () => {
     vi.unstubAllGlobals()
   })
 
-  it('tab 切换：默认工作台，setTab 切到指南再切回（UI 调整①）', () => {
+  it('默认进入文稿列表，编辑和指南状态可切回列表', () => {
     const store = useAppStore()
-    expect(store.activeTab).toBe('workbench')
+    expect(store.activeTab).toBe('documents')
     store.setTab('guide')
     expect(store.activeTab).toBe('guide')
     store.setTab('workbench')
     expect(store.activeTab).toBe('workbench')
+    store.setTab('documents')
+    expect(store.activeTab).toBe('documents')
   })
 })

@@ -10,15 +10,18 @@ import sqlite3
 from app.models.db import utcnow
 from app.models.entities import Block
 
-_SELECT = "SELECT id, name, content, created_at, updated_at, deleted_at, kind FROM blocks"
+_SELECT = "SELECT id, name, content, created_at, updated_at, deleted_at, kind, material FROM blocks"
 
 
-def create_block(conn: sqlite3.Connection, name: str, content: str, *, kind: str = "text") -> Block:
+def create_block(
+    conn: sqlite3.Connection, name: str, content: str, *, kind: str = "text", material: bool = True
+) -> Block:
     """新建块并回读完整行。"""
     now = utcnow()
     cur = conn.execute(
-        "INSERT INTO blocks (name, content, created_at, updated_at, kind) VALUES (?, ?, ?, ?, ?)",
-        (name, content, now, now, kind),
+        "INSERT INTO blocks (name, content, created_at, updated_at, kind, material) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (name, content, now, now, kind, int(material)),
     )
     assert cur.lastrowid is not None
     block = get_block(conn, cur.lastrowid)
@@ -42,11 +45,14 @@ def list_blocks(
     *,
     include_deleted: bool = False,
     template_id: int | None = None,
+    materials_only: bool = False,
 ) -> list[Block]:
     """块列表（平铺，按更新时间倒序——最近编辑的块排前面）；默认排除软删除行。"""
     sql = _SELECT
     conditions = []
     params: list[object] = []
+    if materials_only:
+        conditions.append("material = 1")
     if not include_deleted:
         conditions.append("deleted_at IS NULL")
     if template_id is not None:
@@ -112,6 +118,11 @@ def soft_delete_block(conn: sqlite3.Connection, block_id: int) -> bool:
     conn.execute(
         "UPDATE bindings SET status = 'missing', updated_at = ? "
         "WHERE block_id = ? AND status = 'active'",
+        (now, block_id),
+    )
+    conn.execute(
+        "UPDATE document_insertions SET status='missing',updated_at=? WHERE block_id=? "
+        "AND status='active'",
         (now, block_id),
     )
     conn.execute("DELETE FROM block_tags WHERE block_id = ?", (block_id,))

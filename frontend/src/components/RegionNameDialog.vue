@@ -4,54 +4,68 @@
  * 后端校验错误（REGION_FRAME_EMPTY / REGION_FRAME_MULTI）经 error prop 内联显示。
  */
 import { useModalEsc } from '../composables/useModalEsc'
-import { ref } from 'vue'
+import { onMounted, ref, useTemplateRef } from 'vue'
 import { REGION_TYPE_OPTIONS } from '../constants/regionTypes'
 
-defineProps<{
+const props = defineProps<{
+  embedded?: boolean
+  returnToTemplate?: boolean
   error: string | null
   submitting: boolean
+  initialName?: string
+  initialType?: string
 }>()
 
 const emit = defineEmits<{
-  submit: [label: string, type: string]
+  submit: [label: string, type: string, continueAdding: boolean]
+  reframe: [label: string, type: string]
   close: []
 }>()
 
-const label = ref('')
-const type = ref('custom')
+const label = ref(props.initialName ?? '补选区域1')
+const type = ref(props.initialType ?? 'custom')
 
-function onSubmit(): void {
+function onSubmit(continueAdding = false): void {
   const name = label.value.trim()
-  if (name.length === 0 || name.length > 50) {
+  if (props.submitting || name.length === 0 || name.length > 50) {
     return // 前端先行拦截，后端 _validate_label 同口径
   }
-  emit('submit', name, type.value)
+  emit('submit', name, type.value, continueAdding)
 }
-useModalEsc(() => emit('close'))
+function close(): void { if (!props.submitting) emit('close') }
+function reframe(): void { if (!props.submitting) emit('reframe', label.value, type.value) }
+if (!props.embedded) useModalEsc(close)
+const panel = useTemplateRef<HTMLElement>('panel')
+onMounted(() => { if (props.embedded) panel.value?.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true }) })
 </script>
 
 <template>
   <!-- 遮罩：点击关闭；卡片阻止冒泡（复用 BindingDialog 布局） -->
-  <dialog
+  <component
+    :is="embedded ? 'section' : 'dialog'"
     ref="modal"
     class="dialog-mask"
-    aria-label="新建区域"
-    aria-modal="true"
+    :class="{ embedded }"
+    aria-label="添加可编辑区域"
+    :aria-modal="embedded ? undefined : true"
     tabindex="-1"
     data-testid="region-name-dialog"
-    @click.self="emit('close')"
+    @keydown.esc.stop.prevent="close"
+    @click.self="close"
   >
     <form
+      ref="panel"
       class="dialog-card"
-      @submit.prevent="onSubmit"
+      @submit.prevent="onSubmit(false)"
     >
       <div class="dialog-head">
-        <span class="title">新建区域</span>
+        <span class="title">添加可编辑区域</span>
         <button
           type="button"
           class="icon-btn"
           aria-label="关闭"
-          @click="emit('close')"
+          :disabled="submitting"
+          @click="close"
         >
           ×
         </button>
@@ -60,27 +74,37 @@ useModalEsc(() => emit('close'))
         <span class="field-label">区域名称</span>
         <input
           v-model="label"
+          :disabled="submitting"
           data-modal-autofocus
           maxlength="50"
           placeholder="如：姓名、工作经历一（1–50 字）"
           data-testid="region-name-input"
         >
       </label>
-      <label class="field">
-        <span class="field-label">区域类型</span>
-        <select
-          v-model="type"
-          data-testid="region-type-select"
+      <details class="type-options">
+        <summary
+          :aria-disabled="submitting"
+          @click="submitting && $event.preventDefault()"
         >
-          <option
-            v-for="opt in REGION_TYPE_OPTIONS"
-            :key="opt.value"
-            :value="opt.value"
+          区域类型（可选）
+        </summary>
+        <label class="field">
+          <span class="field-label">区域类型</span>
+          <select
+            v-model="type"
+            :disabled="submitting"
+            data-testid="region-type-select"
           >
-            {{ opt.label }}
-          </option>
-        </select>
-      </label>
+            <option
+              v-for="opt in REGION_TYPE_OPTIONS"
+              :key="opt.value"
+              :value="opt.value"
+            >
+              {{ opt.label }}
+            </option>
+          </select>
+        </label>
+      </details>
       <p
         v-if="error"
         class="error"
@@ -90,25 +114,46 @@ useModalEsc(() => emit('close'))
       </p>
       <div class="dialog-foot">
         <button
+          v-if="error"
           type="button"
           class="ghost"
-          @click="emit('close')"
+          :disabled="submitting"
+          data-testid="reframe-region"
+          @click="reframe"
+        >
+          重新框选
+        </button>
+        <button
+          type="button"
+          class="ghost"
+          :disabled="submitting"
+          @click="close"
         >
           取消
+        </button>
+        <button
+          type="button"
+          class="ghost"
+          :disabled="submitting || label.trim().length === 0"
+          @click="onSubmit(true)"
+        >
+          保存并继续添加
         </button>
         <button
           type="submit"
           class="primary"
           :disabled="submitting || label.trim().length === 0"
         >
-          {{ submitting ? '创建中…' : '创建' }}
+          {{ submitting ? '正在保存…' : returnToTemplate ? '保存并返回模板' : '保存并返回文档' }}
         </button>
       </div>
     </form>
-  </dialog>
+  </component>
 </template>
 
 <style scoped>
+.dialog-mask.embedded { position: static; background: none; display: block; margin: 10px 0; }
+.embedded .dialog-card { width: 100%; box-shadow: none; border: 1px solid var(--border); }
 .dialog-mask {
   position: fixed;
   inset: 0;
@@ -157,6 +202,9 @@ useModalEsc(() => emit('close'))
   gap: 4px;
   padding: 10px 14px 0;
 }
+.type-options { margin: 10px 14px; font-size: 12px; color: var(--text-2); }
+.type-options summary { cursor: pointer; }
+.type-options .field { padding: 10px 0 0; }
 
 .field-label {
   font-size: 12px;
@@ -190,6 +238,7 @@ useModalEsc(() => emit('close'))
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
   padding: 12px 14px;
 }
 
@@ -216,5 +265,9 @@ useModalEsc(() => emit('close'))
 .primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+@media (max-width: 480px) {
+  .dialog-foot > .primary { flex-basis: 100%; }
+  .dialog-foot > .ghost { flex: 1; white-space: nowrap; }
 }
 </style>

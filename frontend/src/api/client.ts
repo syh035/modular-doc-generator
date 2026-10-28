@@ -16,9 +16,11 @@ export interface ApiError {
 export class ApiRequestError extends Error {
   readonly code: string
 
-  constructor(code: string, message: string) {
+  readonly details?: { warnings?: import('./exports').ExportWarning[]; warning_token?: string }
+  constructor(code: string, message: string, details?: ApiRequestError['details']) {
     super(message)
     this.code = code
+    this.details = details
   }
 }
 
@@ -39,8 +41,10 @@ async function rawApiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (!resp.ok) {
     let code = `HTTP_${resp.status}`
     let message = `请求失败（${resp.status}）`
+    let details: ApiRequestError['details']
     try {
-      const body = (await resp.json()) as { error?: ApiError }
+      const body = (await resp.json()) as { error?: ApiError } & NonNullable<ApiRequestError['details']>
+      details = body
       if (body.error) {
         code = body.error.code
         message = body.error.message
@@ -48,7 +52,7 @@ async function rawApiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // 非 JSON 响应，保留 HTTP 状态码错误
     }
-    throw new ApiRequestError(code, message)
+    throw new ApiRequestError(code, message, details)
   }
   if (resp.status === 204) {
     return undefined as T // No Content（如解绑成功）无 JSON 体
@@ -57,7 +61,7 @@ async function rawApiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /** 获取二进制响应（如预览 PDF）；错误结构与 apiFetch 同源。 */
-export async function fetchBlob(path: string): Promise<Blob> {
+export async function fetchBlob(path: string, onResponse?: (response: Response) => void): Promise<Blob> {
   let resp: Response
   try {
     resp = await fetch(path)
@@ -78,6 +82,7 @@ export async function fetchBlob(path: string): Promise<Blob> {
     }
     throw new ApiRequestError(code, message)
   }
+  onResponse?.(resp)
   return resp.blob()
 }
 

@@ -1,7 +1,7 @@
 """LibreOfficeManager 单测：假 soffice 驱动缓存/超时回收/失败路径 + 真实转换集成。
 
-假 soffice 是一个可执行 python 脚本：解析 --outdir 与末位输入路径，
-按输入 stem 落一个假 PDF；FAKE_HANG=1 挂起 300s（超时回收用），
+假 soffice 是一个可执行 python 脚本：解析 --outdir 与其后的输入路径，
+按各输入 stem 落假 PDF；FAKE_HANG=1 挂起 300s（超时回收用），
 FAKE_FAIL=1 退出码 3（失败路径用），成功时向输入旁 fake_calls 计数。
 """
 
@@ -17,6 +17,7 @@ from app.core.errors import RENDER_FAILED, RENDER_TIMEOUT, AppError
 from app.services.libreoffice import LibreOfficeManager, find_soffice
 
 _FAKE_SOFFICE = """#!/usr/bin/env python3
+import hashlib
 import os
 import sys
 import time
@@ -24,13 +25,18 @@ from pathlib import Path
 
 args = sys.argv[1:]
 outdir = Path(args[args.index("--outdir") + 1])
-inp = Path(args[-1])
-marker = inp.parent / "fake_calls"
+inputs = [Path(value) for value in args[args.index("--outdir") + 2:]]
+marker = Path(os.environ.get("FAKE_CALLS", str(inputs[0].parent / "fake_calls")))
 if os.environ.get("FAKE_HANG"):
     time.sleep(300)
 if os.environ.get("FAKE_FAIL"):
     sys.exit(3)
-(outdir / (inp.stem + ".pdf")).write_bytes(b"%PDF-fake\\n%M4")
+for index, inp in enumerate(inputs):
+    if os.environ.get("FAKE_SKIP_LAST") and index == len(inputs) - 1:
+        break
+    (outdir / (inp.stem + ".pdf")).write_bytes(
+        b"%PDF-fake\\n%M4" + inp.name.encode() + hashlib.sha256(inp.read_bytes()).digest()
+    )
 with marker.open("a") as f:
     f.write("x")
 """
@@ -115,6 +121,107 @@ def test_different_content_no_cache_hit(fake_soffice: Path, tmp_path: Path) -> N
     assert len(list((tmp_path / "cache").glob("*.pdf"))) == 2
 
 
+def test_batch_splits_same_names_without_overwriting(
+    fake_soffice: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = make_manager(fake_soffice, tmp_path)
+    first = make_docx_file(tmp_path)
+    folder = tmp_path / "other"
+    folder.mkdir()
+    second = make_docx_file(folder)
+    second.write_bytes(second.read_bytes() + b"different")
+    marker = tmp_path / "batch_calls"
+    monkeypatch.setenv("FAKE_CALLS", str(marker))
+
+    result = manager.convert_many([first, second, first])
+    assert result[0] == result[2] and result[0].read_bytes() != result[1].read_bytes()
+    assert manager.conversions == 2 and marker.read_text() == "xx"
+    assert manager.convert(first) == result[0]
+    assert manager.convert_many([second, first]) == [result[1], result[0]]
+    assert manager.conversions == 2
+    assert not list((tmp_path / "cache" / "tmp").iterdir())
+
+
+def test_batch_duplicate_content_preserves_first_source_name(
+    fake_soffice: Path, tmp_path: Path
+) -> None:
+    manager = make_manager(fake_soffice, tmp_path)
+    first = make_docx_file(tmp_path, "first.docx")
+    second = tmp_path / "second.docx"
+    second.write_bytes(first.read_bytes())
+
+    result = manager.convert_many([first, second])
+    assert result[0] == result[1] and manager.conversions == 1
+    assert b"first.docx" in result[0].read_bytes()
+    assert b"second.docx" not in result[0].read_bytes()
+
+
+def test_batch_keeps_cached_inputs_when_pruning(fake_soffice: Path, tmp_path: Path) -> None:
+    manager = make_manager(fake_soffice, tmp_path)
+    first = make_docx_file(tmp_path, "first.docx")
+    second = make_docx_file(tmp_path, "second.docx")
+    second.write_bytes(second.read_bytes() + b"new")
+    cached = manager.convert(first)
+    manager.max_cache_bytes = 1
+
+    result = manager.convert_many([first, second])
+    assert result[0] == cached and all(path.is_file() for path in result)
+    assert manager.conversions == 2
+    assert manager.convert_many([]) == []
+
+
+def test_incomplete_batch_does_not_publish_partial_results(
+    fake_soffice: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = make_manager(fake_soffice, tmp_path)
+    first = make_docx_file(tmp_path, "first.docx")
+    second = make_docx_file(tmp_path, "second.docx")
+    second.write_bytes(second.read_bytes() + b"new")
+    monkeypatch.setenv("FAKE_SKIP_LAST", "1")
+    with pytest.raises(AppError) as error:
+        manager.convert_many([first, second])
+    assert error.value.code == RENDER_FAILED
+    assert manager.conversions == 0
+    assert not list((tmp_path / "cache").glob("*.pdf"))
+    assert not list((tmp_path / "cache" / "tmp").iterdir())
+
+    monkeypatch.delenv("FAKE_SKIP_LAST")
+    assert all(path.is_file() for path in manager.convert_many([first, second]))
+    assert manager.conversions == 1
+
+
+def test_environment_changes_invalidate_cache(
+    fake_soffice: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = make_manager(fake_soffice, tmp_path)
+    fonts = tmp_path / "fonts"
+    fonts.mkdir()
+    monkeypatch.setattr(manager, "_font_directories", lambda: [fonts])
+    source = make_docx_file(tmp_path)
+    original = manager.convert(source)
+    (fonts / "new.ttf").write_bytes(b"font")
+    installed = manager.convert(source)
+    assert installed != original
+    assert manager.convert(source) == installed
+    fake_soffice.write_text(_FAKE_SOFFICE + "\n# converter updated\n")
+    assert manager.convert(source) != installed
+    assert manager.conversions == 3
+
+
+def test_cache_prunes_old_results_and_clear_rebuilds(fake_soffice: Path, tmp_path: Path) -> None:
+    manager = make_manager(fake_soffice, tmp_path)
+    manager.max_cache_bytes = 15
+    source = make_docx_file(tmp_path)
+    old = manager.convert(source)
+    source.write_bytes(source.read_bytes() + b"new")
+    current = manager.convert(source)
+    assert current.is_file() and not old.exists()
+    assert manager.cache_status()["files"] == 1
+    assert manager.clear_cache()["files"] == 0
+    assert manager.convert(source).is_file()
+    assert manager.conversions == 3
+
+
 # ---- 真实 LibreOffice 集成（未安装则跳过）----
 
 
@@ -153,6 +260,57 @@ def test_real_convert_and_cache(tmp_path: Path, _real_profile: Path) -> None:
     again = m.convert(docx)
     assert again == pdf
     assert m.conversions == 1
+
+
+@pytest.mark.skipif(find_soffice() is None, reason="LibreOffice 未安装")
+def test_real_batch_matches_individual_conversion(tmp_path: Path, _real_profile: Path) -> None:
+    from docx.oxml import OxmlElement
+
+    from app.services.page_cache import page_fingerprints
+    from app.services.pdf_geometry import extract_pdf_lines
+
+    soffice = find_soffice()
+    assert soffice is not None
+    managers = [
+        LibreOfficeManager(
+            soffice,
+            profile_dir=_real_profile,
+            cache_dir=tmp_path / name,
+            timeout_seconds=60,
+            fontconfig_file=tmp_path / "fc" / "fonts.conf",
+        )
+        for name in ("batch", "single")
+    ]
+    inputs = []
+    for index, name in enumerate(("{{姓名}}", "测试用户")):
+        doc = Document()
+        doc.sections[0].header.paragraphs[0].text = "批量转换版式验收"
+        doc.add_paragraph(f"姓名：{name}").runs[0].bold = True
+        field = OxmlElement("w:fldSimple")
+        field.set("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}instr", "FILENAME")
+        doc.add_paragraph()._p.append(field)
+        table = doc.add_table(rows=1, cols=2)
+        table.cell(0, 0).text = "中文表格"
+        table.cell(0, 1).text = "保持字号、样式及坐标"
+        doc.add_page_break()
+        doc.add_paragraph("第二页正文与分页保持不变。")
+        source = tmp_path / f"input-{index}.docx"
+        doc.save(str(source))
+        inputs.append(source)
+
+    batch = managers[0].convert_many(inputs)
+    assert managers[0].conversions == 1
+    for source, pdf in zip(inputs, batch, strict=True):
+        individual = managers[1].convert(source)
+        assert page_fingerprints(pdf)[1] == page_fingerprints(individual)[1]
+        lines = extract_pdf_lines(pdf)
+        assert lines == extract_pdf_lines(individual)
+        assert source.stem in "".join(line.text for line in lines)
+        assert "第二页正文" in "".join(line.text for line in lines if line.page == 1)
+        with pymupdf.open(pdf) as document:
+            assert len(document) == 2
+            assert all(any(value < 200 for value in p.get_pixmap().samples) for p in document)
+    assert managers[1].conversions == 2
 
 
 @pytest.mark.parametrize(

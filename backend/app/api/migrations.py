@@ -1,22 +1,25 @@
 """API 入口：/api/templates/{id}/migrate/*（换模板迁移，M10，PRD 4.7 / D7）。
 
-两段式：plan 纯计算返回三清单（前端确认界面数据源）→ apply 整包落库最终映射。
-匹配规则与守门见 services/migration_service.py 模块注释。
+旧模式保持三清单与默认空稿；new_document 模式只读计划、确认后原子建新稿。
+匹配规则见 migration_service，新稿的快照与重试契约见 document_migration。
 """
 
+import base64
+import hashlib
 from typing import Literal
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.models.db import get_conn
-from app.services import migration_service
+from app.services import document_migration, migration_service
 
 router = APIRouter(prefix="/api")
 
 
 class MigrationPlanRequest(BaseModel):
     source_version_id: int
+    mode: Literal["legacy", "new_document"] = "legacy"
 
 
 class MigrationPair(BaseModel):
@@ -26,23 +29,76 @@ class MigrationPair(BaseModel):
     position: Literal["inside", "before", "after"] = "inside"
 
 
+class DocumentPlacement(BaseModel):
+    source_region_id: int
+    target_region_id: int
+
+
 class MigrationApplyRequest(BaseModel):
     source_version_id: int
     bindings: list[MigrationPair] = Field(default_factory=list)  # 可全留空（③可跳过）
+    mode: Literal["legacy", "new_document"] = "legacy"
+    name: str = ""
+    plan_token: str = ""
+    idempotency_key: str = ""
+    placements: list[DocumentPlacement] = Field(default_factory=list)
+    omitted_source_region_ids: list[int] = Field(default_factory=list)
+
+
+class MigrationPreviewRequest(BaseModel):
+    source_version_id: int
+    plan_token: str
+    placements: list[DocumentPlacement] = Field(default_factory=list)
+    omitted_source_region_ids: list[int] = Field(default_factory=list)
+
+
+@router.post("/templates/{template_id}/migrate/preview")
+def preview_migration(template_id: int, payload: MigrationPreviewRequest) -> dict[str, object]:
+    """只读试排；PDF 字节与覆盖层同一响应，取消不留稿，不写自动几何。"""
+    with get_conn() as conn:
+        conn.execute("BEGIN")
+        rendered = document_migration.preview_document(
+            conn,
+            payload.source_version_id,
+            template_id,
+            plan_token=payload.plan_token,
+            placements=[(p.source_region_id, p.target_region_id) for p in payload.placements],
+            omitted=payload.omitted_source_region_ids,
+        )
+    return {
+        "plan_token": payload.plan_token,
+        "pdf_base64": base64.b64encode(rendered.pdf_data).decode("ascii"),
+        "pdf_sha256": hashlib.sha256(rendered.pdf_data).hexdigest(),
+        "items": rendered.items,
+    }
 
 
 @router.post("/templates/{template_id}/migrate/plan")
 def plan_migration(template_id: int, payload: MigrationPlanRequest) -> dict[str, object]:
-    """计算迁移方案：auto/candidates/unmatched 三清单（纯计算，不落库）。"""
+    """只读计算方案；新稿模式另返回正文与有效性令牌，不创建目标版本。"""
     with get_conn() as conn:
+        if payload.mode == "new_document":
+            conn.execute("BEGIN")
+            return document_migration.build_plan(conn, payload.source_version_id, template_id)
         return migration_service.build_plan(conn, payload.source_version_id, template_id)
 
 
 @router.post("/templates/{template_id}/migrate/apply", status_code=201)
 def apply_migration(template_id: int, payload: MigrationApplyRequest) -> dict[str, object]:
-    """落库最终映射（目标默认版本须空白）；返回 {version_id, created}。"""
+    """旧模式写入默认空稿；新稿模式校验全部文字安排并原子创建。"""
     pairs = [(p.region_id, p.block_id) for p in payload.bindings]
     with get_conn() as conn:
+        if payload.mode == "new_document":
+            return document_migration.apply_new_document(
+                conn,
+                payload.source_version_id,
+                template_id,
+                name=payload.name,
+                plan_token=payload.plan_token,
+                idempotency_key=payload.idempotency_key,
+                placements=[(p.source_region_id, p.target_region_id) for p in payload.placements],
+                omitted=payload.omitted_source_region_ids,
+            )
         return migration_service.apply_migration(
             conn,
             payload.source_version_id,
