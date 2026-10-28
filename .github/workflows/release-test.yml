@@ -90,7 +90,7 @@ jobs:
           script: |
             const fs = require('fs');
             const tag = context.ref.replace('refs/tags/', '');
-            const body = 'macOS 14+ 开源测试包。Apple Silicon 选择 arm64；Intel 选择 x86_64。解压并移到 Applications。首次运行需要 Python 3.12 与 LibreOffice，App 提供官方安装入口和离线依赖初始化；无需 Node 或源码目录。\n\n测试包尚无 Developer ID 签名与 Apple 公证，不能保证互联网下载后双击通过 Gatekeeper。正式发布待签名，不建议关闭系统保护。\n\n组合 App 按 AGPL-3.0 分发，项目原创源码保留 MIT；对应项目、PyMuPDF 和 MuPDF 源码及 SHA-256 校验附件一并提供。';
+            const body = '本次更新统一文稿、模板、素材与归档入口，提供原模板检查、同栏素材编辑、按字段选择同步范围、独立插入行及留空输出提醒；归档保存当时的 Word／PDF，应用内备份恢复已移除。\n\nmacOS 14+ 开源测试包。Apple Silicon 选择 arm64；Intel 选择 x86_64。解压并移到 Applications。首次运行需要 Python 3.12 与 LibreOffice，App 提供官方安装入口和离线依赖初始化；无需 Node 或源码目录。\n\n测试包尚无 Developer ID 签名与 Apple 公证，不能保证互联网下载后双击通过 Gatekeeper。正式发布待签名，不建议关闭系统保护。\n\n组合 App 按 AGPL-3.0 分发，项目原创源码保留 MIT；对应项目、PyMuPDF 和 MuPDF 源码及 SHA-256 校验附件一并提供。';
             const result = await github.rest.repos.createRelease({
               ...context.repo, tag_name: tag, target_commitish: context.sha,
               name: `${tag} · macOS 双架构测试版`, body, draft: true, prerelease: true
