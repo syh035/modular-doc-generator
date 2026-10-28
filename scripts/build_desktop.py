@@ -46,7 +46,7 @@ def _build_bundle(root: Path, output: Path, arch: str, signing_identity: str) ->
         "CFBundleDisplayName": "模块化文档生成助手",
         "CFBundleExecutable": "ModularDocLauncher",
         "CFBundlePackageType": "APPL",
-        "CFBundleVersion": "3",
+        "CFBundleVersion": "4",
         "CFBundleShortVersionString": "1.3.0",
         "LSUIElement": False,
         "LSMinimumSystemVersion": "14.0",
